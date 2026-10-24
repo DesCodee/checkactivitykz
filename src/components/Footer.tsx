@@ -17,7 +17,7 @@ export const Footer: React.FC = () => {
             ISO/IEC 27001 COMPLIANT
           </span>
           <span className="font-['JetBrains_Mono'] text-[10px] px-2 py-0.5 rounded bg-[#1bbd85]/15 text-[#4edea3] border border-[#4edea3]/30">
-            СТ РК ГОСТ 34.310-2004 (НУЦ РК)
+            COMPLIANCE ENGINE // KZ
           </span>
         </div>
         <div className="flex items-center gap-6 font-['JetBrains_Mono'] text-xs">

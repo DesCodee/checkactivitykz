@@ -560,7 +560,7 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
               </div>
             </div>
 
-            {/* Cryptographic Seal Banner */}
+            {/* Audit Journal Registry Banner */}
             <div className="rounded-xl bg-[#131b2e] border border-[#3d494c]/40 p-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-lg bg-[#171f33] flex items-center justify-center shrink-0 border border-[#4cd7f6]/30">
@@ -568,10 +568,10 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
                 </div>
                 <div className="flex flex-col">
                   <span className="font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-bold text-[#dae2fd]">
-                    Хеш-реестр криптографически заверен (СТ РК ГОСТ 34.310-2004)
+                    Единый журнал проверок Check Activity AI
                   </span>
                   <span className="text-[11px] text-[#bcc9cd] font-['Inter']">
-                    Все записи аудита автоматически фиксируются с таймштампом НУЦ РК для судов РК и МКИ РК.
+                    Все аудиты автоматически каталогизируются с метками времени, хеш-суммами и историей изменений.
                   </span>
                 </div>
               </div>
@@ -580,7 +580,7 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
                 className="px-3.5 py-2 rounded-lg bg-[#222a3d] hover:bg-[#2d3449] text-[#dae2fd] text-xs font-semibold shrink-0 flex items-center gap-1.5 border border-[#3d494c]/40 transition-colors"
               >
                 <span className="material-symbols-outlined text-[16px]">download</span>
-                Скачать выписку реестра
+                Скачать сводный отчет
               </button>
             </div>
           </div>
@@ -737,11 +737,11 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
                 Сформировать пакет PDF
               </button>
               <button
-                onClick={() => alert(`Дела (${selectedIds.length}) направлены штатному юристу на досудебную проверку`)}
+                onClick={() => alert(`Отчеты по выбранным делам (${selectedIds.length}) подготовлены для отправки команде`)}
                 className="px-3 py-1.5 rounded-lg bg-[#171f33] hover:bg-[#2d3449] text-[#dae2fd] font-medium flex items-center gap-1 border border-[#3d494c]/40"
               >
                 <span className="material-symbols-outlined text-[16px]">send</span>
-                Отправить юристу
+                Отправить отчет
               </button>
               <button
                 onClick={() => setSelectedIds([])}

@@ -10,7 +10,6 @@ import { HomeView } from './components/HomeView';
 import { ScannerView } from './components/ScannerView';
 import { ExpertReportView } from './components/ExpertReportView';
 import { ArchiveMonitoringView } from './components/ArchiveMonitoringView';
-import { PretrialClaimModal } from './components/PretrialClaimModal';
 import { PdfExportModal } from './components/PdfExportModal';
 import { AuditCase, ModalityType } from './types';
 import { PRIMARY_AUDIT_CASE, MOCK_AUDIT_HISTORY } from './data/mockData';
@@ -22,8 +21,7 @@ export default function App() {
     undefined
   );
 
-  // Modals
-  const [showPretrialModal, setShowPretrialModal] = useState(false);
+  // PDF Export Modal State
   const [showPdfModal, setShowPdfModal] = useState(false);
 
   // Navigation handlers
@@ -53,7 +51,6 @@ export default function App() {
   };
 
   const handleGlobalSearch = (query: string) => {
-    // If search query matches a case reference, jump to report
     const match = MOCK_AUDIT_HISTORY.find(
       (c) =>
         c.referenceNumber.toLowerCase().includes(query.toLowerCase()) ||
@@ -96,7 +93,6 @@ export default function App() {
         {currentView === 'report' && (
           <ExpertReportView
             auditCase={currentAuditCase}
-            onOpenPretrialModal={() => setShowPretrialModal(true)}
             onOpenPdfModal={() => setShowPdfModal(true)}
             onRetest={() => handleNavigate('scanner')}
           />
@@ -110,18 +106,10 @@ export default function App() {
         )}
       </main>
 
-      {/* Legal & Cert Footer */}
+      {/* Footer */}
       <Footer />
 
-      {/* Pre-trial claim generator modal */}
-      {showPretrialModal && (
-        <PretrialClaimModal
-          auditCase={currentAuditCase}
-          onClose={() => setShowPretrialModal(false)}
-        />
-      )}
-
-      {/* Official PDF / Inspection protocol modal */}
+      {/* Clean Commercial PDF Audit Report Modal (No state stamps) */}
       {showPdfModal && (
         <PdfExportModal
           auditCase={currentAuditCase}

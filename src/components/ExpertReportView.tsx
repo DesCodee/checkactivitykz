@@ -9,14 +9,12 @@ import { PRIMARY_AUDIT_CASE } from '../data/mockData';
 
 interface ExpertReportViewProps {
   auditCase?: AuditCase;
-  onOpenPretrialModal: () => void;
   onOpenPdfModal: () => void;
   onRetest: () => void;
 }
 
 export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
   auditCase = PRIMARY_AUDIT_CASE,
-  onOpenPretrialModal,
   onOpenPdfModal,
   onRetest,
 }) => {
@@ -63,7 +61,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
 
   return (
     <div className="w-full px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-8">
-      {/* Top Tactical Metadata Breadcrumb & Action Header */}
+      {/* Top Breadcrumb & Action Header */}
       <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-6 pb-2">
         <div className="flex flex-col gap-1.5">
           <div className="flex flex-wrap items-center gap-2">
@@ -72,7 +70,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             </span>
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-[#1bbd85]/20 text-[#4edea3] font-['JetBrains_Mono'] text-[11px] uppercase font-semibold border border-[#4edea3]/30">
               <span className="w-1.5 h-1.5 rounded-full bg-[#4edea3]"></span>
-              Юридически заверено ЭЦП НУЦ РК
+              AI AUDIT COMPLETE
             </span>
             <span className="font-['JetBrains_Mono'] text-xs text-[#bcc9cd] flex items-center gap-1">
               <span className="material-symbols-outlined text-[15px]">schedule</span>
@@ -82,7 +80,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
 
           <div className="flex items-center gap-3 mt-1">
             <h1 className="font-['Plus_Jakarta_Sans'] text-2xl sm:text-3xl font-bold text-[#dae2fd] tracking-tight">
-              Экспертное заключение аудита{' '}
+              Экспертный отчет аудита{' '}
               <span className="text-[#4cd7f6] font-['JetBrains_Mono']">{auditCase.referenceNumber}</span>
             </h1>
           </div>
@@ -90,7 +88,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
           <p className="text-xs sm:text-sm text-[#bcc9cd] flex items-center gap-2 font-['Inter']">
             <span className="material-symbols-outlined text-[16px] text-[#4cd7f6]">policy</span>
             <span>
-              Объект экспертизы: <strong className="text-[#dae2fd] font-medium">{auditCase.title}</strong>
+              Объект проверки: <strong className="text-[#dae2fd] font-medium">{auditCase.title}</strong>
             </span>
           </p>
         </div>
@@ -102,21 +100,13 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-[#06b6d4] to-[#0566d9] text-[#001f26] font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-bold hover:opacity-95 shadow-[0_0_16px_rgba(6,182,212,0.35)] transition-all"
           >
             <span className="material-symbols-outlined text-[18px]">picture_as_pdf</span>
-            <span>Скачать в PDF (с ЭЦП)</span>
-          </button>
-
-          <button
-            onClick={onOpenPretrialModal}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#222a3d] hover:bg-[#2d3449] text-[#dae2fd] font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-semibold border border-[#ff6b6b]/40 shadow-sm transition-colors"
-          >
-            <span className="material-symbols-outlined text-[18px] text-[#ff6b6b]">gavel</span>
-            <span>Сформировать досудебную претензию</span>
+            <span>Скачать отчет (PDF)</span>
           </button>
 
           <button
             onClick={handleShare}
-            className="flex items-center gap-1.5 px-3 py-2.5 rounded-lg bg-[#131b2e] hover:bg-[#171f33] text-[#bcc9cd] hover:text-[#dae2fd] border border-[#3d494c]/50 text-xs font-['Inter'] transition-colors"
-            title="Скопировать ссылку на протокол"
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-lg bg-[#131b2e] hover:bg-[#171f33] text-[#bcc9cd] hover:text-[#dae2fd] border border-[#3d494c]/50 text-xs font-['Inter'] transition-colors"
+            title="Скопировать ссылку на отчет"
           >
             <span className="material-symbols-outlined text-[18px]">share</span>
             <span>{copiedLink ? 'Скопировано!' : 'Поделиться'}</span>
@@ -124,10 +114,11 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
 
           <button
             onClick={onRetest}
-            className="p-2.5 rounded-lg bg-[#131b2e] hover:bg-[#171f33] text-[#bcc9cd] hover:text-[#4cd7f6] border border-[#3d494c]/50 transition-colors"
+            className="flex items-center gap-1.5 px-3 py-2.5 rounded-lg bg-[#131b2e] hover:bg-[#171f33] text-[#bcc9cd] hover:text-[#4cd7f6] border border-[#3d494c]/50 text-xs transition-colors"
             title="Перепроверить"
           >
             <span className="material-symbols-outlined text-[18px]">autorenew</span>
+            <span>Перепроверить</span>
           </button>
         </div>
       </div>
@@ -149,20 +140,13 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
               <span className="w-2 h-2 rounded-full bg-[#ff6b6b] animate-pulse"></span>
               {auditCase.riskLevel} риск
             </span>
-            <span className="text-[11px] text-[#bcc9cd] font-['Inter']">Требует срочного отзыва</span>
+            <span className="text-[11px] text-[#bcc9cd] font-['Inter']">Рекомендуется исправить</span>
           </div>
 
           {/* Radial Gauge SVG */}
           <div className="relative w-20 h-20 shrink-0 flex items-center justify-center">
             <svg className="w-full h-full -rotate-90 transform" viewBox="0 0 72 72">
-              <circle
-                cx="36"
-                cy="36"
-                r="30"
-                fill="transparent"
-                stroke="#222a3d"
-                strokeWidth="6"
-              ></circle>
+              <circle cx="36" cy="36" r="30" fill="transparent" stroke="#222a3d" strokeWidth="6"></circle>
               <circle
                 cx="36"
                 cy="36"
@@ -183,10 +167,10 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         <div className="relative overflow-hidden rounded-xl bg-[#131b2e] border border-[#3d494c]/40 p-5 flex flex-col justify-between shadow-xl">
           <div className="flex items-center justify-between">
             <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397] uppercase tracking-wider font-semibold">
-              Статус нарушений
+              Статус замечаний
             </span>
             <span className="px-2 py-0.5 rounded bg-[#ff6b6b]/20 text-[#ff6b6b] font-['JetBrains_Mono'] text-xs font-bold">
-              {auditCase.violations.length} инцидента
+              {auditCase.violations.length} пункта
             </span>
           </div>
           <div className="my-2 flex items-center gap-6">
@@ -223,12 +207,12 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
               393 200 — 1 376 200 ₸
             </div>
             <p className="text-xs text-[#ff6b6b] mt-1 flex items-center gap-1 font-['JetBrains_Mono']">
-              <span className="material-symbols-outlined text-[14px]">gavel</span>
+              <span className="material-symbols-outlined text-[14px]">report_problem</span>
               Санкция по ст. 455 КоАП (100–350 МРП)
             </p>
           </div>
           <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397]">
-            Подсудность: МКИ РК / СМАП г. Астаны
+            Регулятор: МКИ РК (Онлайн-реклама)
           </span>
         </div>
 
@@ -259,11 +243,11 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         <div className="lg:col-span-7 flex flex-col gap-6">
           {/* Image Evidence Viewport */}
           <div className="rounded-xl bg-[#131b2e] border border-[#3d494c]/40 shadow-xl overflow-hidden flex flex-col">
-            {/* Top Telemetry Bar */}
+            {/* Top Bar */}
             <div className="px-4 py-2.5 bg-[#171f33] border-b border-[#3d494c]/30 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 font-['JetBrains_Mono'] text-xs">
                 <span className="material-symbols-outlined text-[#4cd7f6] text-[18px]">image_search</span>
-                <span className="text-[#dae2fd] uppercase font-bold">ФОТО-ВЕЩДОК #EVD-01</span>
+                <span className="text-[#dae2fd] uppercase font-bold">АНАЛИЗ ИЗОБРАЖЕНИЯ #IMG-01</span>
                 <span className="text-[#869397]">| {auditCase.metadata.resolution || '2400x1600 JPG'}</span>
               </div>
               <div className="flex items-center gap-2">
@@ -271,7 +255,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                   2 ДЕТЕКЦИИ НА СЛОЕ
                 </span>
                 <button
-                  onClick={() => alert('Отображение в полном разрешении 2400x1600 с наложением масок')}
+                  onClick={() => alert('Отображение в полном разрешении с подсветкой областей')}
                   className="p-1 rounded hover:bg-[#222a3d] text-[#bcc9cd]"
                   title="Масштаб 1:1"
                 >
@@ -282,7 +266,6 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
 
             {/* Interactive Graphic Frame with HUD annotations */}
             <div className="relative w-full aspect-[16/10] bg-[#060e20] overflow-hidden flex items-center justify-center select-none">
-              {/* Tactical mock graphic representation of digital evidence banner */}
               <div className="absolute inset-0 bg-gradient-to-br from-[#0c162d] via-[#101b33] to-[#080d1a] flex flex-col p-8 justify-between">
                 <div className="flex items-center justify-between border-b border-[#3d494c]/30 pb-3">
                   <div className="flex items-center gap-2">
@@ -310,7 +293,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
 
                 <div className="flex items-center justify-between pt-3 border-t border-[#3d494c]/20 text-[11px] font-['JetBrains_Mono'] text-[#869397]">
                   <span>Отдел по работе с клиентами</span>
-                  <span>Лицензия: №KZ-88201-INV</span>
+                  <span>Контакты менеджера: +7 (701) 420-**-**</span>
                 </div>
               </div>
 
@@ -328,7 +311,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
               >
                 <div className="flex items-center justify-between pb-1">
                   <span className="px-1.5 py-0.5 rounded bg-[#ff6b6b] text-[#060e20] font-['JetBrains_Mono'] text-[9px] font-bold">
-                    НАРУШЕНИЕ 455 КоАП РК
+                    НЕСООТВЕТСТВИЕ: ст. 455 КоАП
                   </span>
                   <span className="w-2 h-2 rounded-full bg-[#ff6b6b] animate-ping"></span>
                 </div>
@@ -342,7 +325,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                 </div>
               </div>
 
-              {/* Bounding Box 2: Unauthorized Contact Phone (PDn) */}
+              {/* Bounding Box 2: Contact Phone (PDn) */}
               <div
                 onClick={() => setActiveBbox('v-03')}
                 className={`absolute bottom-6 left-6 sm:bottom-8 sm:left-8 w-60 sm:w-72 rounded-lg p-2 flex flex-col justify-between transition-all cursor-pointer ${
@@ -353,32 +336,31 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
               >
                 <div className="flex items-center justify-between pb-1">
                   <span className="px-1.5 py-0.5 rounded bg-[#0566d9] text-[#e6ecff] font-['JetBrains_Mono'] text-[9px] font-bold">
-                    РИСК ст. 79 КоАП РК
+                    РИСК: ст. 79 КоАП РК
                   </span>
                   <span className="font-['JetBrains_Mono'] text-[9px] text-[#dae2fd]">CONF: 94.2%</span>
                 </div>
                 <div className="bg-[#060e20]/90 backdrop-blur-md p-2 rounded">
                   <div className="font-['JetBrains_Mono'] text-[11px] text-[#4cd7f6] font-bold">
-                    ПДн БЕЗ СОГЛАСИЯ СУБЪЕКТА
+                    ОТКРЫТЫЙ НОМЕР ТЕЛЕФОНА
                   </div>
                   <div className="text-[10px] text-[#bcc9cd] font-['Inter'] leading-tight mt-0.5">
-                    Сотовый телефон физического лица +7 (701) 420-**-**
+                    Телефон физического лица +7 (701) 420-**-** без согласия
                   </div>
                 </div>
               </div>
 
               {/* Crosshair indicator HUD */}
               <div className="absolute top-3 left-3 font-['JetBrains_Mono'] text-[9px] text-[#869397] flex flex-col gap-0.5 pointer-events-none">
-                <span>LAT: 51.1694 N (ASTANA)</span>
-                <span>GEO: KZ_LOCAL_CACHE</span>
+                <span>INSPECTOR: AI OCR LAYER</span>
                 <span>SHA-256: 7f4a...9b12</span>
               </div>
             </div>
 
             {/* Sub-shelf footer */}
             <div className="px-4 py-2 bg-[#171f33] border-t border-[#3d494c]/30 flex items-center justify-between text-[#bcc9cd] font-['JetBrains_Mono'] text-xs">
-              <span>Источник: Telegram Channel Feed (Казахстан)</span>
-              <span className="text-[#4edea3]">Оригинальный метафайл извлечен без искажений</span>
+              <span>Источник: Социальные медиа (Казахстан)</span>
+              <span className="text-[#4edea3]">Текст и графика распознаны успешно</span>
             </div>
           </div>
 
@@ -387,11 +369,11 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             <div className="px-4 py-2.5 bg-[#171f33] border-b border-[#3d494c]/30 flex items-center justify-between">
               <div className="flex items-center gap-2 font-['JetBrains_Mono'] text-xs">
                 <span className="material-symbols-outlined text-[#4cd7f6] text-[18px]">graphic_eq</span>
-                <span className="text-[#dae2fd] uppercase font-bold">АУДИО-ВЕЩДОК #EVD-02</span>
+                <span className="text-[#dae2fd] uppercase font-bold">АНАЛИЗ АУДИО #AUD-01</span>
                 <span className="text-[#869397]">| podcast_promo_v2.wav (01:42)</span>
               </div>
               <span className="font-['JetBrains_Mono'] text-[10px] px-2 py-0.5 rounded bg-[#ff6b6b]/20 text-[#ff6b6b] font-bold">
-                2 ИНЦИДЕНТА
+                2 ЗАМЕЧАНИЯ
               </span>
             </div>
 
@@ -433,11 +415,11 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                 <div
                   onClick={() => setAudioProgress(16)}
                   className="absolute top-0 bottom-0 left-[14%] w-[10%] bg-[#ff6b6b]/20 border-x border-[#ff6b6b] flex flex-col justify-between p-1 z-10 cursor-pointer hover:bg-[#ff6b6b]/30"
-                  title="Кликните для перехода к таймкоду клеветы"
+                  title="Кликните для перехода к таймкоду спорного высказывания"
                 >
                   <span className="font-['JetBrains_Mono'] text-[8px] text-[#ff6b6b] font-bold truncate">00:14-00:24</span>
                   <span className="font-['JetBrains_Mono'] text-[8px] text-white bg-[#ff6b6b] px-1 py-0.5 rounded truncate">
-                    КЛЕВЕТА
+                    СПОРНОЕ
                   </span>
                 </div>
 
@@ -445,11 +427,11 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                 <div
                   onClick={() => setAudioProgress(65)}
                   className="absolute top-0 bottom-0 left-[62%] w-[8%] bg-[#0566d9]/25 border-x border-[#adc6ff] flex flex-col justify-between p-1 z-10 cursor-pointer hover:bg-[#0566d9]/35"
-                  title="Кликните для перехода к таймкоду оскорбления"
+                  title="Кликните для перехода к таймкоду некорректной лексики"
                 >
                   <span className="font-['JetBrains_Mono'] text-[8px] text-[#adc6ff] font-bold truncate">01:05</span>
                   <span className="font-['JetBrains_Mono'] text-[8px] text-[#dae2fd] bg-[#0566d9] px-1 py-0.5 rounded truncate">
-                    ОСКОРБЛЕНИЕ
+                    РЕЗКАЯ ЛЕКСИКА
                   </span>
                 </div>
 
@@ -515,13 +497,13 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         <div className="lg:col-span-5 flex flex-col gap-5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-[#ff6b6b] text-[22px]">balance</span>
+              <span className="material-symbols-outlined text-[#ff6b6b] text-[22px]">checklist</span>
               <h2 className="font-['Plus_Jakarta_Sans'] text-xl font-bold text-[#dae2fd]">
-                Реестр правонарушений (РК)
+                Список несоответствий и рисков
               </h2>
             </div>
             <span className="font-['JetBrains_Mono'] text-[10px] px-2 py-0.5 rounded bg-[#222a3d] text-[#bcc9cd] uppercase font-semibold">
-              МКИ РК & СМАП
+              КОМПЛАЕНС РК
             </span>
           </div>
 
@@ -536,7 +518,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             <div className="flex items-start justify-between gap-2 pl-2">
               <div className="flex flex-col">
                 <span className="font-['JetBrains_Mono'] text-[10px] text-[#ff6b6b] uppercase font-bold tracking-wider">
-                  КРИТИЧЕСКОЕ НАРУШЕНИЕ #01
+                  КРИТИЧЕСКИЙ РИСК #01
                 </span>
                 <h3 className="font-['Plus_Jakarta_Sans'] text-sm sm:text-base font-bold text-[#dae2fd] mt-0.5">
                   Отсутствие маркировки рекламы («Жарнама»)
@@ -566,9 +548,9 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                   </span>
                 </div>
                 <div className="p-2 rounded bg-[#171f33] border border-[#3d494c]/30 flex flex-col">
-                  <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397]">ПОДСУДНОСТЬ</span>
+                  <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397]">РЕГУЛЯТОР</span>
                   <span className="font-['Plus_Jakarta_Sans'] text-xs text-[#dae2fd] font-semibold mt-0.5">
-                    МКИ РК / СМАП
+                    МКИ РК (Онлайн-реклама)
                   </span>
                 </div>
               </div>
@@ -586,7 +568,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             <div className="flex items-start justify-between gap-2 pl-2">
               <div className="flex flex-col">
                 <span className="font-['JetBrains_Mono'] text-[10px] text-[#ff6b6b] uppercase font-bold tracking-wider">
-                  КРИТИЧЕСКОЕ НАРУШЕНИЕ #02
+                  КРИТИЧЕСКИЙ РИСК #02
                 </span>
                 <h3 className="font-['Plus_Jakarta_Sans'] text-sm sm:text-base font-bold text-[#dae2fd] mt-0.5">
                   Высказывание с признаками клеветы
@@ -606,22 +588,21 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                   «...заведомо фальсифицируют государственные закупки и выводят средства через офшоры...»
                 </p>
                 <p className="text-[#bcc9cd] font-['Inter'] mt-1">
-                  Утверждение о фактах совершения уголовно наказуемых коррупционных деяний без вступившего в силу приговора
-                  суда РК.
+                  Утверждение о фактах совершения противоправных действий в адрес конкурентов в публичном пространстве.
                 </p>
               </div>
 
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="p-2 rounded bg-[#171f33] border border-[#3d494c]/30 flex flex-col">
-                  <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397]">ОТВЕТСТВЕННОСТЬ</span>
+                  <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397]">РИСК ПРЕТЕНЗИЙ</span>
                   <span className="font-['JetBrains_Mono'] text-xs text-[#ff6b6b] font-bold mt-0.5">
                     Штраф до 650 МРП (2.55 млн ₸)
                   </span>
                 </div>
                 <div className="p-2 rounded bg-[#171f33] border border-[#3d494c]/30 flex flex-col">
-                  <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397]">СУДЕБНЫЙ РИСК</span>
+                  <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397]">РИСК БРЕНДА</span>
                   <span className="font-['Plus_Jakarta_Sans'] text-xs text-[#dae2fd] font-semibold mt-0.5">
-                    Иск о защите деловой репутации
+                    Репутационный ущерб
                   </span>
                 </div>
               </div>
@@ -642,7 +623,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                   ПРЕДУПРЕЖДЕНИЕ #03
                 </span>
                 <h3 className="font-['Plus_Jakarta_Sans'] text-sm sm:text-base font-bold text-[#dae2fd] mt-0.5">
-                  Публикация персональных данных граждан РК
+                  Публикация персональных данных
                 </h3>
               </div>
               <span className="px-2 py-0.5 rounded bg-[#222a3d] text-[#adc6ff] font-['JetBrains_Mono'] text-[11px] font-bold shrink-0">
@@ -655,7 +636,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                 <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397] uppercase">Фактическое основание:</span>
                 <p className="text-[#bcc9cd] font-['Inter'] leading-relaxed">
                   На графическом макете размещен контактный сотовый номер физлица (+7 701 420-**-**) без предварительного
-                  письменного согласия субъекта на сбор и обработку ПДн.
+                  согласия на публичное размещение.
                 </p>
               </div>
 
@@ -676,12 +657,12 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-[#4cd7f6] text-[22px]">assignment_turned_in</span>
             <h2 className="font-['Plus_Jakarta_Sans'] text-lg font-bold text-[#dae2fd]">
-              Юридический протокол устранения нарушений (План действий по праву РК)
+              Рекомендации и план действий по устранению замечаний
             </h2>
           </div>
           <span className="font-['JetBrains_Mono'] text-xs text-[#4edea3] flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-[#4edea3]"></span>
-            Готово к передаче в юридический отдел
+            Готово для контент-отдела и маркетинга
           </span>
         </div>
 
@@ -692,23 +673,22 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
               <div className="flex items-center justify-between">
                 <span className="font-['Plus_Jakarta_Sans'] text-3xl font-bold text-[#ff6b6b]/30 leading-none">01</span>
                 <span className="px-2 py-0.5 rounded bg-[#ff6b6b]/20 text-[#ff6b6b] font-['JetBrains_Mono'] text-[10px] font-bold">
-                  СРОЧНО (1 ЧАС)
+                  СРОЧНО
                 </span>
               </div>
               <h4 className="font-['Plus_Jakarta_Sans'] text-sm font-bold text-[#dae2fd] mt-1">
-                Остановить публикацию в Казнете
+                Приостановить публикацию
               </h4>
               <p className="text-xs text-[#bcc9cd] font-['Inter']">
-                Немедленно скрыть либо перевести в закрытый архив рекламный пост в Telegram и аудиоролик для прекращения
-                длящегося правонарушения.
+                Временно скрыть рекламный пост в канале и аудиоролик до внесения необходимых правок.
               </p>
             </div>
             <button
-              onClick={() => alert('Инструкция по экстренному отзыву публикации скопирована!')}
+              onClick={() => alert('Чек-лист для контент-менеджера скопирован!')}
               className="w-full py-1.5 rounded-lg bg-[#222a3d] hover:bg-[#2d3449] text-[#dae2fd] font-['Plus_Jakarta_Sans'] text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
             >
               <span className="material-symbols-outlined text-[16px]">pause_circle</span>
-              Инструкция по отзыву
+              Инструкция для команды
             </button>
           </div>
 
@@ -718,19 +698,19 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
               <div className="flex items-center justify-between">
                 <span className="font-['Plus_Jakarta_Sans'] text-3xl font-bold text-[#4cd7f6]/30 leading-none">02</span>
                 <span className="px-2 py-0.5 rounded bg-[#222a3d] text-[#4cd7f6] font-['JetBrains_Mono'] text-[10px] font-bold">
-                  МАРКИРОВКА РК
+                  МАРКИРОВКА
                 </span>
               </div>
               <h4 className="font-['Plus_Jakarta_Sans'] text-sm font-bold text-[#dae2fd] mt-1">
-                Нанести плашку «Жарнама» и дубль
+                Добавить плашку «Жарнама» и дубль
               </h4>
               <p className="text-xs text-[#bcc9cd] font-['Inter']">
-                Добавить обязательную отметку «Жарнамалық материал / Реклама», указать БИН/ИИН рекламодателя и продублировать
+                Добавить обязательную отметку «Жарнамалық материал / Реклама», указать БИН/ИИН рекламодателя и добавить
                 текст на государственном (казахском) языке (ст. 21 Закона о языках).
               </p>
             </div>
             <button
-              onClick={() => alert('Шаблон маркировки по Закону № 230-VII скопирован в буфер!')}
+              onClick={() => alert('Шаблон маркировки скопирован в буфер!')}
               className="w-full py-1.5 rounded-lg bg-[#222a3d] hover:bg-[#2d3449] text-[#4cd7f6] font-['Plus_Jakarta_Sans'] text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
             >
               <span className="material-symbols-outlined text-[16px]">qr_code</span>
@@ -751,12 +731,11 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                 Вырезать таймкод 00:14–00:24
               </h4>
               <p className="text-xs text-[#bcc9cd] font-['Inter']">
-                Удалить высказывание относительно конкурентов, замазать сотовый телефон на визитке креатива и исключить риск
-                уголовного иска по защите деловой репутации.
+                Удалить резкое высказывание относительно конкурентов и замазать личный номер телефона на визуале.
               </p>
             </div>
             <button
-              onClick={() => alert('Запрос на автоматическую обрезку аудиофайла отправлен в обработку!')}
+              onClick={() => alert('Запрос на автоматическую обрезку аудиофайла подготовлен!')}
               className="w-full py-1.5 rounded-lg bg-[#222a3d] hover:bg-[#2d3449] text-[#dae2fd] font-['Plus_Jakarta_Sans'] text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
             >
               <span className="material-symbols-outlined text-[16px]">content_cut</span>
@@ -766,19 +745,19 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         </div>
       </div>
 
-      {/* Immutable Digital Signature & Proof of Cryptographic Audit Seal */}
+      {/* Verification Summary Card */}
       <div className="rounded-xl bg-[#060e20] border border-[#3d494c]/50 p-5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-lg">
         <div className="flex items-center gap-4">
           <div className="w-12 h-12 rounded-xl bg-[#171f33] flex items-center justify-center text-[#4cd7f6] shrink-0 border border-[#4cd7f6]/30 shadow-[0_0_16px_rgba(76,215,246,0.2)]">
-            <span className="material-symbols-outlined text-[28px]">verified_user</span>
+            <span className="material-symbols-outlined text-[28px]">verified</span>
           </div>
           <div className="flex flex-col">
             <div className="flex items-center gap-2">
               <span className="font-['Plus_Jakarta_Sans'] text-sm font-bold text-[#dae2fd]">
-                Цифровой сертификат экспертизы Check Activity AI (РК)
+                Отчет сгенерирован системой Check Activity AI
               </span>
               <span className="px-2 py-0.5 rounded bg-[#1bbd85]/20 text-[#4edea3] font-['JetBrains_Mono'] text-[10px] font-bold border border-[#4edea3]/30">
-                СТ РК ГОСТ 34.310-2004 (НУЦ РК)
+                AI VERIFIED
               </span>
             </div>
             <p className="font-['JetBrains_Mono'] text-xs text-[#869397] mt-0.5 truncate max-w-xl">
@@ -788,16 +767,12 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         </div>
 
         <div className="flex items-center gap-4 shrink-0">
-          <div className="flex flex-col text-right hidden sm:flex">
-            <span className="font-['JetBrains_Mono'] text-[10px] text-[#bcc9cd]">TIMESTAMP TSA PROTOCOL (ASTANA)</span>
-            <span className="font-['JetBrains_Mono'] text-xs text-[#4cd7f6]">2025-05-18T14:32:05.109+05:00</span>
-          </div>
           <button
-            onClick={() => alert('Сертификат валидирован в реестре НУЦ РК (pki.gov.kz). Статус: ДЕЙСТВИТЕЛЕН')}
+            onClick={onOpenPdfModal}
             className="px-4 py-2 rounded-lg bg-[#171f33] hover:bg-[#222a3d] text-[#dae2fd] font-['Plus_Jakarta_Sans'] text-xs font-semibold flex items-center gap-2 border border-[#3d494c]/50 transition-colors"
           >
-            <span className="material-symbols-outlined text-[18px] text-[#4edea3]">verified</span>
-            Проверить в реестре НУЦ РК
+            <span className="material-symbols-outlined text-[18px] text-[#4cd7f6]">picture_as_pdf</span>
+            Открыть PDF-версию
           </button>
         </div>
       </div>

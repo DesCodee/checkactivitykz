@@ -132,7 +132,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     }, 700);
 
     setTimeout(() => {
-      setProcessingStep('Сопоставление с нормами КоАП РК, Закона № 230-VII и генерация ЭЦП...');
+      setProcessingStep('Сопоставление с правилами рекламы и формирование отчета...');
     }, 1500);
 
     setTimeout(async () => {
@@ -483,9 +483,9 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
               >
                 <div className="flex flex-col">
                   <span className="font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-semibold text-[#dae2fd]">
-                    Досудебная экспертиза НУЦ РК
+                    Максимальный комплаенс 360°
                   </span>
-                  <span className="text-xs text-[#bcc9cd]">Генерация протокола с хеш-подписью для суда</span>
+                  <span className="text-xs text-[#bcc9cd]">Глубокий аудит всех категорий рисков и правил</span>
                 </div>
                 <span className="material-symbols-outlined text-[#869397] text-[20px]">
                   {strictness === 'expert' ? 'radio_button_checked' : 'radio_button_unchecked'}
@@ -613,12 +613,12 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
             </button>
           </div>
 
-          {/* Legal Notice Footnote */}
+          {/* Commercial Compliance Notice Footnote */}
           <div className="p-3.5 rounded-lg bg-[#060e20]/60 border border-[#3d494c]/30 flex items-start gap-2.5 text-xs text-[#bcc9cd]">
             <span className="material-symbols-outlined text-[#869397] text-[18px] shrink-0 mt-0.5">verified_user</span>
             <p className="leading-relaxed">
-              Все загруженные материалы хешируются по алгоритму SHA-256 в изолированном контуре в РК. Формируемый протокол
-              соответствует требованиям СТ РК ГОСТ 34.310-2004 и ГПК РК для использования в процессуальных действиях.
+              Все загруженные материалы анализируются в изолированном контуре. Сформированный отчет предназначен для
+              внутреннего комплаенс-контроля, защиты бренда и предотвращения штрафов от регуляторов.
             </p>
           </div>
         </div>

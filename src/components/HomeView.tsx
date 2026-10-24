@@ -287,16 +287,16 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartScanner, onOpenReport
                       SHA256: 7f83b1657ff1...d9
                     </span>
                     <span className="font-['JetBrains_Mono'] text-[10px] text-[#4cd7f6] font-semibold flex items-center gap-1">
-                      <span className="material-symbols-outlined text-[12px]">lock</span>
-                      ЭЦП_НУЦ_РК
+                      <span className="material-symbols-outlined text-[12px]">check_circle</span>
+                      AI_VERIFIED
                     </span>
                   </div>
                 </div>
 
                 <div className="pt-2 border-t border-[#222a3d] flex items-center justify-between text-[#869397] font-['JetBrains_Mono'] text-xs">
-                  <span>Готов протокол фиксации PDF</span>
+                  <span>Готов отчет проверки (PDF)</span>
                   <button onClick={onOpenReport} className="text-[#4cd7f6] hover:underline flex items-center gap-1">
-                    <span>Открыть дело</span>
+                    <span>Открыть отчет</span>
                     <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
                   </button>
                 </div>
@@ -627,16 +627,16 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartScanner, onOpenReport
             {/* Box 6 */}
             <div className="bg-[#171f33] rounded-xl border border-[#3d494c]/40 p-5 shadow-sm">
               <div className="flex items-center gap-2.5 mb-3">
-                <span className="material-symbols-outlined text-[#4edea3] text-[24px]">verified</span>
-                <h3 className="font-['Plus_Jakarta_Sans'] text-base font-bold text-[#dae2fd]">ЭЦП НУЦ РК & Экспертиза</h3>
+                <span className="material-symbols-outlined text-[#4edea3] text-[24px]">description</span>
+                <h3 className="font-['Plus_Jakarta_Sans'] text-base font-bold text-[#dae2fd]">PDF-отчет с рекомендациями</h3>
               </div>
               <p className="text-xs text-[#bcc9cd] mb-4 font-['Inter'] leading-relaxed">
-                Формирование доказательного протокола осмотра интернет-страниц с метками времени TSA и электронной подписью по
-                стандарту ГОСТ 34.310-2004 для судов РК.
+                Формирование понятного отчета аудита с детальным разбором рисков, тайм-кодами аудио, областями изображений и
+                пошаговыми инструкциями по исправлению.
               </p>
               <div className="flex flex-wrap gap-1.5 font-['JetBrains_Mono'] text-[11px]">
-                <span className="px-2 py-0.5 rounded bg-[#222a3d] text-[#dae2fd]">ГПК РК (доказательства)</span>
-                <span className="px-2 py-0.5 rounded bg-[#222a3d] text-[#dae2fd]">НУЦ РК ГОСТ</span>
+                <span className="px-2 py-0.5 rounded bg-[#222a3d] text-[#dae2fd]">Экспорт в PDF</span>
+                <span className="px-2 py-0.5 rounded bg-[#222a3d] text-[#dae2fd]">Чек-лист для команды</span>
               </div>
             </div>
           </div>
@@ -722,7 +722,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ onStartScanner, onOpenReport
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="material-symbols-outlined text-[#4cd7f6] text-base">check</span>
-                    <span>Экспертные протоколы с ЭЦП НУЦ РК</span>
+                    <span>Детальные отчеты аудита в PDF</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="material-symbols-outlined text-[#4cd7f6] text-base">check</span>
