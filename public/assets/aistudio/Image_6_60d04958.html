@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="ru"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_standard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@500;600&amp;family=Plus+Jakarta+Sans:wght@600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config={darkMode:"class",theme:{extend:{"colors":{"primary-container":"#06b6d4","tertiary-fixed-dim":"#4edea3","on-background":"#dae2fd","on-primary":"#003640","tertiary-container":"#1bbd85","on-primary-fixed":"#001f26","surface-variant":"#2d3449","secondary-container":"#0566d9","primary-fixed":"#acedff","surface-dim":"#0b1326","surface-tint":"#4cd7f6","inverse-primary":"#00687a","on-secondary-fixed":"#001a42","on-surface":"#dae2fd","tertiary":"#4edea3","on-error-container":"#ffdad6","on-primary-container":"#00424f","surface-container-lowest":"#060e20","on-primary-fixed-variant":"#004e5c","secondary":"#adc6ff","surface-container":"#171f33","on-surface-variant":"#bcc9cd","error":"#ffb4ab","on-tertiary":"#003824","background":"#0b1326","surface-container-highest":"#2d3449","surface-container-low":"#131b2e","surface":"#0b1326","secondary-fixed-dim":"#adc6ff","on-tertiary-fixed-variant":"#005236","on-tertiary-fixed":"#002113","secondary-fixed":"#d8e2ff","inverse-on-surface":"#283044","on-tertiary-container":"#00452e","on-secondary":"#002e6a","outline":"#869397","primary":"#4cd7f6","surface-container-high":"#222a3d","tertiary-fixed":"#6ffbbe","surface-bright":"#31394d","error-container":"#93000a","on-secondary-container":"#e6ecff","outline-variant":"#3d494c","on-error":"#690005","primary-fixed-dim":"#4cd7f6","on-secondary-fixed-variant":"#004395","inverse-surface":"#dae2fd"},"borderRadius":{"DEFAULT":"0.125rem","lg":"0.25rem","xl":"0.5rem","full":"0.75rem"},"spacing":{"space-sm":"0.5rem","margin":"1.5rem","gutter-lg":"1.5rem","space-xs":"0.25rem","space-lg":"1.5rem","gutter":"1rem","space-xl":"2.5rem","margin-lg":"2rem","space-md":"1rem"},"fontFamily":{"headline-sm":["Plus Jakarta Sans"],"body-md":["Inter"],"headline-xl":["Plus Jakarta Sans"],"display-lg":["Plus Jakarta Sans"],"body-sm":["Inter"],"code-sm":["JetBrains Mono"],"code-md":["JetBrains Mono"],"headline-md":["Plus Jakarta Sans"],"headline-lg":["Plus Jakarta Sans"],"body-lg":["Inter"],"label-mono":["JetBrains Mono"],"code-lg":["JetBrains Mono"]},"fontSize":{"headline-sm":["16px",{"lineHeight":"24px","fontWeight":"600"}],"body-md":["14px",{"lineHeight":"22px","fontWeight":"400"}],"headline-xl":["30px",{"lineHeight":"38px","letterSpacing":"-0.02em","fontWeight":"600"}],"display-lg":["40px",{"lineHeight":"48px","letterSpacing":"-0.025em","fontWeight":"700"}],"body-sm":["12px",{"lineHeight":"18px","fontWeight":"400"}],"code-sm":["11px",{"lineHeight":"16px","fontWeight":"500"}],"code-md":["12px",{"lineHeight":"18px","fontWeight":"500"}],"headline-md":["20px",{"lineHeight":"28px","letterSpacing":"-0.01em","fontWeight":"600"}],"headline-lg":["24px",{"lineHeight":"32px","letterSpacing":"-0.015em","fontWeight":"600"}],"body-lg":["16px",{"lineHeight":"26px","fontWeight":"400"}],"label-mono":["10px",{"lineHeight":"14px","letterSpacing":"0.06em","fontWeight":"600"}],"code-lg":["14px",{"lineHeight":"20px","fontWeight":"500"}]}}}};</script></head><body class="bg-surface font-body-md text-body-md text-on-surface min-h-screen selection:bg-primary-container selection:text-on-primary-container"><header class="fixed top-0 w-full z-50 bg-surface-container-lowest/80 backdrop-blur-xl border-b border-outline-variant/30 shadow-[0_1px_8px_rgba(0,0,0,0.04)]"><div class="h-16 w-full px-margin-lg flex items-center justify-between gap-space-lg"><div class="flex items-center gap-space-lg shrink-0"><div class="flex items-center gap-space-sm"><img alt="Check Activity Brand Mark" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1UKrEbwnHLR3keaqO1hGDU3hbVbe5CFUGuPym27EIKp89JniUyUEyco3I_5n0t1CUb0ysSrHEPB8EvfOdMl_02m9OPIq8xu1pIrAD9u5d3VyauYXV3QNieO0zRLB4Vrg0ifakTHqjbJXrP3gJvDuc1IOYQA2ul_cgPOhOL_KSje73sI6OWYcA1ttZ4_Cti5U6uXWFirPjQrl4ESV6XRNizpV1prc6HHtUUAQKoQwp-Oke9NFZuhUAAyBXI"/><span class="font-headline-md text-headline-md tracking-tight text-on-surface">Check Activity</span></div><div class="hidden xl:flex items-center gap-space-xs px-space-sm py-0.5 rounded-lg bg-surface-container border border-outline-variant/40"><span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-tertiary opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-tertiary"></span></span><span class="font-label-mono text-label-mono text-tertiary uppercase tracking-wider">AI Engine: Online v4.2</span></div></div><div class="flex-1 max-w-xl mx-auto hidden lg:block"><div class="relative flex items-center w-full"><span class="material-symbols-outlined absolute left-space-md text-on-surface-variant text-[18px] pointer-events-none">search</span><input class="w-full bg-surface-container-low pl-10 pr-space-md py-1.5 rounded-lg border border-outline-variant/40 text-on-surface placeholder:text-outline font-body-sm text-body-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all" placeholder="Поиск по аудитам, делам, хешам и статьям КОАП..." type="text"/><span class="absolute right-space-sm px-1.5 py-0.5 rounded bg-surface-container-high border border-outline-variant/60 font-code-sm text-code-sm text-on-surface-variant pointer-events-none">⌘K</span></div></div><nav class="hidden md:flex items-center gap-space-xs" data-active-classes="bg-surface-container-high text-primary border-b-2 border-primary font-headline-sm"><a class="px-space-md py-2 text-on-surface-variant font-body-md text-body-md hover:text-on-surface hover:bg-surface-container/60 rounded-lg transition-colors whitespace-nowrap" data-path="glavnaya" href="#">Главная</a><a class="px-space-md py-2 text-on-surface-variant font-body-md text-body-md hover:text-on-surface hover:bg-surface-container/60 rounded-lg transition-colors whitespace-nowrap" data-path="skaner-kontenta" href="#">Сканер контента</a><a aria-current="page" class="px-space-md py-2 rounded-lg transition-colors whitespace-nowrap bg-surface-container-high text-primary border-b-2 border-primary font-headline-sm" data-path="ekspertnyj-otchet" href="#">Экспертный отчет</a><a class="px-space-md py-2 text-on-surface-variant font-body-md text-body-md hover:text-on-surface hover:bg-surface-container/60 rounded-lg transition-colors whitespace-nowrap" data-path="arhiv-i-monitoring" href="#">Архив и мониторинг</a></nav><div class="flex items-center gap-space-md shrink-0"><button class="relative p-2 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-surface-container transition-colors" type="button"><span class="material-symbols-outlined text-[20px]">notifications</span><span class="absolute top-1.5 right-1.5 flex h-4 min-w-[1rem] px-1 items-center justify-center rounded-full bg-error-container text-on-error font-code-sm text-code-sm leading-none">3</span></button><div class="h-6 w-px bg-outline-variant/40 hidden sm:block"></div><div class="flex items-center gap-space-sm pl-space-xs"><img alt="Profile" class="w-8 h-8 rounded-full object-cover ring-1 ring-primary/40" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAQ1bgz_j08-lAxg3UJWxvIx3UodMS9aA-D3Tn-D5hXulzrLRQYkFI_LIWru8rL_SHhoRc6OY4ngs-FLnuWhhhKGaEOf6FcQaQ99_Wx4uYsfkdkEpyXs_2n33tW0tEoCnRWSpiYBMdMZ3hQqnbXkCpQvAKHXb9N-k72ZeWHtXvhXk1UrvjOBCKIzos7t5-tRZhiZZzje--agqehBe20O23z-wyPlCRtRw6-WCwzqQNlo6NJsjx8M3-N"/><div class="hidden sm:flex flex-col text-left"><span class="font-body-sm text-body-sm text-on-surface leading-tight font-medium">Алексей Ковалев</span><span class="font-label-mono text-label-mono text-primary uppercase tracking-wider">Compliance Lead</span></div></div></div></div></header><main class="w-full pt-16 bg-surface min-h-[calc(100vh-4rem)]"><div class="flex flex-col w-full">
+<div class="w-full px-margin-lg py-space-xl flex flex-col gap-space-xl">
+<!-- Top Tactical Metadata Breadcrumb & Action Header -->
+<div class="flex flex-col xl:flex-row xl:items-center justify-between gap-space-lg">
+<div class="flex flex-col gap-space-xs">
+<div class="flex flex-wrap items-center gap-space-sm">
+<span class="font-label-mono text-label-mono px-2 py-0.5 rounded-lg bg-surface-container-high text-primary uppercase">
+            AUDIT REF: #CHK-2024-9108
+          </span>
+<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-tertiary-container/20 text-tertiary font-label-mono text-label-mono uppercase">
+<span class="w-1.5 h-1.5 rounded-full bg-tertiary"></span>
+            Юридически заверено ЭЦП
+          </span>
+<span class="font-code-sm text-code-sm text-on-surface-variant flex items-center gap-1">
+<span class="material-symbols-outlined text-[15px]">schedule</span>
+            Сегодня, 14:32:05 (МСК)
+          </span>
+</div>
+<div class="flex items-center gap-space-md mt-1">
+<h1 class="font-headline-xl text-headline-xl text-on-surface tracking-tight">
+            Экспертное заключение аудита <span class="text-primary font-code-lg text-code-lg">#CHK-2024-9108</span>
+</h1>
+</div>
+<p class="font-body-md text-body-md text-on-surface-variant flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px] text-primary">policy</span>
+          Объект экспертизы: <span class="text-on-surface font-medium">Публикация в медиа + рекламный аудиоролик (Мультимодальный пакет)</span>
+</p>
+</div>
+<!-- Action Cluster -->
+<div class="flex flex-wrap items-center gap-space-sm shrink-0">
+<button class="flex items-center gap-2 px-space-md py-2.5 rounded-lg bg-gradient-to-r from-primary-container to-secondary-container text-on-primary font-headline-sm text-headline-sm hover:opacity-95 shadow-[0_0_16px_rgba(6,182,212,0.35)] transition-all" type="button">
+<span class="material-symbols-outlined text-[18px]">picture_as_pdf</span>
+<span>Скачать в PDF (с ЭЦП)</span>
+</button>
+<button class="flex items-center gap-2 px-space-md py-2.5 rounded-lg bg-surface-container-high hover:bg-surface-variant text-on-surface font-body-md text-body-md shadow-sm transition-colors" type="button">
+<span class="material-symbols-outlined text-[18px] text-error">gavel</span>
+<span>Сформировать досудебную претензию</span>
+</button>
+<button class="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface shadow-sm transition-colors" type="button">
+<span class="material-symbols-outlined text-[18px]">share</span>
+<span class="font-body-sm text-body-sm">Поделиться</span>
+</button>
+<button class="p-2.5 rounded-lg bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-primary shadow-sm transition-colors" title="Перепроверить" type="button">
+<span class="material-symbols-outlined text-[18px]">autorenew</span>
+</button>
+</div>
+</div>
+<!-- 4 High-Impact Telemetry Metric Cards -->
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-space-md">
+<!-- Metric 1: Risk Index Dial -->
+<div class="relative overflow-hidden rounded-xl bg-surface-container-low p-space-lg flex items-center justify-between shadow-xl">
+<div class="absolute -right-4 -top-4 w-28 h-28 bg-error/10 rounded-full blur-2xl pointer-events-none"></div>
+<div class="flex flex-col gap-1 z-10">
+<span class="font-label-mono text-label-mono text-outline uppercase tracking-wider">Индекс риска</span>
+<div class="flex items-baseline gap-1 mt-1">
+<span class="font-display-lg text-display-lg text-error">78</span>
+<span class="font-code-md text-code-md text-outline">/100</span>
+</div>
+<span class="inline-flex items-center gap-1 font-headline-sm text-headline-sm text-error mt-0.5">
+<span class="w-2 h-2 rounded-full bg-error animate-pulse"></span>
+            Критический риск
+          </span>
+<span class="font-body-sm text-body-sm text-on-surface-variant mt-1">Требует срочного удаления</span>
+</div>
+<!-- Circular Radial Gauge Chart -->
+<div class="relative w-20 h-20 shrink-0 flex items-center justify-center">
+<svg class="w-full h-full -rotate-90 transform" viewbox="0 0 72 72">
+<circle class="stroke-surface-container-highest" cx="36" cy="36" fill="transparent" r="30" stroke-width="6"></circle>
+<circle class="stroke-error" cx="36" cy="36" fill="transparent" r="30" stroke-dasharray="188.4" stroke-dashoffset="41.4" stroke-linecap="round" stroke-width="6"></circle>
+</svg>
+<span class="material-symbols-outlined absolute text-error text-[24px]">warning</span>
+</div>
+</div>
+<!-- Metric 2: Violations Count -->
+<div class="relative overflow-hidden rounded-xl bg-surface-container-low p-space-lg flex flex-col justify-between shadow-xl">
+<div class="flex items-center justify-between">
+<span class="font-label-mono text-label-mono text-outline uppercase tracking-wider">Статус нарушений</span>
+<span class="px-2 py-0.5 rounded-lg bg-error-container text-on-error font-code-sm text-code-sm">5 Всего</span>
+</div>
+<div class="my-space-sm flex items-center gap-space-md">
+<div class="flex flex-col">
+<div class="font-headline-xl text-headline-xl text-error font-bold leading-none">3</div>
+<span class="font-body-sm text-body-sm text-on-surface-variant mt-1">Критических</span>
+</div>
+<div class="h-8 w-px bg-surface-container-highest"></div>
+<div class="flex flex-col">
+<div class="font-headline-xl text-headline-xl text-secondary font-bold leading-none">2</div>
+<span class="font-body-sm text-body-sm text-on-surface-variant mt-1">Предупреждения</span>
+</div>
+</div>
+<div class="w-full bg-surface-container-highest h-1.5 rounded-full overflow-hidden flex">
+<div class="bg-error h-full" style="width: 60%"></div>
+<div class="bg-secondary h-full" style="width: 40%"></div>
+</div>
+</div>
+<!-- Metric 3: Potential Fine Range -->
+<div class="relative overflow-hidden rounded-xl bg-surface-container-low p-space-lg flex flex-col justify-between shadow-xl">
+<div class="flex items-center justify-between">
+<span class="font-label-mono text-label-mono text-outline uppercase tracking-wider">Оценка штрафов</span>
+<span class="font-code-sm text-code-sm text-on-surface-variant">КоАП РФ</span>
+</div>
+<div class="my-space-xs">
+<div class="font-headline-lg text-headline-lg text-on-surface font-semibold tracking-tight">
+            200 000 — 500 000 ₽
+          </div>
+<p class="font-body-sm text-body-sm text-error mt-1 flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]">flip_camera_ios</span>
+            Санкция по ч. 1 ст. 14.3 КоАП РФ
+          </p>
+</div>
+<span class="font-label-mono text-label-mono text-on-surface-variant">Взыскание ФАС / Роскомнадзор</span>
+</div>
+<!-- Metric 4: AI Model Verification Confidence -->
+<div class="relative overflow-hidden rounded-xl bg-surface-container-low p-space-lg flex flex-col justify-between shadow-xl">
+<div class="flex items-center justify-between">
+<span class="font-label-mono text-label-mono text-outline uppercase tracking-wider">Нейро-верификация</span>
+<span class="font-label-mono text-label-mono text-tertiary">v4.2 PRO</span>
+</div>
+<div class="my-space-xs flex items-baseline gap-2">
+<div class="font-headline-xl text-headline-xl text-tertiary font-bold leading-none">98.6%</div>
+<span class="font-label-mono text-label-mono text-on-surface-variant">CONFIDENCE</span>
+</div>
+<div class="flex items-center gap-2">
+<div class="flex-1 bg-surface-container-highest h-1.5 rounded-full overflow-hidden">
+<div class="bg-tertiary h-full rounded-full" style="width: 98.6%"></div>
+</div>
+<span class="material-symbols-outlined text-tertiary text-[18px]">verified</span>
+</div>
+</div>
+</div>
+<!-- Multi-Modal Evidence & Violations Dual Split Pane -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-space-lg items-start">
+<!-- LEFT COLUMN: Multi-Modal Inspection Viewport (7 Cols) -->
+<div class="lg:col-span-7 flex flex-col gap-space-lg">
+<!-- Image Evidence Container with Visual Bounding Annotations -->
+<div class="rounded-xl bg-surface-container-low shadow-xl overflow-hidden flex flex-col">
+<!-- Top Telemetry Shelf -->
+<div class="px-space-md py-2.5 bg-surface-container-high flex flex-wrap items-center justify-between gap-2">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-primary text-[18px]">image_search</span>
+<span class="font-label-mono text-label-mono text-on-surface uppercase">ФОТО-ВЕЩДОК #EVD-01</span>
+<span class="font-code-sm text-code-sm text-outline">| 2400x1600 JPG</span>
+</div>
+<div class="flex items-center gap-space-xs">
+<span class="font-label-mono text-label-mono px-2 py-0.5 rounded bg-error-container text-on-error font-medium">2 ДЕТЕКЦИИ НА СЛОЕ</span>
+<button class="p-1 rounded hover:bg-surface-variant text-on-surface-variant" title="Масштаб 1:1" type="button">
+<span class="material-symbols-outlined text-[16px]">fullscreen</span>
+</button>
+</div>
+</div>
+<!-- Interactive Graphic Frame -->
+<div class="relative w-full aspect-[16/10] bg-surface-container-lowest overflow-hidden flex items-center justify-center">
+<img class="w-full h-full object-cover opacity-80" data-alt="Digital forensic interface screenshot showing an online social media promotional post with bright neon cyber aesthetics, modern graphic design banner advertising tech services, legal evidence scanning indicators, low key dark blue background with glowing ambient highlights." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDoufD5RGN5y7cIdR3YUZDhDZyCjrbZ5Xf9bmIUPeN1QKKqKE6FKuW3PX6iY1PmiansQs160HlER63oFsF4bBZzjKfw4-y7eKNkIHl4hIFtqHzxUMYJBOUg6KRQosOF03VeVx6AicRLIc8Ta0H3WMzX6TPAti0CNddqfRXnZ4hKq6N8FLCN_6wNAKD8FRsHztjtUnXmz2OdEvfMOL1JbSPNB7EmRWfrSrDrLSk8Uf4f7k9BlXYypuYq"/>
+<!-- Grid coordinate tactical overlay -->
+<div class="absolute inset-0 bg-gradient-to-t from-surface-container-lowest via-transparent to-transparent pointer-events-none"></div>
+<!-- Bounding Box Annotation 1: Missing ERID Token (Top Right) -->
+<div class="absolute top-6 right-8 w-60 h-28 rounded-lg bg-error/15 p-2 flex flex-col justify-between shadow-[0_0_20px_rgba(244,63,94,0.3)] transition-transform hover:scale-[1.02] cursor-pointer">
+<div class="flex items-center justify-between">
+<span class="px-1.5 py-0.5 rounded bg-error text-surface-container-lowest font-label-mono text-label-mono font-bold">
+                  НАРУШЕНИЕ 14.3 КоАП
+                </span>
+<span class="w-2 h-2 rounded-full bg-error animate-ping"></span>
+</div>
+<div class="bg-surface-container-lowest/90 backdrop-blur-md p-2 rounded">
+<div class="font-code-sm text-code-sm text-error font-semibold">ОТСУТСТВУЕТ ТОКЕН ERID</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant">Коммерческий оффер не маркирован в ЕРИР</div>
+</div>
+</div>
+<!-- Bounding Box Annotation 2: Unauthorized Contact Info / Phone (Bottom Left) -->
+<div class="absolute bottom-10 left-8 w-72 h-24 rounded-lg bg-secondary/15 p-2 flex flex-col justify-between shadow-[0_0_16px_rgba(5,102,217,0.25)] transition-transform hover:scale-[1.02] cursor-pointer">
+<div class="flex items-center justify-between">
+<span class="px-1.5 py-0.5 rounded bg-secondary-container text-on-secondary font-label-mono text-label-mono font-bold">
+                  РИСК 13.11 КоАП РФ
+                </span>
+<span class="font-code-sm text-code-sm text-on-surface">CONF: 94.2%</span>
+</div>
+<div class="bg-surface-container-lowest/90 backdrop-blur-md p-2 rounded">
+<div class="font-code-sm text-code-sm text-secondary font-semibold">ПДн БЕЗ СОГЛАСИЯ ВЛАДЕЛЬЦА</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant">Телефонный номер на визитке +7 (999) 420-**-**</div>
+</div>
+</div>
+<!-- Crosshair indicator HUD elements -->
+<div class="absolute top-4 left-4 font-label-mono text-label-mono text-outline flex flex-col gap-0.5 pointer-events-none">
+<span>LAT: 55.7558 N</span>
+<span>GEO: EVIDENCE_LOCAL_CACHE</span>
+<span>SHA-256: 7f4a...9b12</span>
+</div>
+</div>
+<!-- Image Sub-Shelf Excerpt Details -->
+<div class="px-space-md py-space-sm bg-surface-container flex items-center justify-between text-on-surface-variant font-code-sm text-code-sm">
+<span>Источник: Telegram Channel Feed</span>
+<span class="text-tertiary">Оригинальный метафайл извлечен без искажений</span>
+</div>
+</div>
+<!-- Audio Waveform Player with Timeline Violations Inspector -->
+<div class="rounded-xl bg-surface-container-low shadow-xl overflow-hidden flex flex-col">
+<div class="px-space-md py-2.5 bg-surface-container-high flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-primary text-[18px]">graphic_eq</span>
+<span class="font-label-mono text-label-mono text-on-surface uppercase">АУДИО-ВЕЩДОК #EVD-02</span>
+<span class="font-code-sm text-code-sm text-outline">| podcast_promo_v2.wav (01:42)</span>
+</div>
+<span class="font-label-mono text-label-mono px-2 py-0.5 rounded bg-error-container text-on-error">
+              2 ИНЦИДЕНТА
+            </span>
+</div>
+<div class="p-space-lg flex flex-col gap-space-md bg-surface-container-low">
+<!-- Play Controls & Scrubber Header -->
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-space-md">
+<button class="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-on-primary hover:scale-105 shadow-[0_0_12px_rgba(76,215,246,0.5)] transition-all" type="button">
+<span class="material-symbols-outlined text-[24px]">play_arrow</span>
+</button>
+<div class="flex flex-col">
+<span class="font-headline-sm text-headline-sm text-on-surface">00:18 / 01:42</span>
+<span class="font-label-mono text-label-mono text-error">ТЕКУЩИЙ СЕКТОР: СТ. 128.1 УК РФ</span>
+</div>
+</div>
+<div class="flex items-center gap-2">
+<span class="font-label-mono text-label-mono px-2 py-1 rounded bg-surface-container-highest text-on-surface">1.0x</span>
+<span class="font-label-mono text-label-mono px-2 py-1 rounded bg-surface-container-highest text-primary">SPECTROGRAM ON</span>
+</div>
+</div>
+<!-- Waveform Canvas Graphic Representation -->
+<div class="relative w-full h-24 bg-surface-container-lowest rounded-lg p-2 flex items-end gap-1 overflow-hidden select-none">
+<!-- Background Grid Lines -->
+<div class="absolute inset-0 flex flex-col justify-between opacity-10 pointer-events-none p-2">
+<div class="w-full h-px bg-outline"></div>
+<div class="w-full h-px bg-outline"></div>
+<div class="w-full h-px bg-outline"></div>
+</div>
+<!-- Flagged Area Marker 1: [00:14 - 00:24] Defamation -->
+<div class="absolute top-0 bottom-0 left-[14%] w-[10%] bg-error/20 flex flex-col justify-between p-1 z-10">
+<span class="font-label-mono text-[9px] text-error font-bold tracking-tighter truncate">00:14-00:24</span>
+<span class="font-label-mono text-[9px] text-on-error bg-error px-1 py-0.5 rounded truncate">КЛЕВЕТА</span>
+</div>
+<!-- Flagged Area Marker 2: [01:03 - 01:10] Profanity -->
+<div class="absolute top-0 bottom-0 left-[62%] w-[8%] bg-secondary-container/20 flex flex-col justify-between p-1 z-10">
+<span class="font-label-mono text-[9px] text-secondary font-bold tracking-tighter truncate">01:05</span>
+<span class="font-label-mono text-[9px] text-on-secondary bg-secondary-container px-1 py-0.5 rounded truncate">НЕЦЕНЗУРНО</span>
+</div>
+<!-- Needle / Current Playhead -->
+<div class="absolute top-0 bottom-0 left-[18%] w-0.5 bg-primary shadow-[0_0_8px_#4cd7f6] z-20">
+<div class="w-2 h-2 -ml-[3px] bg-primary rounded-full"></div>
+</div>
+<!-- Interactive Waveform SVG Simulation -->
+<svg class="w-full h-full" preserveaspectratio="none" viewbox="0 0 400 60">
+<path class="stroke-primary" d="M 0,30 Q 10,10 20,30 T 40,30 T 60,15 T 70,52 T 80,8 T 90,55 T 100,20 T 110,30 T 130,28 T 160,32 T 190,30 T 210,12 T 230,48 T 250,5 T 265,58 T 280,24 T 300,30 T 330,30 T 360,25 T 380,35 T 400,30" fill="none" stroke-linecap="round" stroke-width="2.5"></path>
+<path class="stroke-outline/40" d="M 0,30 Q 10,20 20,30 T 40,30 T 60,22 T 70,40 T 80,18 T 90,42 T 100,25 T 110,30 T 130,29 T 160,31 T 190,30 T 210,20 T 230,39 T 250,15 T 265,45 T 280,28 T 300,30 T 330,30 T 360,27 T 380,33 T 400,30" fill="none" stroke-width="1.5"></path>
+</svg>
+</div>
+<!-- Synchronized AI Audio Transcript Box -->
+<div class="rounded-lg bg-surface-container-lowest p-space-md flex flex-col gap-space-xs">
+<div class="flex items-center justify-between">
+<span class="font-label-mono text-label-mono text-outline uppercase">Синхронная текстовая расшифровка (Whisper-v3)</span>
+<span class="font-code-sm text-code-sm text-tertiary">100% точность таймкода</span>
+</div>
+<p class="font-body-md text-body-md text-on-surface leading-relaxed">
+<span class="text-on-surface-variant font-code-sm">[00:10] ...наши конкуренты из компании «Вектор»</span>
+<mark class="bg-error/30 text-error px-1.5 py-0.5 rounded font-medium">
+                  заведомо фальсифицируют государственные закупки и выводят средства через офшоры
+                </mark>
+<span class="text-on-surface-variant font-code-sm">[00:22]</span>,
+                <span class="text-on-surface-variant">поэтому переходите по ссылке и выбирайте нас...</span>
+</p>
+</div>
+</div>
+</div>
+</div>
+<!-- RIGHT COLUMN: Detailed Legal Violations Ledger (5 Cols) -->
+<div class="lg:col-span-5 flex flex-col gap-space-lg">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-error text-[22px]">balance</span>
+<h2 class="font-headline-lg text-headline-lg text-on-surface">Реестр правонарушений</h2>
+</div>
+<span class="font-label-mono text-label-mono px-2 py-0.5 rounded-lg bg-surface-container-high text-on-surface-variant">
+            ФЕДЕРАЛЬНЫЙ КОНТРОЛЬ
+          </span>
+</div>
+<!-- Violation Card 1: Critical Ad Marking -->
+<div class="rounded-xl bg-surface-container-low p-space-lg flex flex-col gap-space-md shadow-xl relative overflow-hidden">
+<div class="absolute top-0 left-0 bottom-0 w-1.5 bg-error"></div>
+<div class="flex items-start justify-between gap-space-sm pl-2">
+<div class="flex flex-col">
+<span class="font-label-mono text-label-mono text-error uppercase font-bold tracking-wider">
+                КРИТИЧЕСКОЕ НАРУШЕНИЕ #01
+              </span>
+<h3 class="font-headline-sm text-headline-sm text-on-surface mt-0.5">
+                Отсутствие маркировки рекламы (erid)
+              </h3>
+</div>
+<span class="px-2 py-0.5 rounded bg-error-container text-on-error font-label-mono text-label-mono font-semibold shrink-0">
+              СТ. 14.3 КоАП РФ
+            </span>
+</div>
+<div class="pl-2 flex flex-col gap-space-sm">
+<div class="bg-surface-container-lowest p-space-sm rounded-lg flex flex-col gap-1">
+<span class="font-label-mono text-label-mono text-outline uppercase">Фактическое основание:</span>
+<p class="font-body-sm text-body-sm text-on-surface-variant">
+                В тексте публикации и на графическом макете зафиксирован прямой коммерческий призыв с ценовым предложением без обязательного токена в ЕРИР и без указания наименования рекламодателя (ИНН).
+              </p>
+</div>
+<div class="grid grid-cols-2 gap-space-sm">
+<div class="p-2 rounded bg-surface-container flex flex-col">
+<span class="font-label-mono text-label-mono text-outline">САНКЦИЯ ДЛЯ ЮРЛИЦ</span>
+<span class="font-code-md text-code-md text-error font-semibold mt-0.5">До 500 000 ₽</span>
+</div>
+<div class="p-2 rounded bg-surface-container flex flex-col">
+<span class="font-label-mono text-label-mono text-outline">ПОДСУДНОСТЬ</span>
+<span class="font-code-md text-code-md text-on-surface font-semibold mt-0.5">ФАС России</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Violation Card 2: Criminal Defamation -->
+<div class="rounded-xl bg-surface-container-low p-space-lg flex flex-col gap-space-md shadow-xl relative overflow-hidden">
+<div class="absolute top-0 left-0 bottom-0 w-1.5 bg-error"></div>
+<div class="flex items-start justify-between gap-space-sm pl-2">
+<div class="flex flex-col">
+<span class="font-label-mono text-label-mono text-error uppercase font-bold tracking-wider">
+                КРИТИЧЕСКОЕ НАРУШЕНИЕ #02
+              </span>
+<h3 class="font-headline-sm text-headline-sm text-on-surface mt-0.5">
+                Высказывание с признаками клеветы
+              </h3>
+</div>
+<span class="px-2 py-0.5 rounded bg-error-container text-on-error font-label-mono text-label-mono font-semibold shrink-0">
+              СТ. 128.1 УК РФ
+            </span>
+</div>
+<div class="pl-2 flex flex-col gap-space-sm">
+<div class="bg-surface-container-lowest p-space-sm rounded-lg flex flex-col gap-1">
+<span class="font-label-mono text-label-mono text-outline uppercase">Лингвистический маркер (00:14 - 00:22):</span>
+<p class="font-body-sm text-body-sm text-error italic">
+                «...фальсифицируют государственные закупки и выводят средства через офшоры...»
+              </p>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">
+                Утверждение о фактах совершения уголовно наказуемых деяний без вступившего в силу приговора суда. Риск возбуждения дела частно-публичного обвинения.
+              </p>
+</div>
+<div class="grid grid-cols-2 gap-space-sm">
+<div class="p-2 rounded bg-surface-container flex flex-col">
+<span class="font-label-mono text-label-mono text-outline">ОТВЕТСТВЕННОСТЬ</span>
+<span class="font-code-md text-code-md text-error font-semibold mt-0.5">Уголовная (ч. 2)</span>
+</div>
+<div class="p-2 rounded bg-surface-container flex flex-col">
+<span class="font-label-mono text-label-mono text-outline">РИСК УЩЕРБА</span>
+<span class="font-code-md text-code-md text-on-surface font-semibold mt-0.5">Деловая репутация</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Violation Card 3: Warning Personal Data -->
+<div class="rounded-xl bg-surface-container-low p-space-lg flex flex-col gap-space-md shadow-xl relative overflow-hidden">
+<div class="absolute top-0 left-0 bottom-0 w-1.5 bg-secondary"></div>
+<div class="flex items-start justify-between gap-space-sm pl-2">
+<div class="flex flex-col">
+<span class="font-label-mono text-label-mono text-secondary uppercase font-bold tracking-wider">
+                ПРЕДУПРЕЖДЕНИЕ #03
+              </span>
+<h3 class="font-headline-sm text-headline-sm text-on-surface mt-0.5">
+                Публикация персональных данных
+              </h3>
+</div>
+<span class="px-2 py-0.5 rounded bg-surface-container-high text-secondary font-label-mono text-label-mono font-semibold shrink-0">
+              СТ. 13.11 КоАП РФ
+            </span>
+</div>
+<div class="pl-2 flex flex-col gap-space-sm">
+<div class="bg-surface-container-lowest p-space-sm rounded-lg flex flex-col gap-1">
+<span class="font-label-mono text-label-mono text-outline uppercase">Фактическое основание:</span>
+<p class="font-body-sm text-body-sm text-on-surface-variant">
+                На визуальном элементе размещен мобильный телефон физического лица без согласия на обработку и распространение персональных данных в сети Интернет.
+              </p>
+</div>
+<div class="flex items-center justify-between bg-surface-container p-2 rounded">
+<span class="font-label-mono text-label-mono text-outline">ПОТЕНЦИАЛЬНЫЙ ШТРАФ:</span>
+<span class="font-code-md text-code-md text-secondary font-semibold">от 60 000 до 100 000 ₽</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Legal Advisory & Tactical Remediation Action Plan -->
+<div class="w-full rounded-xl bg-surface-container-low p-space-lg flex flex-col gap-space-md shadow-xl">
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-space-sm">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-primary text-[22px]">assignment_turned_in</span>
+<h2 class="font-headline-md text-headline-md text-on-surface">
+            Юридический протокол устранения нарушений (План действий)
+          </h2>
+</div>
+<span class="font-code-sm text-code-sm text-tertiary flex items-center gap-1">
+<span class="w-2 h-2 rounded-full bg-tertiary"></span>
+          Готово к передаче в юридический отдел
+        </span>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-space-md">
+<!-- Step 1 -->
+<div class="rounded-lg bg-surface-container p-space-md flex flex-col justify-between gap-space-md">
+<div class="flex flex-col gap-space-xs">
+<div class="flex items-center justify-between">
+<span class="font-display-lg text-display-lg text-error/30 font-bold leading-none">01</span>
+<span class="px-2 py-0.5 rounded bg-error-container text-on-error font-label-mono text-label-mono">СРОЧНО (1 ЧАС)</span>
+</div>
+<h4 class="font-headline-sm text-headline-sm text-on-surface mt-1">Остановить публикацию</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">
+              Немедленно скрыть либо перевести в архив рекламную публикацию и аудиоподкаст для прекращения длящегося правонарушения.
+            </p>
+</div>
+<button class="w-full py-1.5 rounded-lg bg-surface-container-high hover:bg-surface-variant text-on-surface font-headline-sm text-headline-sm flex items-center justify-center gap-2 transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">pause_circle</span>
+            Инструкция по отзыву
+          </button>
+</div>
+<!-- Step 2 -->
+<div class="rounded-lg bg-surface-container p-space-md flex flex-col justify-between gap-space-md">
+<div class="flex flex-col gap-space-xs">
+<div class="flex items-center justify-between">
+<span class="font-display-lg text-display-lg text-primary/30 font-bold leading-none">02</span>
+<span class="px-2 py-0.5 rounded bg-surface-container-high text-primary font-label-mono text-label-mono">МАРКИРОВКА</span>
+</div>
+<h4 class="font-headline-sm text-headline-sm text-on-surface mt-1">Зарегистрировать токен в ОРД</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">
+              Загрузить креативы в кабинет ОРД (VK / МедиаСкаут), получить идентификатор <code class="text-primary font-code-sm">erid:2Vtzq...</code> и нанести его в читаемом виде.
+            </p>
+</div>
+<button class="w-full py-1.5 rounded-lg bg-surface-container-high hover:bg-surface-variant text-primary font-headline-sm text-headline-sm flex items-center justify-center gap-2 transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">qr_code</span>
+            Сгенерировать erid-тег
+          </button>
+</div>
+<!-- Step 3 -->
+<div class="rounded-lg bg-surface-container p-space-md flex flex-col justify-between gap-space-md">
+<div class="flex flex-col gap-space-xs">
+<div class="flex items-center justify-between">
+<span class="font-display-lg text-display-lg text-tertiary/30 font-bold leading-none">03</span>
+<span class="px-2 py-0.5 rounded bg-surface-container-high text-tertiary font-label-mono text-label-mono">МОНТАЖ</span>
+</div>
+<h4 class="font-headline-sm text-headline-sm text-on-surface mt-1">Вырезать таймкод 00:14–00:24</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">
+              Удалить из мастер-файла высказывание относительно конкурентов «Вектор». Замазать контактный телефон на визитке скриншота.
+            </p>
+</div>
+<button class="w-full py-1.5 rounded-lg bg-surface-container-high hover:bg-surface-variant text-on-surface font-headline-sm text-headline-sm flex items-center justify-center gap-2 transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">content_cut</span>
+            Скачать скорректированный wav
+          </button>
+</div>
+</div>
+</div>
+<!-- Immutable Digital Signature & Proof of Cryptographic Audit Seal -->
+<div class="rounded-xl bg-surface-container-lowest p-space-lg flex flex-col md:flex-row items-center justify-between gap-space-md shadow-lg">
+<div class="flex items-center gap-space-md">
+<div class="w-12 h-12 rounded-xl bg-surface-container-high flex items-center justify-center text-primary shrink-0 shadow-[0_0_16px_rgba(76,215,246,0.2)]">
+<span class="material-symbols-outlined text-[28px]">verified_user</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<span class="font-headline-sm text-headline-sm text-on-surface">Цифровой сертификат экспертизы Check Activity AI</span>
+<span class="px-2 py-0.5 rounded bg-tertiary-container/30 text-tertiary font-label-mono text-label-mono font-bold">ГОСТ Р 34.10-2012</span>
+</div>
+<p class="font-code-sm text-code-sm text-outline mt-0.5 truncate max-w-2xl">
+            SHA-256 HASH: 7f4a9b208a0d9e4c1724bf288e8aa0194e1d440c98f98c8e14cb7b9415f3ec51
+          </p>
+</div>
+</div>
+<div class="flex items-center gap-space-md shrink-0">
+<div class="flex flex-col text-right hidden sm:flex">
+<span class="font-label-mono text-label-mono text-on-surface-variant">TIMESTAMP TSA PROTOCOL</span>
+<span class="font-code-sm text-code-sm text-primary">2025-05-18T14:32:05.109Z</span>
+</div>
+<button class="px-space-md py-2 rounded-lg bg-surface-container-high hover:bg-surface-variant text-on-surface font-headline-sm text-headline-sm flex items-center gap-2 transition-colors" type="button">
+<span class="material-symbols-outlined text-[18px]">verified</span>
+          Проверить в реестре
+        </button>
+</div>
+</div>
+</div>
+</div></main><footer class="w-full bg-surface-container-lowest border-t border-outline-variant/30 py-space-lg"><div class="w-full px-margin-lg flex flex-col md:flex-row items-center justify-between gap-space-md"><div class="flex items-center gap-space-md"><span class="font-code-sm text-code-sm text-on-surface-variant">© 2025 Check Activity AI Systems. Все права защищены.</span><span class="font-label-mono text-label-mono px-2 py-0.5 rounded bg-surface-container text-outline border border-outline-variant/30">ISO/IEC 27001 COMPLIANT</span></div><div class="flex items-center gap-space-lg"><span class="font-code-sm text-code-sm text-on-surface-variant">Latency: 24ms</span><span class="font-code-sm text-code-sm text-tertiary">Evidentiary SHA-256 Validated</span></div></div></footer></body></html>
