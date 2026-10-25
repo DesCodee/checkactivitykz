@@ -3,72 +3,34 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { AuditCase, ModalityType } from '../types';
 import { KAZAKHSTAN_LEGAL_FILTERS, PRIMARY_AUDIT_CASE } from '../data/mockData';
-import { analyzeContentWithGemini } from '../services/geminiService';
+import { analyzeContentWithGemini, ContentPayload } from '../services/geminiService';
 
 interface ScannerViewProps {
   onRunAudit: (auditCase: AuditCase) => void;
   presetData?: { modality: ModalityType; urlOrText: string };
 }
 
-interface StagedItem {
-  id: string;
-  name: string;
-  type: ModalityType;
-  typeLabel: string;
-  size: string;
-  sha256: string;
-  status: string;
-  resolutionOrDuration: string;
-  isDemo?: boolean;
-}
-
 export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData }) => {
-  const [activeTab, setActiveTab] = useState<ModalityType>(presetData?.modality || 'url');
+  const [activeTab, setActiveTab] = useState<'file' | 'url' | 'text'>('file');
+
+  // Input states
   const [urlInput, setUrlInput] = useState(presetData?.urlOrText || '');
-  const [strictness, setStrictness] = useState<'basic' | 'high' | 'expert'>('high');
+  const [textInput, setTextInput] = useState('');
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+
+  // Regulatory checklist
   const [filters, setFilters] = useState(KAZAKHSTAN_LEGAL_FILTERS);
+
+  // Loading state
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
 
-  // Initial Staged Queue items (reflecting image 3 & 4 with KZ specifics)
-  const [stagedQueue, setStagedQueue] = useState<StagedItem[]>([
-    {
-      id: 'item-1',
-      name: 'screenshot_tg_almaty_post_ad.png',
-      type: 'screenshot',
-      typeLabel: 'Скриншот поста',
-      size: '1.4 MB',
-      sha256: '8a7f920b...d019',
-      status: 'OCR VALIDATED',
-      resolutionOrDuration: '2560x1440',
-      isDemo: true,
-    },
-    {
-      id: 'item-2',
-      name: 'audio_interview_astana_part2.mp3',
-      type: 'audio',
-      typeLabel: 'Подкаст / Аудио',
-      size: '8.9 MB (04:12)',
-      sha256: 'e44b58c1...11c2',
-      status: 'STT PIPELINE READY',
-      resolutionOrDuration: '04:12',
-      isDemo: true,
-    },
-    {
-      id: 'item-3',
-      name: 'https://t.me/qazaq_news_feed/8821',
-      type: 'url',
-      typeLabel: 'Публичная ссылка',
-      size: 'Live Feed Fetch',
-      sha256: 'f2109ba4...e55c',
-      status: 'SCRAPER ATTACHED',
-      resolutionOrDuration: 'METADATA FETCHED',
-      isDemo: true,
-    },
-  ]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const toggleFilter = (id: string) => {
     setFilters((prev) =>
@@ -76,551 +38,425 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     );
   };
 
-  const handleAddUrl = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!urlInput.trim()) return;
-
-    const newItem: StagedItem = {
-      id: 'item-' + Date.now(),
-      name: urlInput.trim(),
-      type: activeTab,
-      typeLabel:
-        activeTab === 'url'
-          ? 'Ссылка'
-          : activeTab === 'screenshot'
-          ? 'Скриншот'
-          : activeTab === 'photo'
-          ? 'Фото'
-          : 'Аудио',
-      size: '1.2 MB',
-      sha256: Math.random().toString(16).substring(2, 10) + '...sha256',
-      status: 'INGESTED',
-      resolutionOrDuration: activeTab === 'audio' ? '02:30' : 'HD',
-    };
-
-    setStagedQueue([newItem, ...stagedQueue]);
-    setUrlInput('');
-  };
-
-  const handleRemoveItem = (id: string) => {
-    setStagedQueue((prev) => prev.filter((item) => item.id !== id));
-  };
-
-  const handleClearQueue = () => {
-    setStagedQueue([]);
-  };
-
-  const loadKazakhstanPreset = (presetType: 'casino' | 'vape' | 'influencer') => {
-    if (presetType === 'influencer') {
-      setUrlInput('https://t.me/almaty_stars_media/post_99120');
-      setActiveTab('url');
-    } else if (presetType === 'casino') {
-      setUrlInput('https://t.me/capper_kz_bonus/win_884');
-      setActiveTab('url');
-    } else if (presetType === 'vape') {
-      setUrlInput('billboard_almaty_dostyk_vape_promo.jpg');
-      setActiveTab('photo');
+  const handleFileSelect = (file: File) => {
+    setUploadedFile(file);
+    if (file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setFilePreviewUrl(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setFilePreviewUrl(null);
     }
   };
 
-  const handleExecuteAudit = async () => {
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setActiveTab('file');
+      handleFileSelect(e.dataTransfer.files[0]);
+    }
+  };
+
+  const handleClearFile = () => {
+    setUploadedFile(null);
+    setFilePreviewUrl(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // Quick KZ Presets
+  const applyPreset = (type: 'ad_missing' | 'casino' | 'phone_leak' | 'clean_ad') => {
+    if (type === 'ad_missing') {
+      setActiveTab('text');
+      setTextInput(
+        '🔥 Только сегодня скидка 40% на все премиум курсы по инвестициям и криптовалюте в Астане! Переходи по ссылке в описании профиля, пиши промокод KAZAKHSTAN и забирай доступ прямо сейчас.'
+      );
+    } else if (type === 'casino') {
+      setActiveTab('text');
+      setTextInput(
+        'Казино 1win KZ дарит 500% бонус на первый депозит в тенге! Крути слоты, забирай фриспины по промокоду ALMATY_BONUS. Ссылка на зеркало в шапке профиля.'
+      );
+    } else if (type === 'phone_leak') {
+      setActiveTab('text');
+      setTextInput(
+        'Срочно продам парковочное место в ЖК «Триумф Астана». Звоните владельцу напрямую: +7 701 555-12-34 (Канат), документы на руках.'
+      );
+    } else if (type === 'clean_ad') {
+      setActiveTab('text');
+      setTextInput(
+        'Жарнама / Реклама.\nОфициальный представитель бытовой техники в Казахстане (ТОО «ТехноАстана», БИН 190440012345). Скидки до 20% на смартфоны с 1 по 30 ноября на сайте tech-almaty.kz. Барлық тауарлар сертификатталған.'
+      );
+    }
+  };
+
+  const handleExecute = async () => {
+    let payload: ContentPayload;
+
+    if (activeTab === 'file') {
+      if (!uploadedFile) {
+        alert('Пожалуйста, выберите или перетащите файл для проверки.');
+        return;
+      }
+      const isImage = uploadedFile.type.startsWith('image/');
+      payload = {
+        modality: isImage ? 'screenshot' : 'audio',
+        fileName: uploadedFile.name,
+        fileSize: `${(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB`,
+        imageDataUrl: filePreviewUrl || undefined,
+        text: uploadedFile.name,
+      };
+    } else if (activeTab === 'url') {
+      if (!urlInput.trim()) {
+        alert('Пожалуйста, укажите ссылку для проверки.');
+        return;
+      }
+      payload = {
+        modality: 'url',
+        url: urlInput.trim(),
+        text: urlInput.trim(),
+      };
+    } else {
+      if (!textInput.trim()) {
+        alert('Пожалуйста, введите текст для проверки.');
+        return;
+      }
+      payload = {
+        modality: 'url',
+        text: textInput.trim(),
+      };
+    }
+
     setIsProcessing(true);
-    setProcessingStep('Подключение к шлюзу МКИ РК и реестрам АФМ...');
+    setProcessingStep('Анализ контента и распознавание текста...');
 
     setTimeout(() => {
-      setProcessingStep('Мультимодальный инференс (PaddleOCR + Whisper Kazakh + Vision)...');
-    }, 700);
+      setProcessingStep('Сверка с Законом РК об онлайн-рекламе (№ 230-VII) и КоАП РК...');
+    }, 600);
 
     setTimeout(() => {
-      setProcessingStep('Сопоставление с правилами рекламы и формирование отчета...');
-    }, 1500);
+      setProcessingStep('Формирование экспертного заключения...');
+    }, 1200);
 
     setTimeout(async () => {
-      // If user provided a custom URL or text as top item, run through Gemini
-      const topItem = stagedQueue[0];
-      if (topItem && !topItem.isDemo) {
-        try {
-          const audited = await analyzeContentWithGemini(
-            topItem.name,
-            topItem.type,
-            `Аудит объекта: ${topItem.name}`
-          );
-          setIsProcessing(false);
-          onRunAudit(audited);
-          return;
-        } catch {
-          // fallback
-        }
+      try {
+        const audited = await analyzeContentWithGemini(payload);
+        setIsProcessing(false);
+        onRunAudit(audited);
+      } catch (err) {
+        console.warn('Analysis fallback:', err);
+        setIsProcessing(false);
+        onRunAudit(PRIMARY_AUDIT_CASE);
       }
-
-      setIsProcessing(false);
-      onRunAudit(PRIMARY_AUDIT_CASE);
-    }, 2200);
+    }, 1600);
   };
 
   return (
-    <div className="w-full px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-6">
-      {/* Top Header & Breadcrumb */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-2">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2 text-xs">
-            <span className="font-['JetBrains_Mono'] text-[#bcc9cd]">Check Activity KZ</span>
-            <span className="text-[#3d494c]">/</span>
-            <span className="font-['JetBrains_Mono'] text-[#4cd7f6]">Новый аудит</span>
-            <span className="px-2 py-0.5 rounded bg-[#222a3d] font-['JetBrains_Mono'] text-[10px] text-[#adc6ff] uppercase tracking-wider">
-              SESSION #CHK-KZ-8942
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <h1 className="font-['Plus_Jakarta_Sans'] text-2xl sm:text-3xl font-bold text-[#dae2fd] tracking-tight">
-              Мультимодальный сканер контента
-            </h1>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#1bbd85]/20 text-[#4edea3] font-['JetBrains_Mono'] text-[11px] font-semibold">
-              <span className="w-2 h-2 rounded-full bg-[#4edea3] animate-pulse"></span>
-              INGESTION READY
-            </span>
-          </div>
+    <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-8 flex flex-col gap-6 font-['Inter']">
+      {/* Title & Introduction */}
+      <div className="border-b border-slate-200 pb-5">
+        <div className="flex flex-wrap items-center gap-2 mb-1.5">
+          <span className="font-['JetBrains_Mono'] text-xs font-semibold px-2 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200">
+            ЮРИСДИКЦИЯ: РЕСПУБЛИКА КАЗАХСТАН
+          </span>
+          <span className="font-['JetBrains_Mono'] text-xs text-slate-500">
+            Закон об онлайн-платформах и рекламе № 230-VII • КоАП РК
+          </span>
         </div>
-
-        {/* Quick presets buttons */}
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 bg-[#131b2e] p-1 rounded-lg border border-[#3d494c]/40">
-            <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397] px-2 hidden sm:inline">
-              ДЕМО-ПРЕСЕТЫ KZ:
-            </span>
-            <button
-              onClick={() => loadKazakhstanPreset('influencer')}
-              className="px-2.5 py-1 text-xs rounded bg-[#222a3d] hover:bg-[#2d3449] text-[#dae2fd] font-['Plus_Jakarta_Sans'] font-medium"
-            >
-              Инфлюенсер
-            </button>
-            <button
-              onClick={() => loadKazakhstanPreset('casino')}
-              className="px-2.5 py-1 text-xs rounded bg-[#222a3d] hover:bg-[#2d3449] text-[#ff6b6b] font-['Plus_Jakarta_Sans'] font-medium"
-            >
-              Казино
-            </button>
-            <button
-              onClick={() => loadKazakhstanPreset('vape')}
-              className="px-2.5 py-1 text-xs rounded bg-[#222a3d] hover:bg-[#2d3449] text-[#4cd7f6] font-['Plus_Jakarta_Sans'] font-medium"
-            >
-              Вейп-баннер
-            </button>
-          </div>
-        </div>
+        <h1 className="font-['Plus_Jakarta_Sans'] text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">
+          Аудит контента на правонарушения в интернете
+        </h1>
+        <p className="text-sm text-slate-600 mt-1 max-w-3xl leading-relaxed">
+          Инструмент проверки скриншотов, рекламных креативов, ссылок и текстов на соблюдение маркировки «Жарнама», запретов на рекламу казино, утечек персональных данных и требований к государственному языку.
+        </p>
       </div>
 
-      {/* Main Split Grid */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-        {/* Left Column: Input, Queue, Legal Checklist (8 cols) */}
-        <div className="xl:col-span-8 flex flex-col gap-6">
-          {/* Modality Tabs */}
-          <div className="bg-[#131b2e] rounded-xl p-1.5 flex flex-wrap sm:flex-nowrap gap-1 border border-[#3d494c]/40 shadow-sm">
-            {[
-              { id: 'url', label: 'Пакетный ввод ссылок', icon: 'link' },
-              { id: 'screenshot', label: 'Скриншоты и изображения', icon: 'image' },
-              { id: 'audio', label: 'Аудио и подкасты', icon: 'mic' },
-              { id: 'archive', label: 'Архив / API Stream', icon: 'dataset' },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as ModalityType)}
-                className={`flex-1 py-2.5 px-3 rounded-lg font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-all ${
-                  activeTab === tab.id
-                    ? 'bg-[#222a3d] text-[#4cd7f6] border border-[#4cd7f6]/40 shadow-sm'
-                    : 'text-[#bcc9cd] hover:text-[#dae2fd] hover:bg-[#171f33]'
-                }`}
-              >
-                <span className="material-symbols-outlined text-[18px]">{tab.icon}</span>
-                <span>{tab.label}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Ingestion Dropzone & Real-time Capture */}
-          <div className="relative bg-[#131b2e] rounded-xl border border-[#3d494c]/60 p-6 sm:p-8 flex flex-col items-center justify-center text-center overflow-hidden shadow-xl group">
-            <div className="absolute -top-24 -right-24 w-72 h-72 rounded-full bg-[#06b6d4]/10 blur-3xl pointer-events-none"></div>
-            <div className="absolute -bottom-24 -left-24 w-72 h-72 rounded-full bg-[#0566d9]/15 blur-3xl pointer-events-none"></div>
-
-            <div className="w-14 h-14 rounded-full bg-[#222a3d] flex items-center justify-center mb-3 group-hover:scale-105 transition-transform shadow-lg border border-[#4cd7f6]/30">
-              <span className="material-symbols-outlined text-[#4cd7f6] text-[30px]">upload_file</span>
-            </div>
-
-            <h2 className="font-['Plus_Jakarta_Sans'] text-lg sm:text-xl font-bold text-[#dae2fd] mb-1">
-              Перетащите файлы сюда или вставьте ссылку из буфера
-            </h2>
-            <p className="text-xs sm:text-sm text-[#bcc9cd] max-w-lg mb-5 font-['Inter']">
-              Поддерживаются скриншоты постов, аудиозаписи до 250 МБ и ссылки: каналы Telegram KZ, Instagram, TikTok,
-              YouTube, новостные порталы (Tengrinews, Zakon.kz, Nur.kz) и маркетплейсы Kaspi.
-            </p>
-
-            {/* Input Bar with Inline Action */}
-            <form
-              onSubmit={handleAddUrl}
-              className="w-full max-w-2xl bg-[#060e20] rounded-xl p-1.5 flex items-center gap-2 border border-[#3d494c]/60 shadow-inner"
+      {/* Main Working Card */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-5 sm:p-6 flex flex-col gap-6">
+        {/* Modality Tabs */}
+        <div>
+          <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2 font-['JetBrains_Mono']">
+            1. Выберите тип проверяемого контента:
+          </label>
+          <div className="flex flex-wrap sm:flex-nowrap gap-2 p-1 bg-slate-100 rounded-lg border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setActiveTab('file')}
+              className={`flex-1 py-2 px-3 rounded-md text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-all ${
+                activeTab === 'file'
+                  ? 'bg-white text-slate-900 shadow-xs border border-slate-200'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
             >
-              <div className="pl-3 flex items-center text-[#bcc9cd]">
-                <span className="material-symbols-outlined text-[20px]">link</span>
-              </div>
-              <input
-                value={urlInput}
-                onChange={(e) => setUrlInput(e.target.value)}
-                className="flex-1 bg-transparent px-2 py-2 text-[#dae2fd] text-xs sm:text-sm font-['JetBrains_Mono'] placeholder:text-[#869397] focus:outline-none"
-                placeholder="https://t.me/channel/post, instagram.com/..., или текст объявления..."
-              />
-              <button
-                type="submit"
-                className="px-4 py-2 rounded-lg bg-[#222a3d] hover:bg-[#2d3449] text-[#4cd7f6] font-['Plus_Jakarta_Sans'] text-xs font-semibold flex items-center gap-1.5 border border-[#4cd7f6]/40 transition-colors whitespace-nowrap"
-              >
-                <span className="material-symbols-outlined text-[16px]">add_circle</span>
-                <span>Добавить в очередь</span>
-              </button>
-            </form>
-
-            {/* Format Badges */}
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[10px] font-['JetBrains_Mono']">
-              <span className="px-2 py-0.5 rounded bg-[#171f33] text-[#bcc9cd] border border-[#3d494c]/30">
-                JPG / PNG / WEBP
-              </span>
-              <span className="px-2 py-0.5 rounded bg-[#171f33] text-[#bcc9cd] border border-[#3d494c]/30">
-                MP3 / WAV / M4A
-              </span>
-              <span className="px-2 py-0.5 rounded bg-[#171f33] text-[#bcc9cd] border border-[#3d494c]/30">
-                TELEGRAM KZ
-              </span>
-              <span className="px-2 py-0.5 rounded bg-[#171f33] text-[#bcc9cd] border border-[#3d494c]/30">
-                INSTAGRAM REELS
-              </span>
-              <span className="px-2 py-0.5 rounded bg-[#171f33] text-[#bcc9cd] border border-[#3d494c]/30">
-                KASPI MERCHANT
-              </span>
-              <span className="text-[#869397] ml-2">SHORTCUT: CTRL + V</span>
-            </div>
-          </div>
-
-          {/* Staging Queue */}
-          <div className="bg-[#131b2e] rounded-xl border border-[#3d494c]/40 p-5 flex flex-col gap-4 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-[#adc6ff] text-[20px]">checklist</span>
-                <h3 className="font-['Plus_Jakarta_Sans'] text-base font-bold text-[#dae2fd]">
-                  Очередь предобработки ({stagedQueue.length} объекта)
-                </h3>
-              </div>
-              {stagedQueue.length > 0 && (
-                <button
-                  onClick={handleClearQueue}
-                  className="font-['JetBrains_Mono'] text-xs text-[#ff6b6b] hover:underline flex items-center gap-1"
-                >
-                  <span className="material-symbols-outlined text-[16px]">clear_all</span>
-                  Очистить очередь
-                </button>
-              )}
-            </div>
-
-            {stagedQueue.length === 0 ? (
-              <div className="p-8 text-center bg-[#060e20] rounded-lg border border-[#3d494c]/30 text-xs text-[#869397] font-['JetBrains_Mono']">
-                Очередь пуста. Вставьте ссылку или выберите один из демо-пресетов выше.
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2.5">
-                {stagedQueue.map((item) => (
-                  <div
-                    key={item.id}
-                    className="bg-[#171f33] rounded-lg p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border border-[#3d494c]/30 hover:border-[#4cd7f6]/40 transition-colors"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-lg bg-[#222a3d] shrink-0 flex items-center justify-center text-[#4cd7f6]">
-                        <span className="material-symbols-outlined text-[20px]">
-                          {item.type === 'url' ? 'send' : item.type === 'audio' ? 'graphic_eq' : 'image'}
-                        </span>
-                      </div>
-                      <div className="flex flex-col min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-semibold text-[#dae2fd] truncate">
-                            {item.name}
-                          </span>
-                          <span className="px-2 py-0.5 rounded bg-[#222a3d] font-['JetBrains_Mono'] text-[9px] text-[#adc6ff] uppercase">
-                            {item.typeLabel}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 mt-0.5 text-[11px] font-['JetBrains_Mono']">
-                          <span className="text-[#bcc9cd]">{item.size}</span>
-                          <span className="text-[#869397]">SHA256: {item.sha256}</span>
-                          <span className="text-[#4edea3] flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#4edea3]"></span> {item.status}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                      <span className="px-2 py-1 rounded bg-[#060e20] font-['JetBrains_Mono'] text-[10px] text-[#bcc9cd] border border-[#3d494c]/30">
-                        {item.resolutionOrDuration}
-                      </span>
-                      <button
-                        onClick={() => handleRemoveItem(item.id)}
-                        className="p-1 rounded hover:bg-[#222a3d] text-[#869397] hover:text-[#ff6b6b] transition-colors"
-                        title="Удалить из очереди"
-                      >
-                        <span className="material-symbols-outlined text-[18px]">delete</span>
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Jurisdictions & Regulatory Filters */}
-          <div className="bg-[#131b2e] rounded-xl border border-[#3d494c]/40 p-5 flex flex-col gap-4 shadow-sm">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <h3 className="font-['Plus_Jakarta_Sans'] text-base font-bold text-[#dae2fd]">
-                  Регуляторные фильтры и правовые нормы РК
-                </h3>
-                <p className="text-xs text-[#bcc9cd] mt-0.5 font-['Inter']">
-                  Выберите статьи законодательства Республики Казахстан для сопоставления нейросетью
-                </p>
-              </div>
-              <span className="font-['JetBrains_Mono'] text-xs text-[#adc6ff] px-2.5 py-1 rounded bg-[#222a3d] self-start sm:self-auto border border-[#3d494c]/40">
-                {filters.filter((f) => f.active).length} ИЗ {filters.length} АКТИВНО
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {filters.map((filter) => (
-                <label
-                  key={filter.id}
-                  className={`flex items-start gap-3 p-3.5 rounded-lg border transition-all cursor-pointer ${
-                    filter.active
-                      ? 'bg-[#171f33] border-[#4cd7f6]/40 hover:bg-[#222a3d]'
-                      : 'bg-[#171f33]/40 border-[#3d494c]/30 opacity-70 hover:opacity-90'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={filter.active}
-                    onChange={() => toggleFilter(filter.id)}
-                    className="mt-1 w-4 h-4 rounded text-[#4cd7f6] focus:ring-0 bg-[#060e20] border-[#3d494c]"
-                  />
-                  <div className="flex flex-col">
-                    <span className="font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-semibold text-[#dae2fd]">
-                      {filter.name}
-                    </span>
-                    <span className="font-['JetBrains_Mono'] text-[11px] text-[#4cd7f6] mt-0.5">{filter.article}</span>
-                    <span className="text-[11px] text-[#bcc9cd] mt-0.5 leading-snug">{filter.description}</span>
-                  </div>
-                </label>
-              ))}
-            </div>
+              <span className="material-symbols-outlined text-[18px]">upload_file</span>
+              <span>Файл / Скриншот / Фото</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('url')}
+              className={`flex-1 py-2 px-3 rounded-md text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-all ${
+                activeTab === 'url'
+                  ? 'bg-white text-slate-900 shadow-xs border border-slate-200'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[18px]">link</span>
+              <span>Ссылка / URL</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('text')}
+              className={`flex-1 py-2 px-3 rounded-md text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 transition-all ${
+                activeTab === 'text'
+                  ? 'bg-white text-slate-900 shadow-xs border border-slate-200'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[18px]">description</span>
+              <span>Текст публикации</span>
+            </button>
           </div>
         </div>
 
-        {/* Right Column: Settings, Strictness, Telemetry (4 cols) */}
-        <div className="xl:col-span-4 flex flex-col gap-6">
-          {/* Strictness Mode */}
-          <div className="bg-[#131b2e] rounded-xl border border-[#3d494c]/40 p-5 flex flex-col gap-3.5 shadow-sm">
-            <div className="flex items-center justify-between">
-              <h3 className="font-['Plus_Jakarta_Sans'] text-base font-bold text-[#dae2fd]">Режим строгости</h3>
-              <span className="material-symbols-outlined text-[#adc6ff] text-[20px]">policy</span>
-            </div>
+        {/* Dynamic Input Zone */}
+        <div>
+          <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2 font-['JetBrains_Mono']">
+            2. Объект проверки:
+          </label>
 
-            <div className="flex flex-col gap-2">
-              {/* Option 1 */}
-              <div
-                onClick={() => setStrictness('basic')}
-                className={`p-3 rounded-lg cursor-pointer transition-all flex items-center justify-between border ${
-                  strictness === 'basic'
-                    ? 'bg-[#222a3d] border-[#4cd7f6]'
-                    : 'bg-[#171f33] border-transparent hover:bg-[#171f33]/80'
-                }`}
-              >
-                <div className="flex flex-col">
-                  <span className="font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-semibold text-[#dae2fd]">
-                    Базовый комплаенс
-                  </span>
-                  <span className="text-xs text-[#bcc9cd]">Стандартный мониторинг явных нарушений</span>
-                </div>
-                <span className="material-symbols-outlined text-[#869397] text-[20px]">
-                  {strictness === 'basic' ? 'radio_button_checked' : 'radio_button_unchecked'}
-                </span>
-              </div>
+          {/* TAB 1: FILE / SCREENSHOT */}
+          {activeTab === 'file' && (
+            <div>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) {
+                    handleFileSelect(e.target.files[0]);
+                  }
+                }}
+                accept="image/*,audio/*"
+                className="hidden"
+              />
 
-              {/* Option 2: Active Recommended */}
-              <div
-                onClick={() => setStrictness('high')}
-                className={`p-3 rounded-lg cursor-pointer transition-all flex items-center justify-between border ${
-                  strictness === 'high'
-                    ? 'bg-[#222a3d] border-[#4cd7f6] shadow-[0_0_12px_rgba(76,215,246,0.2)]'
-                    : 'bg-[#171f33] border-transparent hover:bg-[#171f33]/80'
-                }`}
-              >
-                <div className="flex flex-col">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-bold text-[#4cd7f6]">
-                      Legal AI РК (Высокая)
-                    </span>
-                    <span className="px-1.5 py-0.2 rounded bg-[#4cd7f6]/20 font-['JetBrains_Mono'] text-[9px] text-[#4cd7f6] font-semibold">
-                      РЕКОМЕНДОВАНО
-                    </span>
+              {!uploadedFile ? (
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDragging(true);
+                  }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
+                    isDragging
+                      ? 'border-sky-500 bg-sky-50/50'
+                      : 'border-slate-300 hover:border-slate-400 bg-slate-50/50'
+                  }`}
+                >
+                  <div className="w-12 h-12 rounded-full bg-white border border-slate-200 flex items-center justify-center text-slate-600 mb-3 shadow-xs">
+                    <span className="material-symbols-outlined text-[24px]">cloud_upload</span>
                   </div>
-                  <span className="text-xs text-[#bcc9cd] mt-0.5">
-                    Глубокий контекстуальный анализ формулировок и скрытых смыслов
-                  </span>
+                  <div className="font-['Plus_Jakarta_Sans'] font-semibold text-sm text-slate-900">
+                    Перетащите изображение или нажмите для выбора файла
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    Поддерживаются PNG, JPG, WebP, MP3, WAV до 50 МБ
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      fileInputRef.current?.click();
+                    }}
+                    className="mt-4 px-4 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-xs font-medium text-slate-700 shadow-xs transition-colors"
+                  >
+                    Выбрать файл на устройстве
+                  </button>
                 </div>
-                <span className="material-symbols-outlined text-[#4cd7f6] text-[20px]">check_circle</span>
-              </div>
+              ) : (
+                <div className="border border-slate-200 rounded-xl p-4 bg-slate-50 flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {filePreviewUrl ? (
+                      <img
+                        src={filePreviewUrl}
+                        alt="Preview"
+                        className="w-14 h-14 rounded-lg object-cover border border-slate-200 shrink-0"
+                      />
+                    ) : (
+                      <div className="w-14 h-14 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-600 shrink-0">
+                        <span className="material-symbols-outlined text-[24px]">audio_file</span>
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <div className="font-medium text-sm text-slate-900 truncate">
+                        {uploadedFile.name}
+                      </div>
+                      <div className="text-xs text-slate-500 font-['JetBrains_Mono'] mt-0.5">
+                        {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB • Готов к анализу
+                      </div>
+                    </div>
+                  </div>
 
-              {/* Option 3 */}
-              <div
-                onClick={() => setStrictness('expert')}
-                className={`p-3 rounded-lg cursor-pointer transition-all flex items-center justify-between border ${
-                  strictness === 'expert'
-                    ? 'bg-[#222a3d] border-[#4cd7f6]'
-                    : 'bg-[#171f33] border-transparent hover:bg-[#171f33]/80'
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-100"
+                    >
+                      Заменить
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClearFile}
+                      className="p-1.5 text-slate-400 hover:text-red-600 rounded-md hover:bg-red-50"
+                      title="Удалить файл"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">delete</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 2: URL */}
+          {activeTab === 'url' && (
+            <div className="flex flex-col gap-2">
+              <div className="relative flex items-center">
+                <span className="material-symbols-outlined absolute left-3 text-slate-400 text-[20px]">
+                  link
+                </span>
+                <input
+                  type="url"
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  placeholder="Вставьте ссылку: https://t.me/channel/post, instagram.com/p/..., kaspi.kz..."
+                  className="w-full bg-slate-50 pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none"
+                />
+              </div>
+              <div className="text-xs text-slate-500">
+                AI проверит текст публикации, наличие маркировки спонсорства, запрещенные категории и ссылки.
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: TEXT */}
+          {activeTab === 'text' && (
+            <div className="flex flex-col gap-2">
+              <textarea
+                rows={4}
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder="Вставьте сюда текст рекламного объявления, поста блогера, оффера или переписки..."
+                className="w-full bg-slate-50 p-3 rounded-lg border border-slate-200 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none font-['Inter'] leading-relaxed"
+              />
+              <div className="flex justify-between items-center text-xs text-slate-500">
+                <span>Символов: {textInput.length}</span>
+                <span>Проверка по нормам КоАП РК и Закону о языках</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Quick Test Presets (Minimalist Pills) */}
+        <div>
+          <span className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2 font-['JetBrains_Mono']">
+            Быстрые тестовые сценарии (Казахстан):
+          </span>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => applyPreset('ad_missing')}
+              className="px-3 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-xs text-slate-700 border border-slate-200 font-medium transition-colors"
+            >
+              Реклама без плашки «Жарнама» (ст. 455)
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset('casino')}
+              className="px-3 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-xs text-red-700 border border-red-200 font-medium transition-colors"
+            >
+              Реклама онлайн-казино / ставок (ст. 445-1)
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset('phone_leak')}
+              className="px-3 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-xs text-amber-700 border border-amber-200 font-medium transition-colors"
+            >
+              Номер телефона физлица (ст. 79 ПДн)
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset('clean_ad')}
+              className="px-3 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-xs text-emerald-700 border border-emerald-200 font-medium transition-colors"
+            >
+              Чистая реклама с маркировкой (OK)
+            </button>
+          </div>
+        </div>
+
+        {/* Regulatory Filters Checkboxes */}
+        <div className="border-t border-slate-100 pt-4">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 font-['JetBrains_Mono']">
+              3. Правовые модули проверки:
+            </span>
+            <span className="text-xs font-medium text-slate-500">
+              {filters.filter((f) => f.active).length} из {filters.length} активно
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {filters.map((filter) => (
+              <label
+                key={filter.id}
+                className={`flex items-start gap-2.5 p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${
+                  filter.active
+                    ? 'bg-slate-50 border-slate-300 text-slate-900'
+                    : 'bg-white border-slate-200 text-slate-400'
                 }`}
               >
-                <div className="flex flex-col">
-                  <span className="font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-semibold text-[#dae2fd]">
-                    Максимальный комплаенс 360°
-                  </span>
-                  <span className="text-xs text-[#bcc9cd]">Глубокий аудит всех категорий рисков и правил</span>
-                </div>
-                <span className="material-symbols-outlined text-[#869397] text-[20px]">
-                  {strictness === 'expert' ? 'radio_button_checked' : 'radio_button_unchecked'}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Depth of Analysis */}
-          <div className="bg-[#131b2e] rounded-xl border border-[#3d494c]/40 p-5 flex flex-col gap-3 shadow-sm">
-            <div className="flex items-center justify-between">
-              <h3 className="font-['Plus_Jakarta_Sans'] text-base font-bold text-[#dae2fd]">Глубина анализа</h3>
-              <span className="font-['JetBrains_Mono'] text-xs text-[#4cd7f6]">MAX DEPTH</span>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <div className="flex justify-between text-xs text-[#bcc9cd]">
-                <span>Экспресс</span>
-                <span className="text-[#dae2fd] font-medium">Семантика + OCR + Whisper Kazakh v3</span>
-              </div>
-              <div className="relative w-full h-2 bg-[#060e20] rounded-full overflow-hidden">
-                <div className="absolute left-0 top-0 h-full w-[85%] bg-gradient-to-r from-[#06b6d4] via-[#0566d9] to-[#4edea3] rounded-full"></div>
-              </div>
-              <div className="flex justify-between font-['JetBrains_Mono'] text-[10px] text-[#869397] pt-0.5">
-                <span>0.4s</span>
-                <span>1.2s</span>
-                <span className="text-[#4cd7f6] font-bold">2.4s (Рекомендуемый)</span>
-              </div>
-            </div>
-
-            <div className="space-y-1.5 pt-2 border-t border-[#222a3d] text-xs">
-              <div className="flex items-center justify-between text-[#bcc9cd]">
-                <span>Аудио-транскрипция (Whisper Kazakh)</span>
-                <span className="font-['JetBrains_Mono'] text-[10px] text-[#4edea3]">ВКЛ</span>
-              </div>
-              <div className="flex items-center justify-between text-[#bcc9cd]">
-                <span>OCR слоев на графике (PaddleOCR)</span>
-                <span className="font-['JetBrains_Mono'] text-[10px] text-[#4edea3]">ВКЛ</span>
-              </div>
-              <div className="flex items-center justify-between text-[#bcc9cd]">
-                <span>Автоматический юридический комментарий РК</span>
-                <span className="font-['JetBrains_Mono'] text-[10px] text-[#4edea3]">ВКЛ</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Neural Cluster Telemetry */}
-          <div className="bg-[#131b2e] rounded-xl border border-[#3d494c]/40 p-5 flex flex-col gap-3 shadow-sm">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#4edea3] opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-[#4edea3]"></span>
-                </span>
-                <h3 className="font-['Plus_Jakarta_Sans'] text-sm font-bold text-[#dae2fd]">
-                  Кластер нейросетей (Астана)
-                </h3>
-              </div>
-              <span className="font-['JetBrains_Mono'] text-[10px] text-[#bcc9cd]">NODE: KZ-ASTANA-DC1</span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="p-2.5 bg-[#171f33] rounded-lg border border-[#3d494c]/20 flex flex-col">
-                <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397] uppercase">GPU Утилизация</span>
-                <span className="font-['Plus_Jakarta_Sans'] text-base font-bold text-[#dae2fd] mt-0.5">42.8%</span>
-                <span className="font-['JetBrains_Mono'] text-[10px] text-[#4edea3]">8x A100 Online</span>
-              </div>
-              <div className="p-2.5 bg-[#171f33] rounded-lg border border-[#3d494c]/20 flex flex-col">
-                <span className="font-['JetBrains_Mono'] text-[10px] text-[#869397] uppercase">Очередь задач</span>
-                <span className="font-['Plus_Jakarta_Sans'] text-base font-bold text-[#dae2fd] mt-0.5">0 задач</span>
-                <span className="font-['JetBrains_Mono'] text-[10px] text-[#4edea3]">Свободно</span>
-              </div>
-            </div>
-
-            {/* Sparkline Graphic */}
-            <div className="bg-[#171f33] rounded-lg p-2.5 flex flex-col gap-1 border border-[#3d494c]/20">
-              <div className="flex justify-between items-center text-[10px] font-['JetBrains_Mono']">
-                <span className="text-[#869397]">СКОРОСТЬ ИНФЕРЕНСА</span>
-                <span className="text-[#4cd7f6]">Avg 2.4s</span>
-              </div>
-              <svg className="w-full h-7 text-[#4cd7f6]" preserveAspectRatio="none" viewBox="0 0 100 24">
-                <path
-                  d="M0,18 L15,14 L30,19 L45,8 L60,11 L75,5 L90,12 L100,7"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeLinecap="round"
-                  strokeWidth="2"
+                <input
+                  type="checkbox"
+                  checked={filter.active}
+                  onChange={() => toggleFilter(filter.id)}
+                  className="mt-0.5 rounded text-sky-600 focus:ring-0"
                 />
-              </svg>
-            </div>
+                <div className="flex flex-col">
+                  <span className="font-semibold">{filter.name}</span>
+                  <span className="text-[11px] text-sky-700 font-mono mt-0.5">{filter.article}</span>
+                </div>
+              </label>
+            ))}
           </div>
+        </div>
 
-          {/* Primary Action Button */}
-          <div className="flex flex-col gap-2.5">
-            <button
-              disabled={isProcessing || stagedQueue.length === 0}
-              onClick={handleExecuteAudit}
-              className="w-full py-4 px-6 rounded-xl bg-gradient-to-r from-[#4cd7f6] via-[#06b6d4] to-[#0566d9] text-[#003640] font-['Plus_Jakarta_Sans'] text-base font-bold flex flex-col items-center justify-center shadow-[0_0_24px_rgba(6,182,212,0.35)] hover:shadow-[0_0_32px_rgba(6,182,212,0.5)] transition-all disabled:opacity-50"
-            >
-              <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-[24px]">
-                  {isProcessing ? 'progress_activity' : 'policy'}
+        {/* Action Button */}
+        <div className="pt-2">
+          <button
+            type="button"
+            disabled={isProcessing}
+            onClick={handleExecute}
+            className="w-full py-3.5 px-6 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-['Plus_Jakarta_Sans'] font-semibold text-sm flex items-center justify-center gap-2 shadow-xs transition-colors disabled:opacity-50"
+          >
+            {isProcessing ? (
+              <>
+                <span className="material-symbols-outlined text-[20px] animate-spin">
+                  progress_activity
                 </span>
-                <span>
-                  {isProcessing
-                    ? 'Выполняется аудит...'
-                    : `Запустить комплексный аудит (${stagedQueue.length} объекта)`}
-                </span>
-              </div>
-              {isProcessing && (
-                <span className="text-[11px] font-['JetBrains_Mono'] text-[#001f26] mt-1 font-medium animate-pulse">
-                  {processingStep}
-                </span>
-              )}
-            </button>
-
-            <button
-              onClick={() => {
-                alert('Шаблон проверки законодательства РК успешно сохранен в конфигурации!');
-              }}
-              className="w-full py-2.5 px-4 rounded-lg bg-[#222a3d] hover:bg-[#2d3449] text-[#dae2fd] font-['Plus_Jakarta_Sans'] text-xs font-semibold flex items-center justify-center gap-2 border border-[#3d494c]/40 transition-colors"
-            >
-              <span className="material-symbols-outlined text-[16px] text-[#bcc9cd]">bookmark_add</span>
-              <span>Сохранить шаблон проверки</span>
-            </button>
-          </div>
-
-          {/* Commercial Compliance Notice Footnote */}
-          <div className="p-3.5 rounded-lg bg-[#060e20]/60 border border-[#3d494c]/30 flex items-start gap-2.5 text-xs text-[#bcc9cd]">
-            <span className="material-symbols-outlined text-[#869397] text-[18px] shrink-0 mt-0.5">verified_user</span>
-            <p className="leading-relaxed">
-              Все загруженные материалы анализируются в изолированном контуре. Сформированный отчет предназначен для
-              внутреннего комплаенс-контроля, защиты бренда и предотвращения штрафов от регуляторов.
-            </p>
-          </div>
+                <span>{processingStep}</span>
+              </>
+            ) : (
+              <>
+                <span className="material-symbols-outlined text-[20px]">policy</span>
+                <span>Запустить проверку на правонарушения РК</span>
+              </>
+            )}
+          </button>
         </div>
       </div>
     </div>

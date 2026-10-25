@@ -1,37 +1,30 @@
 @import "tailwindcss";
 
 @theme {
-  --color-surface: #0b1326;
-  --color-surface-dim: #0b1326;
-  --color-surface-bright: #31394d;
-  --color-surface-container-lowest: #060e20;
-  --color-surface-container-low: #131b2e;
-  --color-surface-container: #171f33;
-  --color-surface-container-high: #222a3d;
-  --color-surface-container-highest: #2d3449;
-  --color-on-surface: #dae2fd;
-  --color-on-surface-variant: #bcc9cd;
-  --color-inverse-surface: #dae2fd;
-  --color-inverse-on-surface: #283044;
-  --color-outline: #869397;
-  --color-outline-variant: #3d494c;
-  --color-surface-tint: #4cd7f6;
-  --color-primary: #4cd7f6;
-  --color-on-primary: #003640;
-  --color-primary-container: #06b6d4;
-  --color-on-primary-container: #00424f;
-  --color-secondary: #adc6ff;
-  --color-on-secondary: #002e6a;
-  --color-secondary-container: #0566d9;
-  --color-on-secondary-container: #e6ecff;
-  --color-tertiary: #4edea3;
-  --color-on-tertiary: #003824;
-  --color-tertiary-container: #1bbd85;
-  --color-on-tertiary-container: #00452e;
-  --color-error: #ff6b6b;
-  --color-error-container: #93000a;
-  --color-on-error: #690005;
-  --color-on-error-container: #ffdad6;
+  --color-surface: #ffffff;
+  --color-surface-dim: #f8fafc;
+  --color-surface-bright: #ffffff;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f8fafc;
+  --color-surface-container: #f1f5f9;
+  --color-surface-container-high: #e2e8f0;
+  --color-surface-container-highest: #cbd5e1;
+  --color-on-surface: #0f172a;
+  --color-on-surface-variant: #475569;
+  --color-outline: #94a3b8;
+  --color-outline-variant: #e2e8f0;
+  --color-primary: #0284c7;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #e0f2fe;
+  --color-on-primary-container: #0369a1;
+  --color-secondary: #3b82f6;
+  --color-on-secondary: #ffffff;
+  --color-tertiary: #16a34a;
+  --color-on-tertiary: #ffffff;
+  --color-error: #dc2626;
+  --color-on-error: #ffffff;
+  --color-background: #f8fafc;
+  --color-on-background: #0f172a;
 
   --font-headline: 'Plus Jakarta Sans', sans-serif;
   --font-display: 'Plus Jakarta Sans', sans-serif;
@@ -40,32 +33,19 @@
 }
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
-  background-color: #0b1326;
-  color: #dae2fd;
+  background-color: #f8fafc;
+  color: #0f172a;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  overscroll-behavior: none;
 }
 
 /* Custom Scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: #0b1326;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #222a3d;
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #3d494c;
+  display: none;
 }
 
 /* Material Symbols Styling */
@@ -82,18 +62,71 @@ body {
   line-height: 1;
 }
 
-.font-label-mono {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  line-height: 14px;
-  letter-spacing: 0.06em;
+/* Exact typography classes from Synthetic Integrity design system */
+.font-display-lg {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 40px;
+  line-height: 48px;
+  letter-spacing: -0.025em;
+  font-weight: 700;
+}
+
+.font-headline-xl {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 30px;
+  line-height: 38px;
+  letter-spacing: -0.02em;
   font-weight: 600;
 }
 
-.font-code-sm {
+.font-headline-lg {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 24px;
+  line-height: 32px;
+  letter-spacing: -0.015em;
+  font-weight: 600;
+}
+
+.font-headline-md {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 20px;
+  line-height: 28px;
+  letter-spacing: -0.01em;
+  font-weight: 600;
+}
+
+.font-headline-sm {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+
+.font-body-lg {
+  font-family: 'Inter', sans-serif;
+  font-size: 16px;
+  line-height: 26px;
+  font-weight: 400;
+}
+
+.font-body-md {
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+}
+
+.font-body-sm {
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 400;
+}
+
+.font-code-lg {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  line-height: 16px;
+  font-size: 14px;
+  line-height: 20px;
   font-weight: 500;
 }
 
@@ -104,9 +137,55 @@ body {
   font-weight: 500;
 }
 
-.font-code-lg {
+.font-code-sm {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 14px;
-  line-height: 20px;
+  font-size: 11px;
+  line-height: 16px;
   font-weight: 500;
+}
+
+.font-label-mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+/* Spacing utility classes from Synthetic Integrity design system */
+.space-xs { padding: 0.25rem; }
+.space-sm { padding: 0.5rem; }
+.space-md { padding: 1rem; }
+.space-lg { padding: 1.5rem; }
+.space-xl { padding: 2.5rem; }
+
+.p-space-xs { padding: 0.25rem; }
+.p-space-sm { padding: 0.5rem; }
+.p-space-md { padding: 1rem; }
+.p-space-lg { padding: 1.5rem; }
+.p-space-xl { padding: 2.5rem; }
+
+.py-space-xs { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+.py-space-sm { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+.py-space-md { padding-top: 1rem; padding-bottom: 1rem; }
+.py-space-lg { padding-top: 1.5rem; padding-bottom: 1.5rem; }
+.py-space-xl { padding-top: 2.5rem; padding-bottom: 2.5rem; }
+
+.px-space-xs { padding-left: 0.25rem; padding-right: 0.25rem; }
+.px-space-sm { padding-left: 0.5rem; padding-right: 0.5rem; }
+.px-space-md { padding-left: 1rem; padding-right: 1rem; }
+.px-space-lg { padding-left: 1.5rem; padding-right: 1.5rem; }
+.px-space-xl { padding-left: 2.5rem; padding-right: 2.5rem; }
+
+.gap-space-xs { gap: 0.25rem; }
+.gap-space-sm { gap: 0.5rem; }
+.gap-space-md { gap: 1rem; }
+.gap-space-lg { gap: 1.5rem; }
+.gap-space-xl { gap: 2.5rem; }
+
+.px-margin { padding-left: 1.5rem; padding-right: 1.5rem; }
+.px-margin-lg { padding-left: 2rem; padding-right: 2rem; }
+
+@media (max-width: 640px) {
+  .px-margin-lg { padding-left: 1rem; padding-right: 1rem; }
 }

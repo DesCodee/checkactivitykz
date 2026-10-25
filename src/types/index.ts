@@ -13,16 +13,17 @@ export interface Violation {
   title: string;
   severity: ViolationSeverity;
   basis: string; // Фактическое основание
-  fineAmount: string; // e.g. "от 100 до 350 МРП (393 200 — 1 376 200 ₸)"
-  jurisdiction: string; // e.g. "МКИ РК / СМАП"
+  fineAmount: string; // e.g. "от 50 до 200 МРП (196 600 — 786 400 ₸)"
+  jurisdiction: string; // e.g. "МКИ РК"
+  recommendation?: string;
   quote?: string;
   timecode?: string;
-  bbox?: { x: number; y: number; width: number; height: number }; // Percentage coords
+  bbox?: { x: number; y: number; width: number; height: number };
 }
 
 export interface AuditCase {
   id: string;
-  referenceNumber: string; // #CHK-KZ-2024-9108
+  referenceNumber: string;
   timestamp: string;
   sourceType: ModalityType;
   title: string;
@@ -32,6 +33,8 @@ export interface AuditCase {
   riskLevel: 'Низкий' | 'Средний' | 'Высокий' | 'Критический';
   status: 'БЕЗОПАСНО' | 'ПРЕДУПРЕЖДЕНИЕ' | 'ТРЕБУЕТ МЕР' | 'БЛОКИРОВКА';
   violations: Violation[];
+  previewUrl?: string;
+  rawText?: string;
   metadata: {
     resolution?: string;
     duration?: string;
