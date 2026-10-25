@@ -7,15 +7,18 @@ export type ModalityType = 'url' | 'screenshot' | 'photo' | 'audio';
 
 export type ViolationSeverity = 'critical' | 'warning' | 'info';
 
+export type ComplianceCategory = 'legal' | 'ethics';
+
 export interface Violation {
   id: string;
-  code: string; // e.g. "ст. 455 КоАП РК"
+  category: ComplianceCategory; // 'legal' (Закон РК) or 'ethics' (Интернет-этика)
+  code: string; // e.g. "ст. 455 КоАП РК" or "Этика: Манипуляция (Dark Pattern)"
   title: string;
   severity: ViolationSeverity;
-  basis: string; // Фактическое основание
-  fineAmount: string; // e.g. "от 50 до 200 МРП (196 600 — 786 400 ₸)"
-  jurisdiction: string; // e.g. "МКИ РК"
-  recommendation?: string;
+  basis: string; // Фактическое объяснение
+  fineAmount?: string; // Штраф (для правовых нарушений) или репутационная санкция
+  jurisdiction?: string; // МКИ РК, АФМ, либо "Медиа-этика / Кодекс контент-сообщества"
+  recommendation?: string; // Конкретная инструкция по исправлению
   quote?: string;
   timecode?: string;
   bbox?: { x: number; y: number; width: number; height: number };
@@ -29,9 +32,13 @@ export interface AuditCase {
   title: string;
   sourceName: string;
   sha256: string;
-  riskScore: number; // 0-100
+  riskScore: number; // Общий индекс риска 0-100
   riskLevel: 'Низкий' | 'Средний' | 'Высокий' | 'Критический';
+  legalScore?: number; // 0-100 (индекс правового риска)
+  ethicsScore?: number; // 0-100 (индекс этического риска / токсичности)
   status: 'БЕЗОПАСНО' | 'ПРЕДУПРЕЖДЕНИЕ' | 'ТРЕБУЕТ МЕР' | 'БЛОКИРОВКА';
+  summary?: string;
+  ethicsSummary?: string;
   violations: Violation[];
   previewUrl?: string;
   rawText?: string;
@@ -71,5 +78,6 @@ export interface LegalFilter {
   article: string;
   description: string;
   active: boolean;
-  category: 'advertising' | 'criminal' | 'privacy' | 'ethics' | 'gambling' | 'language';
+  category: 'advertising' | 'criminal' | 'privacy' | 'ethics' | 'gambling' | 'language' | 'cyberbullying' | 'manipulation';
+  type: ComplianceCategory; // 'legal' or 'ethics'
 }

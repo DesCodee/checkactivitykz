@@ -82,7 +82,7 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 w-full pt-16">
+      <main className="flex-1 w-full pt-16 pb-16 md:pb-0">
         {currentView === 'home' && (
           <HomeView
             onStartScanner={handleStartScannerWithPreset}
