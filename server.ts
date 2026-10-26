@@ -100,6 +100,118 @@ async function scrapeUrl(targetUrl: string): Promise<{ title: string; text: stri
   }
 }
 
+// POST /api/ocr: Dedicated high-speed OCR extraction from screenshots/images using Gemini 3.8 Flash
+app.post('/api/ocr', async (req: Request, res: Response) => {
+  try {
+    const { imageDataUrl } = req.body;
+
+    if (!imageDataUrl || typeof imageDataUrl !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'Отсутствует изображение для распознавания (imageDataUrl)',
+        text: '',
+        charCount: 0,
+      });
+    }
+
+    const mimeMatch = imageDataUrl.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    const base64Data = mimeMatch ? mimeMatch[2] : imageDataUrl.split(',')[1] || '';
+
+    if (!base64Data) {
+      return res.status(400).json({
+        success: false,
+        error: 'Некорректные base64 данные изображения',
+        text: '',
+        charCount: 0,
+      });
+    }
+
+    let ocrExtractedText = '';
+
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Gemini OCR timeout')), 18000)
+        );
+
+        const ocrPrompt = `Ты — профессиональный OCR-модуль (Optical Character Recognition) системы Check Activity KZ.
+Твоя задача — извлечь ВЕСЬ видимый текст со скриншота, фото документа, переписки мессенджера (Telegram, WhatsApp, Instagram), рекламного баннера или веб-страницы.
+
+ПРАВИЛА ИЗВЛЕЧЕНИЯ:
+1. Выпиши абсолютно ВСЕ слова, фразы, цифры, даты, имена пользователей/ников, ссылки, водяные знаки, ценники и дисклеймеры.
+2. Сохраняй структуру текста, диалоги переписки и переносы строк.
+3. СТРОГО ОБЯЗАТЕЛЬНО: Если на скриншоте есть НЕЦЕНЗУРНАЯ БРАНЬ, МАТЫ (на русском, казахском, сленге: блять, хуй, пиздец, ебать, сука, нахуй, шешеңді, сиктир и т.д.), оскорбления или угрозы — ОБЯЗАТЕЛЬНО выпиши их ДОСЛОВНО БЕЗ ЦЕНЗУРЫ. Это необходимо для правовой фиксации правонарушений по ст. 434 и ст. 73 КоАП РК. Не заменяй буквы звездочками!
+4. Если на изображении нет букв или текста, верни ровно: "[Текст на изображении не обнаружен]".
+5. Выведи ТОЛЬКО распознанный текст без каких-либо вводных слов, пояснений от себя или обрамления кавычками.`;
+
+        const response = await Promise.race([
+          ai.models.generateContent({
+            model: 'gemini-3.8-flash',
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType,
+                      data: base64Data,
+                    },
+                  },
+                  {
+                    text: ocrPrompt,
+                  },
+                ],
+              },
+            ],
+          }),
+          timeoutPromise,
+        ]);
+
+        ocrExtractedText = (response.text || '').trim();
+      } catch (geminiOcrErr) {
+        console.warn('Gemini OCR call timed out or failed:', geminiOcrErr);
+      }
+    }
+
+    // Keyword & profanity detection on extracted text
+    const textToCheck = ocrExtractedText.toLowerCase();
+    const profanityRegex = /блят[ья]|\bбля\b|ху[йияеё]|пизд[аеёиу]|еб[аатьулоы]|ёб[аать]|сук[аи]|наху[йи]|муда[кч]|гондон|пидор|чмо\b|дерьм[оа]|шешен[ді]|сиктир|көт[і]/i;
+    const gamblingRegex = /казино|casino|1xbet|1win|pin-up|слот|рулетк|фриспин|ставка|букмекер/i;
+    const adRegex = /жарнама|реклама|скидк|купить|акция|промокод|цена/i;
+
+    const hasProfanity = profanityRegex.test(textToCheck);
+    const hasGambling = gamblingRegex.test(textToCheck);
+    const hasAdvertising = adRegex.test(textToCheck);
+
+    let warningNotice: string | undefined;
+    if (hasProfanity) {
+      warningNotice = 'Внимание: в тексте скриншота зафиксирована ненормативная лексика (ст. 434 КоАП РК).';
+    } else if (hasGambling) {
+      warningNotice = 'Внимание: в тексте скриншота обнаружены признаки рекламы азартных игр (ст. 445-1 КоАП РК).';
+    }
+
+    return res.json({
+      success: !!ocrExtractedText,
+      text: ocrExtractedText,
+      charCount: ocrExtractedText.length,
+      hasProfanity,
+      hasGambling,
+      hasAdvertising,
+      warningNotice,
+    });
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error('Error in /api/ocr:', err);
+    return res.status(500).json({
+      success: false,
+      error: 'Ошибка OCR-обработки: ' + errorMsg,
+      text: '',
+      charCount: 0,
+    });
+  }
+});
+
 // POST /api/analyze: Full multimodal parsing (OCR, visual actions, URLs, Law & Ethics)
 app.post('/api/analyze', async (req: Request, res: Response) => {
   try {
@@ -208,7 +320,7 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
       if (liveUrlExtracted) {
         userTextPrompt += `\n[ИЗВЛЕЧЕННЫЙ КОНТЕНТ ПО ССЫЛКЕ ${url || text}]:\n${liveUrlExtracted}\n`;
       } else if (text) {
-        userTextPrompt += `\n[ТЕКСТ ДЛЯ АНАЛИЗА]:\n${text}\n`;
+        userTextPrompt += `\n[ТЕКСТ ДЛЯ АНАЛИЗА / OCR-ИЗВЛЕЧЕНИЕ]:\n${text}\n`;
       }
 
       if (fileName) {
@@ -251,7 +363,7 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
 
       try {
         const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini API timeout')), 4000)
+          setTimeout(() => reject(new Error('Gemini API timeout')), 18000)
         );
 
         const response = await Promise.race([

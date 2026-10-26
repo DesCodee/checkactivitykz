@@ -11,7 +11,12 @@ import {
   ALL_COMPLIANCE_FILTERS,
   PRIMARY_AUDIT_CASE,
 } from '../data/mockData';
-import { analyzeContentWithGemini, ContentPayload } from '../services/geminiService';
+import {
+  analyzeContentWithGemini,
+  ContentPayload,
+  extractTextWithOcr,
+} from '../services/geminiService';
+import { generateSampleScreenshot } from '../utils/sampleScreenshots';
 
 interface ScannerViewProps {
   onRunAudit: (auditCase: AuditCase) => void;
@@ -27,6 +32,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
   const [fileTextNote, setFileTextNote] = useState('');
+
+  // OCR Recognition states
+  const [ocrText, setOcrText] = useState('');
+  const [isOcrLoading, setIsOcrLoading] = useState(false);
+  const [ocrSuccess, setOcrSuccess] = useState(false);
+  const [ocrWarning, setOcrWarning] = useState<string | null>(null);
+  const [ocrCharCount, setOcrCharCount] = useState(0);
+  const [copiedOcr, setCopiedOcr] = useState(false);
 
   // Compliance & Ethics checklist filters
   const [filters, setFilters] = useState(ALL_COMPLIANCE_FILTERS);
@@ -56,12 +69,41 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     );
   };
 
+  // OCR Execution handler for images
+  const triggerOcr = async (dataUrl: string) => {
+    if (!dataUrl) return;
+    setIsOcrLoading(true);
+    setOcrWarning(null);
+    try {
+      const res = await extractTextWithOcr(dataUrl);
+      setOcrText(res.text || '');
+      setOcrCharCount(res.charCount || (res.text ? res.text.length : 0));
+      setOcrSuccess(res.success);
+      if (res.warningNotice) {
+        setOcrWarning(res.warningNotice);
+      }
+    } catch (err) {
+      console.warn('OCR processing error:', err);
+      setOcrSuccess(false);
+    } finally {
+      setIsOcrLoading(false);
+    }
+  };
+
   const handleFileSelect = (file: File) => {
     setUploadedFile(file);
+    setOcrText('');
+    setOcrWarning(null);
+    setOcrSuccess(false);
+    setOcrCharCount(0);
+
     if (file.type.startsWith('image/')) {
       const reader = new FileReader();
       reader.onload = () => {
-        setFilePreviewUrl(reader.result as string);
+        const dataUrl = reader.result as string;
+        setFilePreviewUrl(dataUrl);
+        // Automatically trigger OCR extraction immediately upon selection
+        triggerOcr(dataUrl);
       };
       reader.readAsDataURL(file);
     } else if (file.type.startsWith('video/')) {
@@ -84,6 +126,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             const frame = canvas.toDataURL('image/jpeg', 0.85);
             setFilePreviewUrl(frame);
+            // Also trigger OCR on the extracted video frame!
+            triggerOcr(frame);
           }
           URL.revokeObjectURL(objectUrl);
         };
@@ -112,9 +156,22 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     setUploadedFile(null);
     setFilePreviewUrl(null);
     setFileTextNote('');
+    setOcrText('');
+    setOcrWarning(null);
+    setOcrSuccess(false);
+    setOcrCharCount(0);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+  };
+
+  // Instant Sample Screenshot Loader for immediate OCR testing
+  const handleLoadSampleScreenshot = (type: 'profanity_chat' | 'casino_banner' | 'unmarked_ad') => {
+    const sample = generateSampleScreenshot(type);
+    setUploadedFile(new File([], sample.fileName, { type: 'image/png' }));
+    setFilePreviewUrl(sample.dataUrl);
+    setFileTextNote('');
+    triggerOcr(sample.dataUrl);
   };
 
   // Quick KZ Law & Ethics Presets
@@ -176,19 +233,26 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     let payload: ContentPayload;
 
     if (activeTab === 'file') {
-      if (!uploadedFile) {
+      if (!uploadedFile && !filePreviewUrl) {
         alert('Пожалуйста, выберите или перетащите файл для проверки.');
         return;
       }
-      const isImage = uploadedFile.type.startsWith('image/');
-      const isVideo = uploadedFile.type.startsWith('video/');
+      const isImage = (uploadedFile && uploadedFile.type.startsWith('image/')) || !!filePreviewUrl;
+      const isVideo = uploadedFile ? uploadedFile.type.startsWith('video/') : false;
+
+      const combinedText = [ocrText.trim(), fileTextNote.trim()]
+        .filter(Boolean)
+        .join('\n\n[Дополнительное примечание]: ');
+
       payload = {
         modality: isImage ? 'screenshot' : isVideo ? 'photo' : 'audio',
-        fileName: uploadedFile.name,
-        fileSize: `${(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB`,
+        fileName: uploadedFile?.name || 'screenshot.png',
+        fileSize: uploadedFile && uploadedFile.size > 0
+          ? `${(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB`
+          : `${Math.round(ocrCharCount * 1.5 + 120)} KB`,
         imageDataUrl: filePreviewUrl || undefined,
         videoFrames: isVideo && filePreviewUrl ? [filePreviewUrl] : undefined,
-        text: fileTextNote.trim() ? `${uploadedFile.name} ${fileTextNote.trim()}` : uploadedFile.name,
+        text: combinedText || (uploadedFile?.name || 'Скриншот для анализа'),
       };
     } else if (activeTab === 'url') {
       if (!urlInput.trim()) {
@@ -342,40 +406,93 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                 className="hidden"
               />
 
-              {!uploadedFile ? (
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setIsDragging(true);
-                  }}
-                  onDragLeave={() => setIsDragging(false)}
-                  onDrop={handleDrop}
-                  onClick={() => fileInputRef.current?.click()}
-                  className={`border-2 border-dashed rounded-xl p-6 sm:p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
-                    isDragging
-                      ? 'border-sky-500 bg-sky-50/50'
-                      : 'border-slate-300 hover:border-slate-400 bg-slate-50/50'
-                  }`}
-                >
-                  <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white border border-slate-200 flex items-center justify-center text-slate-600 mb-2.5 shadow-xs">
-                    <span className="material-symbols-outlined text-[24px]">cloud_upload</span>
-                  </div>
-                  <div className="font-['Plus_Jakarta_Sans'] font-semibold text-xs sm:text-sm text-slate-900">
-                    Перетащите скриншот, фото или видео для распознавания
-                  </div>
-                  <div className="text-[11px] sm:text-xs text-slate-500 mt-1">
-                    Поддерживаются PNG, JPG, WebP, MP4, MOV, MP3, WAV до 50 МБ
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      fileInputRef.current?.click();
+              {!uploadedFile && !filePreviewUrl ? (
+                <div className="flex flex-col gap-3">
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setIsDragging(true);
                     }}
-                    className="mt-3.5 px-3.5 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-xs font-medium text-slate-700 shadow-xs transition-colors"
+                    onDragLeave={() => setIsDragging(false)}
+                    onDrop={handleDrop}
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`border-2 border-dashed rounded-xl p-6 sm:p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
+                      isDragging
+                        ? 'border-sky-500 bg-sky-50/50'
+                        : 'border-slate-300 hover:border-slate-400 bg-slate-50/50'
+                    }`}
                   >
-                    Выбрать файл на устройстве
-                  </button>
+                    <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white border border-slate-200 flex items-center justify-center text-slate-600 mb-2.5 shadow-xs">
+                      <span className="material-symbols-outlined text-[24px]">cloud_upload</span>
+                    </div>
+                    <div className="font-['Plus_Jakarta_Sans'] font-semibold text-xs sm:text-sm text-slate-900">
+                      Перетащите скриншот, фото или видео для распознавания
+                    </div>
+                    <div className="text-[11px] sm:text-xs text-slate-500 mt-1">
+                      Поддерживаются PNG, JPG, WebP, MP4, MOV, MP3, WAV до 50 МБ
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fileInputRef.current?.click();
+                      }}
+                      className="mt-3.5 px-3.5 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 text-xs font-medium text-slate-700 shadow-xs transition-colors"
+                    >
+                      Выбрать файл на устройстве
+                    </button>
+                  </div>
+
+                  {/* Ready-made test screenshots for instant OCR testing */}
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2 font-['JetBrains_Mono'] flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[16px] text-sky-600">bolt</span>
+                      Тестовые скриншоты для быстрой проверки OCR:
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleLoadSampleScreenshot('profanity_chat')}
+                        className="p-2.5 text-left rounded-lg bg-white border border-slate-200 hover:border-red-300 hover:bg-red-50/30 transition-all group"
+                      >
+                        <div className="text-xs font-semibold text-slate-900 group-hover:text-red-700 flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-[16px] text-red-500">chat_error</span>
+                          Чат с матами (Telegram)
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">
+                          Обсценная лексика, ст. 434 КоАП РК
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleLoadSampleScreenshot('casino_banner')}
+                        className="p-2.5 text-left rounded-lg bg-white border border-slate-200 hover:border-amber-300 hover:bg-amber-50/30 transition-all group"
+                      >
+                        <div className="text-xs font-semibold text-slate-900 group-hover:text-amber-700 flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-[16px] text-amber-500">casino</span>
+                          Казино 1Win (Слоты)
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">
+                          Запрет азартных игр, ст. 445-1 КоАП РК
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleLoadSampleScreenshot('unmarked_ad')}
+                        className="p-2.5 text-left rounded-lg bg-white border border-slate-200 hover:border-sky-300 hover:bg-sky-50/30 transition-all group"
+                      >
+                        <div className="text-xs font-semibold text-slate-900 group-hover:text-sky-700 flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-[16px] text-sky-500">sell</span>
+                          Баннер без маркировки
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5 line-clamp-1">
+                          Нет плашки «Жарнама», Закон № 230-VII
+                        </div>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="border border-slate-200 rounded-xl p-3 sm:p-4 bg-slate-50 flex flex-col gap-3">
@@ -385,19 +502,25 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                         <img
                           src={filePreviewUrl}
                           alt="Preview"
-                          className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg object-cover border border-slate-200 shrink-0"
+                          className="w-14 h-14 sm:w-16 sm:h-16 rounded-lg object-cover border border-slate-200 shrink-0 shadow-xs"
                         />
                       ) : (
-                        <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-600 shrink-0">
+                        <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-600 shrink-0">
                           <span className="material-symbols-outlined text-[24px]">audio_file</span>
                         </div>
                       )}
                       <div className="min-w-0">
-                        <div className="font-medium text-xs sm:text-sm text-slate-900 truncate">
-                          {uploadedFile.name}
+                        <div className="font-semibold text-xs sm:text-sm text-slate-900 truncate">
+                          {uploadedFile?.name || 'Загруженный скриншот'}
                         </div>
-                        <div className="text-[11px] text-slate-500 font-['JetBrains_Mono'] mt-0.5">
-                          {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB • Готов к распознаванию
+                        <div className="text-[11px] text-slate-500 font-['JetBrains_Mono'] mt-0.5 flex flex-wrap items-center gap-2">
+                          <span>
+                            {uploadedFile && uploadedFile.size > 0
+                              ? `${(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB`
+                              : 'Тестовый файл'}
+                          </span>
+                          <span>•</span>
+                          <span className="text-emerald-700 font-medium">Файл загружен</span>
                         </div>
                       </div>
                     </div>
@@ -421,15 +544,107 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                     </div>
                   </div>
 
+                  {/* OCR Recognition Workspace Card */}
+                  <div className="bg-white rounded-lg border border-slate-200 p-3 sm:p-4 flex flex-col gap-2.5 shadow-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="material-symbols-outlined text-[18px] text-sky-600">
+                          document_scanner
+                        </span>
+                        <span className="text-xs font-bold text-slate-800 font-['JetBrains_Mono'] uppercase">
+                          Текст, извлеченный со скриншота (OCR):
+                        </span>
+                        {isOcrLoading ? (
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-sky-50 text-sky-700 border border-sky-200 animate-pulse">
+                            <span className="inline-block w-2 h-2 rounded-full bg-sky-500 animate-ping" />
+                            Идет OCR-сканирование...
+                          </span>
+                        ) : ocrSuccess ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            ✓ Распознано: {ocrCharCount} символов
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        {filePreviewUrl && (
+                          <button
+                            type="button"
+                            onClick={() => triggerOcr(filePreviewUrl)}
+                            disabled={isOcrLoading}
+                            className="px-2 py-1 rounded text-[11px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1 transition-colors disabled:opacity-50"
+                            title="Запустить OCR заново"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">refresh</span>
+                            <span>{isOcrLoading ? 'Распознаем...' : 'Повторить OCR'}</span>
+                          </button>
+                        )}
+                        {ocrText && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(ocrText);
+                              setCopiedOcr(true);
+                              setTimeout(() => setCopiedOcr(false), 2000);
+                            }}
+                            className="px-2 py-1 rounded text-[11px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1 transition-colors"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">
+                              {copiedOcr ? 'done' : 'content_copy'}
+                            </span>
+                            <span>{copiedOcr ? 'Скопировано' : 'Копировать'}</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Notice / Warning Bar if violations or profanity detected in OCR text */}
+                    {ocrWarning && (
+                      <div className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-800 text-xs flex items-center gap-2">
+                        <span className="material-symbols-outlined text-[18px] text-red-600 shrink-0">
+                          warning
+                        </span>
+                        <span className="font-medium">{ocrWarning}</span>
+                      </div>
+                    )}
+
+                    {/* Editable OCR Textarea */}
+                    <div className="relative">
+                      <textarea
+                        value={ocrText}
+                        onChange={(e) => {
+                          setOcrText(e.target.value);
+                          setOcrCharCount(e.target.value.length);
+                        }}
+                        placeholder={
+                          isOcrLoading
+                            ? 'Выполняется оптическое распознавание текста со скриншота (Gemini 3.8 Flash)...'
+                            : 'Текст со скриншота будет автоматически извлечен сюда. Вы также можете дополнить или исправить его вручную.'
+                        }
+                        rows={4}
+                        className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none font-['Inter'] leading-relaxed"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-500 font-['JetBrains_Mono']">
+                      <span className="text-slate-500">
+                        {isOcrLoading
+                          ? 'Нейросеть считывает надписи, чаты и дисклеймеры...'
+                          : 'Текст передается в AI-анализ законодательства РК и интернет-этики'}
+                      </span>
+                      <span>Символов: {ocrCharCount}</span>
+                    </div>
+                  </div>
+
                   <div>
                     <label className="block text-[11px] font-medium text-slate-600 mb-1">
-                      Текст или комментарий к материалу (распознается автоматически, можно уточнить здесь):
+                      Дополнительное примечание к материалу (необязательно):
                     </label>
                     <input
                       type="text"
                       value={fileTextNote}
                       onChange={(e) => setFileTextNote(e.target.value)}
-                      placeholder="Например: переписка с матами в чате, реклама слотов, баннер без маркировки..."
+                      placeholder="Например: переписка с оскорблениями в группе, реклама слотов, баннер без ИИН/БИН..."
                       className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 text-xs text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
                     />
                   </div>

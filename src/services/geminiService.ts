@@ -15,6 +15,45 @@ export interface ContentPayload {
   fileSize?: string;
 }
 
+export interface OcrResult {
+  success: boolean;
+  text: string;
+  charCount: number;
+  hasProfanity?: boolean;
+  hasGambling?: boolean;
+  hasAdvertising?: boolean;
+  warningNotice?: string;
+  error?: string;
+}
+
+export async function extractTextWithOcr(imageDataUrl: string): Promise<OcrResult> {
+  try {
+    const response = await fetch('/api/ocr', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ imageDataUrl }),
+    });
+
+    if (response.ok) {
+      const data: OcrResult = await response.json();
+      return data;
+    } else {
+      console.warn('Server /api/ocr returned status:', response.status);
+    }
+  } catch (err) {
+    console.warn('Network error reaching /api/ocr:', err);
+  }
+
+  return {
+    success: false,
+    text: '',
+    charCount: 0,
+    warningNotice: 'Сервис OCR временно недоступен. Вы можете ввести текст вручную.',
+  };
+}
+
 export async function analyzeContentWithGemini(
   payload: ContentPayload
 ): Promise<AuditCase> {
