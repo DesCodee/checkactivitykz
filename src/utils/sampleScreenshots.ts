@@ -3,6 +3,32 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+export function getSampleText(
+  type: 'profanity_chat' | 'casino_banner' | 'unmarked_ad'
+): string {
+  if (type === 'profanity_chat') {
+    return `Чат «Алматы Базар / Авторазбор» (1 420 участников • 14:32)
+@kanat_almaty (14:30): Ты че бля совсем тупой? Пошел нахуй отсюда, урод конченый, еще раз напишешь — найдем!
+Вы (14:31): Сам заткнись, пидор, я тебя не боюсь! За базар ответишь, шешеңді сиктир!
+@kanat_almaty (14:32): Скинь свой номер телефона, сука.`;
+  }
+  if (type === 'casino_banner') {
+    return `★ ОНЛАЙН КАЗИНО KZ ★
+1WIN KZ: 500% БОНУС!
+Крути слоты и забирай джекпот в тенге ₸
+Вывод на карты Kaspi и Halyk за 5 минут!
+ПРОМОКОД: ALMATY_SLOTS
+ИГРАТЬ ПРЯМО СЕЙЧАС ➔`;
+  }
+  return `🔥 ГРАНДИОЗНАЯ РАСПРОДАЖА В АСТАНЕ!
+СКИДКИ ДО 50% НА ВСЕ СМАРТФОНЫ И НОУТБУКИ
+Только до конца недели! Оплата в рассрочку 0-0-12.
+Заказывай онлайн с бесплатной доставкой по РК:
+https://astana-store-sale.kz/promo
+Телефон отдела продаж: +7 7172 90-80-70
+(Маркировка «Жарнама» и данные рекламодателя БИН отсутствуют)`;
+}
+
 // Generates realistic canvas screenshots for immediate testing of OCR functionality
 export function generateSampleScreenshot(
   type: 'profanity_chat' | 'casino_banner' | 'unmarked_ad'

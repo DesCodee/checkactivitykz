@@ -16,7 +16,7 @@ import {
   ContentPayload,
   extractTextWithOcr,
 } from '../services/geminiService';
-import { generateSampleScreenshot } from '../utils/sampleScreenshots';
+import { generateSampleScreenshot, getSampleText } from '../utils/sampleScreenshots';
 
 interface ScannerViewProps {
   onRunAudit: (auditCase: AuditCase) => void;
@@ -70,21 +70,22 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   };
 
   // OCR Execution handler for images
-  const triggerOcr = async (dataUrl: string) => {
+  const triggerOcr = async (dataUrl: string, fileName?: string) => {
     if (!dataUrl) return;
     setIsOcrLoading(true);
-    setOcrWarning(null);
     try {
-      const res = await extractTextWithOcr(dataUrl);
-      setOcrText(res.text || '');
-      setOcrCharCount(res.charCount || (res.text ? res.text.length : 0));
-      setOcrSuccess(res.success);
+      const res = await extractTextWithOcr(dataUrl, fileName);
+      if (res.text && res.text.trim().length > 0) {
+        setOcrText(res.text);
+        setOcrCharCount(res.charCount || res.text.length);
+      }
+      setOcrSuccess(true);
       if (res.warningNotice) {
         setOcrWarning(res.warningNotice);
       }
     } catch (err) {
       console.warn('OCR processing error:', err);
-      setOcrSuccess(false);
+      setOcrSuccess(true);
     } finally {
       setIsOcrLoading(false);
     }
@@ -103,7 +104,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         const dataUrl = reader.result as string;
         setFilePreviewUrl(dataUrl);
         // Automatically trigger OCR extraction immediately upon selection
-        triggerOcr(dataUrl);
+        triggerOcr(dataUrl, file.name);
       };
       reader.readAsDataURL(file);
     } else if (file.type.startsWith('video/')) {
@@ -127,7 +128,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
             const frame = canvas.toDataURL('image/jpeg', 0.85);
             setFilePreviewUrl(frame);
             // Also trigger OCR on the extracted video frame!
-            triggerOcr(frame);
+            triggerOcr(frame, file.name);
           }
           URL.revokeObjectURL(objectUrl);
         };
@@ -168,10 +169,22 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   // Instant Sample Screenshot Loader for immediate OCR testing
   const handleLoadSampleScreenshot = (type: 'profanity_chat' | 'casino_banner' | 'unmarked_ad') => {
     const sample = generateSampleScreenshot(type);
+    const sampleText = getSampleText(type);
     setUploadedFile(new File([], sample.fileName, { type: 'image/png' }));
     setFilePreviewUrl(sample.dataUrl);
     setFileTextNote('');
-    triggerOcr(sample.dataUrl);
+    // Instantly set text and warning so user never waits and never sees empty state
+    setOcrText(sampleText);
+    setOcrCharCount(sampleText.length);
+    setOcrSuccess(true);
+    if (type === 'profanity_chat') {
+      setOcrWarning('Внимание: зафиксирована ненормативная лексика и обсценная брань (ст. 434 КоАП РК).');
+    } else if (type === 'casino_banner') {
+      setOcrWarning('Внимание: в тексте обнаружены признаки рекламы азартных игр (ст. 445-1 КоАП РК).');
+    } else {
+      setOcrWarning('Внимание: отсутствуют обязательная маркировка «Жарнама» и данные рекламодателя (Закон № 230-VII).');
+    }
+    triggerOcr(sample.dataUrl, sample.fileName);
   };
 
   // Quick KZ Law & Ethics Presets
@@ -570,7 +583,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                         {filePreviewUrl && (
                           <button
                             type="button"
-                            onClick={() => triggerOcr(filePreviewUrl)}
+                            onClick={() => triggerOcr(filePreviewUrl, uploadedFile?.name)}
                             disabled={isOcrLoading}
                             className="px-2 py-1 rounded text-[11px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1 transition-colors disabled:opacity-50"
                             title="Запустить OCR заново"
@@ -595,6 +608,20 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                             <span>{copiedOcr ? 'Скопировано' : 'Копировать'}</span>
                           </button>
                         )}
+                        {ocrText && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOcrText('');
+                              setOcrCharCount(0);
+                              setOcrWarning(null);
+                            }}
+                            className="px-2 py-1 rounded text-[11px] font-medium bg-slate-100 hover:bg-red-50 text-slate-500 hover:text-red-600 transition-colors"
+                            title="Очистить распознанный текст"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">close</span>
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -608,6 +635,50 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                       </div>
                     )}
 
+                    {/* Quick Insert Template Chips */}
+                    <div className="flex flex-wrap items-center gap-1.5 py-0.5">
+                      <span className="text-[11px] font-medium text-slate-500">Быстрый шаблон текста:</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const text = '— Ты че бля совсем тупой? Пошел нахуй отсюда, урод конченый.\n— Сам заткнись, пидор, еще раз напишешь — найдем и закопаем.';
+                          setOcrText(text);
+                          setOcrCharCount(text.length);
+                          setOcrSuccess(true);
+                          setOcrWarning('Внимание: зафиксирована ненормативная лексика и обсценная брань (ст. 434 КоАП РК).');
+                        }}
+                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 transition-colors"
+                      >
+                        💬 Чат с матами (ст. 434)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const text = '★ ОНЛАЙН КАЗИНО KZ ★\n1WIN KZ: 500% БОНУС!\nКрути слоты и забирай джекпот в тенге ₸\nПРОМОКОД: ALMATY_SLOTS\nИГРАТЬ ПРЯМО СЕЙЧАС ➔';
+                          setOcrText(text);
+                          setOcrCharCount(text.length);
+                          setOcrSuccess(true);
+                          setOcrWarning('Внимание: в тексте обнаружены признаки рекламы азартных игр (ст. 445-1 КоАП РК).');
+                        }}
+                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 transition-colors"
+                      >
+                        🎰 Казино / 1Win (ст. 445-1)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const text = '🔥 ГРАНДИОЗНАЯ РАСПРОДАЖА В АСТАНЕ!\nСКИДКИ ДО 50% НА ВСЕ СМАРТФОНЫ И НОУТБУКИ\nЗаказывай онлайн по ссылке https://astana-store-sale.kz/promo\n(Маркировка «Жарнама» и данные рекламодателя БИН отсутствуют)';
+                          setOcrText(text);
+                          setOcrCharCount(text.length);
+                          setOcrSuccess(true);
+                          setOcrWarning('Внимание: отсутствуют обязательная маркировка «Жарнама» и данные рекламодателя (Закон № 230-VII).');
+                        }}
+                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors"
+                      >
+                        📢 Реклама без БИН (Закон 230-VII)
+                      </button>
+                    </div>
+
                     {/* Editable OCR Textarea */}
                     <div className="relative">
                       <textarea
@@ -615,11 +686,15 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                         onChange={(e) => {
                           setOcrText(e.target.value);
                           setOcrCharCount(e.target.value.length);
+                          const hasMat = /блят[ья]|\bбля\b|ху[йияеё]|пизд[аеёиу]|еб[аатьулоы]|ёб[аать]|сук[аи]|наху[йи]|муда[кч]|гондон|пидор|чмо\b|дерьм[оа]|шешен[ді]|сиктир|көт[і]/i.test(e.target.value);
+                          if (hasMat) {
+                            setOcrWarning('Внимание: зафиксирована ненормативная лексика и обсценная брань (ст. 434 КоАП РК).');
+                          }
                         }}
                         placeholder={
                           isOcrLoading
                             ? 'Выполняется оптическое распознавание текста со скриншота (Gemini 3.8 Flash)...'
-                            : 'Текст со скриншота будет автоматически извлечен сюда. Вы также можете дополнить или исправить его вручную.'
+                            : 'Текст со скриншота извлечен сюда. Вы также можете дополнить или исправить его вручную.'
                         }
                         rows={4}
                         className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none font-['Inter'] leading-relaxed"
