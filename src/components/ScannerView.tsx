@@ -26,6 +26,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   const [textInput, setTextInput] = useState('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
+  const [fileTextNote, setFileTextNote] = useState('');
 
   // Compliance & Ethics checklist filters
   const [filters, setFilters] = useState(ALL_COMPLIANCE_FILTERS);
@@ -63,6 +64,36 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         setFilePreviewUrl(reader.result as string);
       };
       reader.readAsDataURL(file);
+    } else if (file.type.startsWith('video/')) {
+      try {
+        const video = document.createElement('video');
+        video.preload = 'metadata';
+        video.muted = true;
+        video.playsInline = true;
+        const objectUrl = URL.createObjectURL(file);
+        video.src = objectUrl;
+        video.onloadedmetadata = () => {
+          video.currentTime = Math.min(1.0, (video.duration || 2) / 2);
+        };
+        video.onseeked = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.min(640, video.videoWidth || 640);
+          canvas.height = Math.min(480, video.videoHeight || 360);
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const frame = canvas.toDataURL('image/jpeg', 0.85);
+            setFilePreviewUrl(frame);
+          }
+          URL.revokeObjectURL(objectUrl);
+        };
+        video.onerror = () => {
+          URL.revokeObjectURL(objectUrl);
+          setFilePreviewUrl(null);
+        };
+      } catch {
+        setFilePreviewUrl(null);
+      }
     } else {
       setFilePreviewUrl(null);
     }
@@ -80,6 +111,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   const handleClearFile = () => {
     setUploadedFile(null);
     setFilePreviewUrl(null);
+    setFileTextNote('');
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -95,8 +127,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
       | 'dark_pattern'
       | 'hidden_ad'
       | 'clean_ad'
+      | 'profanity_chat'
   ) => {
-    if (type === 'ad_missing') {
+    if (type === 'profanity_chat') {
+      setActiveTab('text');
+      setTextInput(
+        '— Ты че бля совсем тупой? Пошел нахуй отсюда, урод конченый.\n— Сам заткнись, пидор, еще раз напишешь — найдем и закопаем.'
+      );
+    } else if (type === 'ad_missing') {
       setActiveTab('text');
       setTextInput(
         '🔥 Только сегодня скидка 40% на все премиум курсы по инвестициям и криптовалюте в Астане! Переходи по ссылке в описании профиля, пиши промокод KAZAKHSTAN и забирай доступ прямо сейчас.'
@@ -143,12 +181,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         return;
       }
       const isImage = uploadedFile.type.startsWith('image/');
+      const isVideo = uploadedFile.type.startsWith('video/');
       payload = {
-        modality: isImage ? 'screenshot' : 'audio',
+        modality: isImage ? 'screenshot' : isVideo ? 'photo' : 'audio',
         fileName: uploadedFile.name,
         fileSize: `${(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB`,
         imageDataUrl: filePreviewUrl || undefined,
-        text: uploadedFile.name,
+        videoFrames: isVideo && filePreviewUrl ? [filePreviewUrl] : undefined,
+        text: fileTextNote.trim() ? `${uploadedFile.name} ${fileTextNote.trim()}` : uploadedFile.name,
       };
     } else if (activeTab === 'url') {
       if (!urlInput.trim()) {
@@ -172,19 +212,23 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     }
 
     setIsProcessing(true);
-    setProcessingStep('Считывание и нормализация контента...');
+    setProcessingStep('1. Извлечение текста (OCR) и парсинг контента...');
 
     setTimeout(() => {
-      setProcessingStep('Анализ законодательства РК (Закон № 230-VII, ст. 455, 445-1, 79 КоАП)...');
-    }, 500);
+      setProcessingStep('2. Распознавание действий и визуального контекста...');
+    }, 600);
 
     setTimeout(() => {
-      setProcessingStep('Аудит интернет-этики (Кибербуллинг, Dark Patterns, Скрытая реклама, Hate Speech)...');
-    }, 1100);
+      setProcessingStep('3. Проверка законодательства РК (Закон № 230-VII, ст. 455, 445-1, 79 КоАП)...');
+    }, 1200);
 
     setTimeout(() => {
-      setProcessingStep('Формирование сводного заключения...');
-    }, 1600);
+      setProcessingStep('4. Аудит интернет-этики (Ненормативная лексика, Буллинг, Dark Patterns)...');
+    }, 1800);
+
+    setTimeout(() => {
+      setProcessingStep('5. Формирование экспертного заключения...');
+    }, 2400);
 
     setTimeout(async () => {
       try {
@@ -192,11 +236,11 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         setIsProcessing(false);
         onRunAudit(audited);
       } catch (err) {
-        console.warn('Analysis fallback:', err);
+        console.warn('Analysis error:', err);
         setIsProcessing(false);
         onRunAudit(PRIMARY_AUDIT_CASE);
       }
-    }, 2000);
+    }, 2800);
   };
 
   const displayedFilters =
@@ -248,7 +292,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
               }`}
             >
               <span className="material-symbols-outlined text-[18px]">upload_file</span>
-              <span className="truncate">Скриншот / Файл</span>
+              <span className="truncate">Скриншот / Фото / Видео</span>
             </button>
             <button
               type="button"
@@ -294,7 +338,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                     handleFileSelect(e.target.files[0]);
                   }
                 }}
-                accept="image/*,audio/*"
+                accept="image/*,video/*,audio/*"
                 className="hidden"
               />
 
@@ -317,10 +361,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                     <span className="material-symbols-outlined text-[24px]">cloud_upload</span>
                   </div>
                   <div className="font-['Plus_Jakarta_Sans'] font-semibold text-xs sm:text-sm text-slate-900">
-                    Перетащите изображение или нажмите для выбора
+                    Перетащите скриншот, фото или видео для распознавания
                   </div>
                   <div className="text-[11px] sm:text-xs text-slate-500 mt-1">
-                    Поддерживаются PNG, JPG, WebP, MP3, WAV до 50 МБ
+                    Поддерживаются PNG, JPG, WebP, MP4, MOV, MP3, WAV до 50 МБ
                   </div>
                   <button
                     type="button"
@@ -334,45 +378,60 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                   </button>
                 </div>
               ) : (
-                <div className="border border-slate-200 rounded-xl p-3 sm:p-4 bg-slate-50 flex items-center justify-between gap-3 sm:gap-4">
-                  <div className="flex items-center gap-3 min-w-0">
-                    {filePreviewUrl ? (
-                      <img
-                        src={filePreviewUrl}
-                        alt="Preview"
-                        className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg object-cover border border-slate-200 shrink-0"
-                      />
-                    ) : (
-                      <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-600 shrink-0">
-                        <span className="material-symbols-outlined text-[24px]">audio_file</span>
+                <div className="border border-slate-200 rounded-xl p-3 sm:p-4 bg-slate-50 flex flex-col gap-3">
+                  <div className="flex items-center justify-between gap-3 sm:gap-4">
+                    <div className="flex items-center gap-3 min-w-0">
+                      {filePreviewUrl ? (
+                        <img
+                          src={filePreviewUrl}
+                          alt="Preview"
+                          className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg object-cover border border-slate-200 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-600 shrink-0">
+                          <span className="material-symbols-outlined text-[24px]">audio_file</span>
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <div className="font-medium text-xs sm:text-sm text-slate-900 truncate">
+                          {uploadedFile.name}
+                        </div>
+                        <div className="text-[11px] text-slate-500 font-['JetBrains_Mono'] mt-0.5">
+                          {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB • Готов к распознаванию
+                        </div>
                       </div>
-                    )}
-                    <div className="min-w-0">
-                      <div className="font-medium text-xs sm:text-sm text-slate-900 truncate">
-                        {uploadedFile.name}
-                      </div>
-                      <div className="text-[11px] text-slate-500 font-['JetBrains_Mono'] mt-0.5">
-                        {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB • Готов к анализу
-                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-2.5 sm:px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-100"
+                      >
+                        Заменить
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearFile}
+                        className="p-1.5 text-slate-400 hover:text-red-600 rounded-md hover:bg-red-50"
+                        title="Удалить файл"
+                      >
+                        <span className="material-symbols-outlined text-[18px]">delete</span>
+                      </button>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="px-2.5 sm:px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-100"
-                    >
-                      Заменить
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleClearFile}
-                      className="p-1.5 text-slate-400 hover:text-red-600 rounded-md hover:bg-red-50"
-                      title="Удалить файл"
-                    >
-                      <span className="material-symbols-outlined text-[18px]">delete</span>
-                    </button>
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                      Текст или комментарий к материалу (распознается автоматически, можно уточнить здесь):
+                    </label>
+                    <input
+                      type="text"
+                      value={fileTextNote}
+                      onChange={(e) => setFileTextNote(e.target.value)}
+                      placeholder="Например: переписка с матами в чате, реклама слотов, баннер без маркировки..."
+                      className="w-full bg-white px-3 py-2 rounded-lg border border-slate-200 text-xs text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
+                    />
                   </div>
                 </div>
               )}
@@ -452,6 +511,13 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
             <span className="text-[11px] font-mono font-bold text-purple-700 bg-purple-50 px-2 py-1 rounded border border-purple-200 flex items-center ml-0 sm:ml-2">
               Интернет-этика:
             </span>
+            <button
+              type="button"
+              onClick={() => applyPreset('profanity_chat')}
+              className="px-2.5 py-1 rounded-md bg-red-50 hover:bg-red-100 text-xs text-red-700 border border-red-200 font-medium transition-colors"
+            >
+              Маты / Ненормативная лексика
+            </button>
             <button
               type="button"
               onClick={() => applyPreset('cyberbullying')}

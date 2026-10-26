@@ -42,6 +42,8 @@ export interface AuditCase {
   violations: Violation[];
   previewUrl?: string;
   rawText?: string;
+  extractedText?: string; // Текст, извлеченный с помощью OCR или парсинга страницы
+  detectedActions?: string; // Описание распознанных визуальных действий и объектов
   metadata: {
     resolution?: string;
     duration?: string;

@@ -23,6 +23,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
   );
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'legal' | 'ethics'>('all');
   const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedExtracted, setCopiedExtracted] = useState(false);
 
   const handleShare = () => {
     navigator.clipboard?.writeText(window.location.href);
@@ -41,6 +42,12 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
       : ethicsViolations;
 
   const isClean = auditCase.violations.length === 0;
+  const extractedContent = auditCase.extractedText || auditCase.rawText;
+  const hasProfanityInExtracted =
+    Boolean(extractedContent &&
+    /блят|бля\b|ху[йияеё]|пизд|еб[аатьу]|ёб|сук[аи]|наху|муда|гондон|пидор|шешен|сиктир|көт/i.test(
+      extractedContent
+    ));
 
   return (
     <div className="w-full max-w-6xl mx-auto px-3 sm:px-6 py-6 sm:py-8 flex flex-col gap-5 sm:gap-6 font-['Inter']">
@@ -317,6 +324,59 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Extracted Text (OCR / Web Scraper) */}
+            {extractedContent && (
+              <div className="p-3 sm:p-4 bg-white border-t border-slate-200">
+                <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-sky-600">document_scanner</span>
+                    <span className="text-xs font-bold uppercase font-['JetBrains_Mono'] text-slate-800">
+                      Извлеченный текст (OCR / Парсинг)
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {hasProfanityInExtracted && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-red-100 text-red-800 border border-red-200">
+                        ОБНАРУЖЕНЫ МАТЫ
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(extractedContent);
+                        setCopiedExtracted(true);
+                        setTimeout(() => setCopiedExtracted(false), 2000);
+                      }}
+                      className="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors flex items-center gap-1"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">
+                        {copiedExtracted ? 'done' : 'content_copy'}
+                      </span>
+                      <span>{copiedExtracted ? 'Скопировано' : 'Копировать'}</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-800 font-['Inter'] leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap select-text">
+                  {extractedContent}
+                </div>
+              </div>
+            )}
+
+            {/* Detected Actions and Visual Context */}
+            {auditCase.detectedActions && (
+              <div className="p-3 sm:p-4 bg-sky-50/40 border-t border-slate-200">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <span className="material-symbols-outlined text-[16px] text-sky-700">visibility</span>
+                  <span className="text-xs font-bold uppercase font-['JetBrains_Mono'] text-sky-900">
+                    Распознанные действия и контекст
+                  </span>
+                </div>
+                <p className="text-xs text-slate-700 leading-relaxed font-['Inter']">
+                  {auditCase.detectedActions}
+                </p>
+              </div>
+            )}
 
             {/* Quick summary strip */}
             <div className="p-3 sm:p-4 bg-white border-t border-slate-200 text-xs text-slate-700 leading-relaxed">
