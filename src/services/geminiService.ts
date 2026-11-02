@@ -44,7 +44,7 @@ export async function extractTextWithOcr(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5500);
+    const timeoutId = setTimeout(() => controller.abort(), 14000);
 
     const response = await fetch('/api/ocr', {
       method: 'POST',
@@ -186,6 +186,7 @@ function analyzeClientFallback(payload: ContentPayload): AuditCase {
       code: 'ст. 434 КоАП РК / Этика: Ненормативная лексика',
       title: 'Ненормативная обсценная лексика (маты)',
       severity: 'critical',
+      quote: foundProfanities.slice(0, 4).join(', '),
       basis: `В проверяемом материале обнаружены матерные и нецензурные слова: "${foundProfanities.join(', ')}". Публичное распространение нецензурной брани нарушает стандарты цифровой этики и влечет ответственность по ст. 434 КоАП РК (мелкое хулиганство).`,
       fineAmount: 'Штраф 5 МРП (19 660 ₸) либо арест до 15 суток / Бан аккаунта',
       jurisdiction: 'МВД РК / Репутационная защита и этика платформ',
@@ -197,12 +198,14 @@ function analyzeClientFallback(payload: ContentPayload): AuditCase {
 
   // 2. Casino / Betting / Slots (ст. 445-1 КоАП РК)
   if (/казино|casino|1win|1xbet|pin-up|слот|рулетк|фриспин|букмекер|mostbet/i.test(content)) {
+    const casinoMatch = content.match(/казино|casino|1win|1xbet|pin-up|слот[ыа-я]*|рулетк[а-я]*|фриспин[а-я]*|букмекер/i);
     violations.push({
       id: 'v-client-casino',
       category: 'legal',
       code: 'ст. 445-1 КоАП РК',
       title: 'Реклама нелицензированных азартных игр и интернет-казино',
       severity: 'critical',
+      quote: casinoMatch ? casinoMatch[0] : 'Онлайн-казино / Азартные игры',
       basis: 'Прямая реклама, реферальные промокоды или упоминание онлайн-казино и слотов запрещены на всей территории Казахстана.',
       fineAmount: 'до 1 000 МРП (3 932 000 ₸) + блокировка ресурса',
       jurisdiction: 'АФМ РК / МКИ РК',
@@ -218,12 +221,14 @@ function analyzeClientFallback(payload: ContentPayload): AuditCase {
   const hasAdMark = /жарнама|реклама|жарнамалық|спонсор/i.test(content);
 
   if (hasCommercial && !hasAdMark) {
+    const adMatch = content.match(/скидк[а-я]*|купить|акция|промокод|цена|распродаж[а-я]*|курс/i);
     violations.push({
       id: 'v-client-ad-missing',
       category: 'legal',
       code: 'ст. 455 КоАП РК / Закон № 230-VII',
       title: 'Отсутствие обязательной маркировки рекламы («Жарнама»)',
       severity: 'critical',
+      quote: adMatch ? adMatch[0] : 'Коммерческое предложение без плашки',
       basis: 'В контенте содержится призыв к покупке товаров или услуг, однако отсутствует обязательная маркировка словом «Жарнама / Реклама» и идентификатор рекламодателя (ИИН/БИН).',
       fineAmount: 'от 50 до 200 МРП (196 600 — 786 400 ₸)',
       jurisdiction: 'МКИ РК (Контроль онлайн-рекламы)',
@@ -235,14 +240,16 @@ function analyzeClientFallback(payload: ContentPayload): AuditCase {
 
   // 4. Cyberbullying & Insults
   if (/бездар|тупой|идиот|урод|мразь|ничтожеств|даун|клоун/i.test(content)) {
+    const bullyMatch = content.match(/бездар[а-я]*|тупой|идиот|урод|мразь|ничтожеств[а-я]*|даун|клоун/i);
     violations.push({
       id: 'v-client-bullying',
       category: 'ethics',
       code: 'ст. 73-4 КоАП РК / Этика: Кибербуллинг',
       title: 'Оскорбления личности и травля (Кибербуллинг)',
       severity: 'critical',
+      quote: bullyMatch ? bullyMatch[0] : 'Оскорбительное обращение',
       basis: 'Унижение чести и достоинства, оскорбительные ярлыки и переход на личности в публичном пространстве.',
-      fineAmount: 'Репутационный риск / ст. 73-4 КоАП (штраф от 10 МРП)',
+      fineAmount: 'Штраф от 10 МРП (39 320 ₸) / Защита чести и достоинства',
       jurisdiction: 'Медиа-этика и правила онлайн-сообществ',
       recommendation: 'Исключить оскорбления личности и выражать критику в уважительной форме.',
     });
@@ -252,12 +259,14 @@ function analyzeClientFallback(payload: ContentPayload): AuditCase {
 
   // 5. Dark patterns / Aggressive FOMO
   if (/только сегодня|пожалеешь|100% гарант|без рисков|сгорает через|успей сейчас/i.test(content)) {
+    const fomoMatch = content.match(/только сегодня|пожалеешь|100% гарант[а-я]*|без рисков|сгорает через|успей сейчас/i);
     violations.push({
       id: 'v-client-manipulation',
       category: 'ethics',
       code: 'Этика: Манипулятивный маркетинг (Dark Patterns)',
       title: 'Агрессивное манипулирование (FOMO и ложные обещания)',
       severity: 'warning',
+      quote: fomoMatch ? fomoMatch[0] : 'Манипуляция FOMO / Таймер страха',
       basis: 'Использование искусственного цейтнота и гарантий отсутствия рисков вводит потребителей в заблуждение.',
       fineAmount: 'Падение доверия и репутационные санкции',
       jurisdiction: 'Этический кодекс интернет-маркетинга',

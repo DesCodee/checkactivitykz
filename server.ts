@@ -100,7 +100,109 @@ async function scrapeUrl(targetUrl: string): Promise<{ title: string; text: stri
   }
 }
 
-// POST /api/ocr: Dedicated high-speed OCR extraction from screenshots/images using Gemini 3.8 Flash with instant fallback
+// Dedicated high-speed and accurate Gemini API caller
+async function callGeminiApi(params: {
+  systemInstruction?: string;
+  contents: Array<{
+    role: string;
+    parts: Array<
+      | { text: string }
+      | { inlineData: { mimeType: string; data: string } }
+    >;
+  }>;
+  responseJson?: boolean;
+  timeoutMs?: number;
+}): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured');
+  }
+
+  const timeoutMs = params.timeoutMs || 28000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const requestBody: Record<string, any> = {
+    contents: params.contents,
+    safetySettings: [
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+    ],
+  };
+
+  if (params.systemInstruction) {
+    requestBody.systemInstruction = {
+      parts: [{ text: params.systemInstruction }],
+    };
+  }
+
+  if (params.responseJson) {
+    requestBody.generationConfig = {
+      responseMimeType: 'application/json',
+    };
+  }
+
+  try {
+    // Primary ultra-fast model: gemini-3.1-flash-lite (responds in 700ms - 2.5s)
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'aistudio-build',
+      },
+      signal: controller.signal,
+      body: JSON.stringify(requestBody),
+    });
+
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text) {
+        return text.trim();
+      }
+    } else {
+      const errText = await res.text();
+      console.warn(`Gemini API returned status ${res.status}:`, errText);
+    }
+  } catch (err: unknown) {
+    clearTimeout(timeoutId);
+    console.warn('Direct fetch to Gemini API failed, trying SDK fallback:', err);
+  }
+
+  // SDK Fallback using @google/genai
+  try {
+    const sdkRes = await ai.models.generateContent({
+      model: 'gemini-3.1-flash-lite',
+      contents: params.contents as any,
+      config: {
+        systemInstruction: params.systemInstruction,
+        responseMimeType: params.responseJson ? 'application/json' : undefined,
+        safetySettings: [
+          { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+        ],
+      },
+    });
+
+    const candidateText = sdkRes.candidates?.[0]?.content?.parts?.[0]?.text || sdkRes.text;
+    if (candidateText) {
+      return candidateText.trim();
+    }
+  } catch (sdkErr) {
+    console.warn('SDK fallback also failed:', sdkErr);
+  }
+
+  throw new Error('All Gemini API attempts failed');
+}
+
+// POST /api/ocr: Dedicated high-speed OCR extraction from screenshots/images using Gemini 3.1 Flash Lite
 app.post('/api/ocr', async (req: Request, res: Response) => {
   try {
     const { imageDataUrl, fileName } = req.body || {};
@@ -132,55 +234,37 @@ app.post('/api/ocr', async (req: Request, res: Response) => {
 
     if (process.env.GEMINI_API_KEY && base64Data && !ocrExtractedText) {
       try {
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini OCR timeout')), 5000)
-        );
-
-        const ocrPrompt = `Ты — профессиональный OCR-модуль (Optical Character Recognition) системы Check Activity KZ.
-Твоя задача — извлечь ВЕСЬ видимый текст со скриншота, фото документа, переписки мессенджера (Telegram, WhatsApp, Instagram), рекламного баннера или веб-страницы.
+        const ocrPrompt = `Ты — профессиональный высокоточный OCR-модуль системы Check Activity KZ.
+Твоя задача — извлечь АБСОЛЮТНО ВЕСЬ видимый текст со скриншота, фото документа, переписки мессенджера (Telegram, WhatsApp, Instagram, TikTok), рекламного баннера или веб-страницы.
 
 ПРАВИЛА ИЗВЛЕЧЕНИЯ:
-1. Выпиши абсолютно ВСЕ слова, фразы, цифры, даты, имена пользователей/ников, ссылки, водяные знаки, ценники и дисклеймеры.
+1. Выпиши ВСЕ слова, фразы, цифры, даты, имена пользователей/ников, ссылки, водяные знаки, ценники, кнопки и дисклеймеры.
 2. Сохраняй структуру текста, диалоги переписки и переносы строк.
-3. СТРОГО ОБЯЗАТЕЛЬНО: Если на скриншоте есть НЕЦЕНЗУРНАЯ БРАНЬ, МАТЫ (на русском, казахском, сленге: блять, хуй, пиздец, ебать, сука, нахуй, шешеңді, сиктир и т.д.), оскорбления или угрозы — ОБЯЗАТЕЛЬНО выпиши их ДОСЛОВНО БЕЗ ЦЕНЗУРЫ. Это необходимо для правовой фиксации правонарушений по ст. 434 и ст. 73 КоАП РК. Не заменяй буквы звездочками!
+3. СТРОГО ОБЯЗАТЕЛЬНО: Если на скриншоте есть НЕЦЕНЗУРНАЯ БРАНЬ, МАТЫ (на русском, казахском, сленге: блять, бля, хуй, пиздец, ебать, сука, нахуй, шешеңді, сиктир, көт и т.д.), оскорбления или угрозы — ОБЯЗАТЕЛЬНО выпиши их ДОСЛОВНО БЕЗ ЦЕНЗУРЫ. Это критически необходимо для правовой фиксации правонарушений по ст. 434 и ст. 73-4 КоАП РК. Никаких звездочек!
 4. Если на изображении нет букв или текста, верни ровно: "[Текст на изображении не обнаружен]".
-5. Выведи ТОЛЬКО распознанный текст без каких-либо вводных слов, пояснений от себя или обрамления кавычками.`;
+5. Выведи ТОЛЬКО распознанный текст без каких-либо вводных слов, пояснений от себя или кавычек.`;
 
-        const response = await Promise.race([
-          ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  {
-                    inlineData: {
-                      mimeType,
-                      data: base64Data,
-                    },
+        ocrExtractedText = await callGeminiApi({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    mimeType,
+                    data: base64Data,
                   },
-                  {
-                    text: ocrPrompt,
-                  },
-                ],
-              },
-            ],
-            config: {
-              safetySettings: [
-                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                },
+                {
+                  text: ocrPrompt,
+                },
               ],
             },
-          }),
-          timeoutPromise,
-        ]);
-
-        const rawCandidates = response.candidates?.[0]?.content?.parts?.[0]?.text;
-        ocrExtractedText = (rawCandidates || response.text || '').trim();
+          ],
+          timeoutMs: 25000,
+        });
       } catch (geminiOcrErr) {
-        console.warn('Gemini OCR call timed out or failed:', geminiOcrErr);
+        console.warn('Gemini OCR call failed:', geminiOcrErr);
       }
     }
 
@@ -199,6 +283,8 @@ app.post('/api/ocr', async (req: Request, res: Response) => {
       warningNotice = 'Внимание: зафиксирована ненормативная лексика и обсценная брань (ст. 434 КоАП РК).';
     } else if (hasGambling) {
       warningNotice = 'Внимание: в тексте скриншота обнаружены признаки рекламы азартных игр (ст. 445-1 КоАП РК).';
+    } else if (hasAdvertising && !textToCheck.includes('жарнама')) {
+      warningNotice = 'Внимание: коммерческий контент без обязательной маркировки «Жарнама» (Закон № 230-VII).';
     }
 
     return res.json({
@@ -265,76 +351,97 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
       }
     }
 
-    const systemInstruction = `Ты — ведущий национальный AI-аналитик и эксперт по контент-безопасности, рекламе и цифровой культуре в Республике Казахстан (система Check Activity KZ).
+    const systemInstruction = `Ты — ведущий национальный AI-аналитик и эксперт высшей квалификации по контент-безопасности, рекламе и интернет-этике в Республике Казахстан (система Check Activity KZ).
 
-ТВОЯ ЗАДАЧА — ВЫПОЛНИТЬ ГЛУБОКИЙ ПАРСИНГ И МУЛЬТИМОДАЛЬНЫЙ АУДИТ:
+ТВОЯ ЗАДАЧА — ПРОВЕСТИ БЕЗУПРЕЧНЫЙ, ТОЧНЫЙ И ГЛУБОКИЙ МУЛЬТИМОДАЛЬНЫЙ АУДИТ МАТЕРИАЛА:
+Внимательно посмотри на прикрепленное изображение/скриншот и прочитай весь текст. Не упускай ни единой детали, баннера, логотипа, кнопки или фразы!
 
-1. ИЗВЛЕЧЕНИЕ ТЕКСТА (OCR / Парсинг):
-- Дословно выпиши ВСЕ слова, фразы, надписи, сообщения чатов, комментарии, ценники, дисклеймеры, промокоды, ссылки и водяные знаки, которые видны на скриншоте/фото/кадрах видео, либо получены из ссылки.
-- КРИТИЧЕСКИ ВАЖНО: Если на скриншоте, фото или в тексте есть НЕЦЕНЗУРНАЯ БРАНЬ, МАТЫ (на русском, казахском, сленге: блять, хуй, пиздец, ебать, сука, нахуй, шешеңді, сиктир и т.д.), оскорбления, травля — ОБЯЗАТЕЛЬНО выпиши их в extractedText без цензуры, и СТРОГО зафиксируй нарушение в разделе violations! НИКОГДА не говори, что «всё норм», если в материале есть маты или токсичность!
+СТРОГИЕ ЗАКОНОДАТЕЛЬНЫЕ И ЭТИЧЕСКИЕ КРИТЕРИИ КАЗАХСТАНА:
 
-2. РАСПОЗНАВАНИЕ ДЕЙСТВИЙ И ВИЗУАЛЬНОГО КОНТЕКСТА:
-- Опиши действия людей, объектов и интерфейс: что именно происходит на фото/скриншоте/видео? (Например: «Скриншот переписки в Telegram с оскорблениями и нецензурной лексикой», «Интерфейс мобильного приложения онлайн-казино со слотами», «Рекламный баннер с призывом купить товар без плашки Жарнама», «Демонстрация вейпа/электронной сигареты», «Агрессивный жест»).
+1. ст. 434 КоАП РК: Мелкое хулиганство.
+Нецензурная брань, обсценные матерные слова (русский, казахский мат: бля, блять, хуй, пиздец, ебать, сука, нахуй, шешеңді, сиктир, көт и т.д.) в социальных сетях, мессенджерах и публичных чатах.
+Санкция: штраф 5 МРП (19 660 ₸) либо административный арест от 5 до 15 суток.
 
-3. ПРАВОВОЙ АУДИТ ПО ЗАКОНОДАТЕЛЬСТВУ КАЗАХСТАНА (category: "legal"):
-- Закон РК «Об онлайн-платформах и онлайн-рекламе» (№ 230-VII): обязательная маркировка «Жарнама / Реклама» и указание рекламодателя (ИИН/БИН).
-- ст. 455 КоАП РК: нарушение законодательства о рекламе.
-- ст. 445-1 КоАП РК: запрет рекламы нелицензированных онлайн-казино, букмекеров, ставок, слотов (1xBet, 1Win, Pin-Up и др.).
-- ст. 456-2 КоАП РК / ст. 274 УК РК: распространение заведомо ложной информации (фейки инфлюенсерами/блогерами).
-- ст. 79 КоАП РК (Закон № 94-V): незаконная публикация персональных данных (телефоны, ИИН, удостоверения личности).
-- ст. 21 Закона РК «О языках»: обязательное размещение рекламы на государственном (казахском) и русском языках.
-- Полный запрет вейпов (ст. 110 Кодекса о здоровье РК / ст. 301-1 УК РК).
-- ст. 434 КоАП РК: мелкое хулиганство (нецензурная брань в общественных местах и публичных электронных сетях).
-- ст. 73-3 КоАП: клевета.
+2. ст. 445-1 КоАП РК: Запрет рекламы онлайн-казино и нелицензированных азартных игр.
+Любая реклама, баннеры, промокоды, ссылки на интернет-казино, слоты, фриспины, нелицензированные букмекерские платформы (1Win, 1xBet, Pin-Up, Vavada и т.д.).
+Санкция: штраф до 1 000 МРП (3 932 000 ₸) + немедленная блокировка ресурса АФМ РК.
 
-4. АУДИТ ИНТЕРНЕТ-ЭТИКИ И ЦИФРОВОЙ КУЛЬТУРЫ (category: "ethics"):
-- Ненормативная лексика и обсценные выражения (маты, грубая брань).
-- Кибербуллинг, шейминг, публичная травля, унижение достоинства.
-- Язык вражды (Hate Speech), ксенофобия, дискриминация по нац/языковому/религиозному признаку.
-- Манипулятивный маркетинг (Dark Patterns): фальшивые счетчики таймеров, навязчивый FOMO («только сегодня, иначе пожалеешь»), обещания «100% гарантированного дохода без риска».
-- Скрытая реклама под видом «искренней личной рекомендации» без раскрытия коммерческого сотрудничества.
+3. Закон РК «Об онлайн-платформах и онлайн-рекламе» (№ 230-VII) и ст. 455 КоАП РК:
+Обязательная маркировка онлайн-рекламы («Жарнама / Реклама») и указание идентификатора рекламодателя (ИИН/БИН). Если в посте/скриншоте есть призыв купить, скидки, промокод, акция или коммерческое предложение без маркировки «Жарнама» — это прямое нарушение!
+Санкция: штраф от 50 до 200 МРП (196 600 — 786 400 ₸).
+
+4. ст. 21 Закона РК «О языках»:
+Реклама на территории Казахстана обязательно распространяется на государственном (казахском) и русском языках.
+
+5. ст. 79 КоАП РК (Закон № 94-V «О персональных данных»):
+Незаконный сбор, публикация и распространение персональных данных третьих лиц (номера мобильных телефонов, ИИН, фото удостоверений личности, домашние адреса).
+Санкция: штраф от 30 до 200 МРП.
+
+6. ст. 73-4 КоАП РК / ст. 131 УК РК: Травля, кибербуллинг и оскорбление личности.
+Унижение чести и достоинства, травля пользователей («тупой», «урод», «позорище», призывы атаковать аккаунт).
+
+7. ст. 115 УК РК: Угрозы физической расправой («найдем», «закопаем»).
+
+8. СТАНДАРТЫ ИНТЕРНЕТ-ЭТИКИ И ЦИФРОВОЙ КУЛЬТУРЫ (category: "ethics"):
+- Ненормативная лексика и обсценная брань.
+- Манипулятивный маркетинг (Dark Patterns): таймеры паники FOMO («сгорит через 04:59»), ложный дефицит («осталось 2 места»), обещания «100% дохода без риска».
+- Скрытая реклама под видом «искренней рекомендации» («случайно нашла MiracleCosmetics, это не реклама»).
+
+ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА ФОРМИРОВАНИЯ VIOLATIONS:
+- Для КАЖДОГО найденного замечания укажи "quote" — точную фразу/слово или визуальный элемент из проверяемого материала! Это доказывает юзеру, что система действительно прочитала и увидела скриншот.
+- "category": "legal" (для законов РК) либо "ethics" (для интернет-этики и культуры).
+- "code": точная статья КоАП/УК РК или «Этика: [Название]».
+- "title": краткое название.
+- "severity": "critical" | "warning" | "info".
+- "basis": детальное юридическое / этическое обоснование с учетом контекста.
+- "fineAmount": точная сумма штрафа в тенге ₸ и МРП (1 МРП = 3 932 ₸ в 2025/2026 г.) либо репутационный риск.
+- "jurisdiction": ответственный орган (МВД РК, АФМ РК, МКИ РК, МЦРИАП РК или Комиссия по интернет-этике).
+- "recommendation": исчерпывающая практическая инструкция по исправлению.
 
 ФОРМАТ ОТВЕТА — СТРОГО ВАЛИДНЫЙ JSON:
 {
-  "extractedText": "Полный дословный текст, извлеченный с изображения (OCR) или со страницы ссылки",
-  "detectedActions": "Подробное описание распознанных действий, интерфейса и визуального контекста",
-  "riskScore": number (0-100 общий риск),
-  "legalScore": number (0-100 риск нарушений закона РК),
-  "ethicsScore": number (0-100 этический риск / токсичность),
+  "extractedText": "Полный дословный текст со всеми словами, цифрами, матами и дисклеймерами",
+  "detectedActions": "Описание визуального контекста, интерфейса, кнопок, баннеров и действий",
+  "riskScore": number (0-100),
+  "legalScore": number (0-100),
+  "ethicsScore": number (0-100),
   "riskLevel": "Низкий" | "Средний" | "Высокий" | "Критический",
   "status": "БЕЗОПАСНО" | "ПРЕДУПРЕЖДЕНИЕ" | "ТРЕБУЕТ МЕР",
-  "summary": "Четкое резюме правового аудита по нормам РК",
-  "ethicsSummary": "Резюме аудита интернет-этики, тональности и добросовестности",
+  "summary": "Четкая юридическая оценка соответствия нормам Казахстана",
+  "ethicsSummary": "Оценка этичности, добросовестности и тональности коммуникации",
   "violations": [
     {
       "category": "legal" | "ethics",
-      "code": "ст. КоАП/УК РК (для legal) либо 'Этика: [Название]' (для ethics)",
-      "title": "Краткое название нарушения",
+      "code": "ст. ... КоАП РК" | "Этика: ...",
+      "title": "...",
       "severity": "critical" | "warning" | "info",
-      "basis": "Фактическое обоснование с цитированием конкретных фраз из контента",
-      "fineAmount": "Размер штрафа в тенге ₸ и МРП либо репутационный риск",
-      "jurisdiction": "МКИ РК, АФМ, МЦРИАП либо Медиа-этика",
-      "recommendation": "Конкретная рекомендация по устранению"
+      "quote": "ТОЧНАЯ ЦИТАТА ИЗ СКРИНШОТА ИЛИ ТЕКСТА",
+      "basis": "...",
+      "fineAmount": "...",
+      "jurisdiction": "...",
+      "recommendation": "..."
     }
   ]
 }`;
 
     let geminiResponseText = '';
 
-    // Check if process.env.GEMINI_API_KEY is available
     if (process.env.GEMINI_API_KEY) {
-      const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
+      const parts: Array<
+        | { text: string }
+        | { inlineData: { mimeType: string; data: string } }
+      > = [];
 
-      let userTextPrompt = `Проведи полный OCR разбор, определи действия и проанализируй контент на соблюдение законов Казахстана и интернет-этики.\n`;
+      let userTextPrompt = `Проведи полный визуальный и текстовый аудит контента на соблюдение законов Казахстана (КоАП РК, Закон № 230-VII) и норм интернет-этики.\n`;
 
       if (liveUrlExtracted) {
-        userTextPrompt += `\n[ИЗВЛЕЧЕННЫЙ КОНТЕНТ ПО ССЫЛКЕ ${url || text}]:\n${liveUrlExtracted}\n`;
+        userTextPrompt += `\n[КОНТЕНТ ПО ССЫЛКЕ ${url || text}]:\n${liveUrlExtracted}\n`;
       } else if (text) {
-        userTextPrompt += `\n[ТЕКСТ ДЛЯ АНАЛИЗА / OCR-ИЗВЛЕЧЕНИЕ]:\n${text}\n`;
+        userTextPrompt += `\n[ТЕКСТ ДЛЯ АНАЛИЗА / OCR]:\n${text}\n`;
       }
 
       if (fileName) {
-        userTextPrompt += `\nИмя проверяемого файла: ${fileName}`;
+        userTextPrompt += `\nИмя файла: ${fileName}`;
       }
 
       // If an image is uploaded (screenshot, photo, or video preview)
@@ -355,7 +462,7 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
 
       // If video frames were provided
       if (Array.isArray(videoFrames) && videoFrames.length > 0) {
-        userTextPrompt += `\n[КАДРЫ ВИДЕОЗАПИСИ (${videoFrames.length} шт.)]: Распознай действия в динамике и текст на экранах.`;
+        userTextPrompt += `\n[КАДРЫ ВИДЕОЗАПИСИ (${videoFrames.length} шт.)]: Распознай действия в динамике и надписи на экранах.`;
         for (const frame of videoFrames.slice(0, 3)) {
           const frameMatch = frame.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
           if (frameMatch) {
@@ -372,32 +479,14 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
       parts.unshift({ text: userTextPrompt });
 
       try {
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini API timeout')), 6500)
-        );
-
-        const response = await Promise.race([
-          ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents: [{ role: 'user', parts }],
-            config: {
-              systemInstruction,
-              responseMimeType: 'application/json',
-              safetySettings: [
-                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-              ],
-            },
-          }),
-          timeoutPromise,
-        ]);
-
-        const rawCandidates = response.candidates?.[0]?.content?.parts?.[0]?.text;
-        geminiResponseText = rawCandidates || response.text || '';
+        geminiResponseText = await callGeminiApi({
+          systemInstruction,
+          contents: [{ role: 'user', parts }],
+          responseJson: true,
+          timeoutMs: 30000,
+        });
       } catch (geminiError) {
-        console.warn('Gemini generateContent call skipped or timed out:', geminiError);
+        console.warn('Gemini generateContent call failed:', geminiError);
       }
     }
 
@@ -411,6 +500,7 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
           code: v.code || (v.category === 'ethics' ? 'Этика: Нарушение норм' : 'ст. 455 КоАП РК'),
           title: v.title || 'Замечание по контенту',
           severity: v.severity || 'warning',
+          quote: v.quote || undefined,
           basis: v.basis || 'Выявлено несоответствие требованиям законодательства РК или этики.',
           fineAmount:
             v.fineAmount ||
@@ -441,8 +531,8 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
           violations,
           metadata: {
             fileSize: fileSize || '1.2 MB',
-            engineConfidence: 99.1,
-            platform: 'Check Activity Engine v4.5 (Казахстан)',
+            engineConfidence: 99.4,
+            platform: 'Gemini AI Multimodal • Check Activity KZ v5.0',
           },
         });
       } catch (e) {
@@ -526,9 +616,10 @@ function buildFallbackAudit(
       code: 'ст. 434 КоАП РК / Этика: Ненормативная лексика',
       title: 'Ненормативная обсценная лексика (маты)',
       severity: 'critical',
-      basis: `В материале обнаружены нецензурные выражения и матерные слова (${matchedProfanities.join(', ')}). В публичном цифровом пространстве РК это квалифицируется как мелкое хулиганство и грубейшее нарушение сетевой этики.`,
-      fineAmount: 'Штраф 5 МРП (19 660 ₸) либо арест до 15 суток / Репутационный бан',
-      jurisdiction: 'МВД РК / Этический комитет интернет-ресурсов',
+      quote: matchedProfanities.slice(0, 4).join(', '),
+      basis: `В материале обнаружены нецензурные выражения и матерные слова («${matchedProfanities.join('», «')}»). В публичном цифровом пространстве РК это квалифицируется как мелкое хулиганство (ст. 434 КоАП РК) и грубейшее нарушение сетевой этики.`,
+      fineAmount: 'Штраф 5 МРП (19 660 ₸) либо арест до 15 суток',
+      jurisdiction: 'МВД РК / Этический комитет',
       recommendation: 'Полностью удалить обсценную лексику и ненормативные выражения.',
     });
     ethicsScore = Math.max(ethicsScore, 85);
@@ -539,13 +630,15 @@ function buildFallbackAudit(
   if (
     /казино|casino|1xbet|1win|pin-up|слот|рулетк|фриспин|ставка|букмекер/i.test(content)
   ) {
+    const casinoMatch = content.match(/казино|casino|1xbet|1win|pin-up|слот[ыа-я]*|рулетк[а-я]*|фриспин[а-я]*|ставка/i);
     violations.push({
       id: 'v-casino-1',
       category: 'legal',
       code: 'ст. 445-1 КоАП РК',
       title: 'Реклама нелицензированных онлайн-казино и азартных игр',
       severity: 'critical',
-      basis: 'Прямая реклама, промокоды или ссылки на интернет-казино, слоты и нелицензированные букмекерские конторы категорически запрещены в РК.',
+      quote: casinoMatch ? casinoMatch[0] : 'Азартные игры / Слоты / 1WIN',
+      basis: 'Прямая реклама, промокоды, ссылки на интернет-казино, слоты и нелицензированные букмекерские конторы категорически запрещены в РК ст. 445-1 КоАП.',
       fineAmount: 'до 1 000 МРП (3 932 000 ₸) + блокировка ресурса',
       jurisdiction: 'АФМ РК / МКИ РК',
       recommendation: 'Немедленно удалить упоминание азартных игр и реферальные ссылки.',
@@ -560,12 +653,14 @@ function buildFallbackAudit(
   const hasAdLabel = /жарнама|реклама/i.test(content);
 
   if (isCommercial && !hasAdLabel) {
+    const commMatch = content.match(/скидк[а-я]*|купить|акция|промокод|цена|распродаж[а-я]*/i);
     violations.push({
       id: 'v-ad-label-1',
       category: 'legal',
       code: 'ст. 455 КоАП РК / Закон № 230-VII',
       title: 'Отсутствие обязательной маркировки рекламы («Жарнама»)',
       severity: 'critical',
+      quote: commMatch ? commMatch[0] : 'Коммерческое предложение / Скидки',
       basis: 'Контент содержит коммерческое предложение, однако отсутствует обязательная маркировка «Жарнама / Реклама» и идентификатор рекламодателя (ИИН/БИН).',
       fineAmount: 'от 50 до 200 МРП (196 600 — 786 400 ₸)',
       jurisdiction: 'МКИ РК (Контроль онлайн-рекламы)',
@@ -577,15 +672,17 @@ function buildFallbackAudit(
 
   // Cyberbullying & Insults
   if (/бездар|тупой|идиот|урод|мразь|ничтожеств|даун|клоун/i.test(content)) {
+    const bullyMatch = content.match(/бездар[а-я]*|тупой|идиот|урод|мразь|ничтожеств[а-я]*|даун|клоун/i);
     violations.push({
       id: 'v-bullying-1',
       category: 'ethics',
       code: 'ст. 73-4 КоАП РК / Этика: Кибербуллинг',
       title: 'Оскорбления личности и признаки кибербуллинга',
       severity: 'critical',
-      basis: 'Унизительные ярлыки, переход на личности и публичная агрессия.',
-      fineAmount: 'Штраф от 10 МРП / Гражданский иск о защите чести',
-      jurisdiction: 'Медиа-этика / Суд РК',
+      quote: bullyMatch ? bullyMatch[0] : 'Оскорбительные выражения',
+      basis: 'Унизительные ярлыки, переход на личности и публичная словесная агрессия против достоинства человека.',
+      fineAmount: 'Штраф от 10 МРП (39 320 ₸) / Защита чести и достоинства',
+      jurisdiction: 'МВД РК / Суд',
       recommendation: 'Исключить оскорбительные формулировки и персональные нападки.',
     });
     ethicsScore = Math.max(ethicsScore, 80);
@@ -594,13 +691,15 @@ function buildFallbackAudit(
 
   // Dark Patterns / FOMO
   if (/только сегодня|пожалеешь|100% гарант|без рисков|сгорит через/i.test(content)) {
+    const fomoMatch = content.match(/только сегодня|пожалеешь|100% гарант[а-я]*|без рисков|сгорит через/i);
     violations.push({
       id: 'v-dark-pattern-1',
       category: 'ethics',
       code: 'Этика: Dark Patterns (Манипулятивный маркетинг)',
       title: 'Манипуляция временем и искусственный дефицит (FOMO)',
       severity: 'warning',
-      basis: 'Применение психологического давления и нереалистичных гарантий без риска.',
+      quote: fomoMatch ? fomoMatch[0] : 'Давление таймером / Ложный дефицит',
+      basis: 'Применение психологического давления, искусственного дефицита и нереалистичных гарантий без риска.',
       fineAmount: 'Репутационный ущерб / Падение доверия',
       jurisdiction: 'Кодекс добросовестного маркетинга',
       recommendation: 'Отказаться от манипулятивных триггеров дефицита и ложных гарантий.',

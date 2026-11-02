@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { AuditCase, ModalityType } from '../types';
 import {
   KAZAKHSTAN_LEGAL_FILTERS,
@@ -21,6 +21,54 @@ import { generateSampleScreenshot, getSampleText } from '../utils/sampleScreensh
 interface ScannerViewProps {
   onRunAudit: (auditCase: AuditCase) => void;
   presetData?: { modality: ModalityType; urlOrText: string };
+}
+
+// Client-side image downscaler to guarantee fast upload (<300KB) and instant Gemini Vision OCR
+function prepareImageFile(file: File): Promise<{ dataUrl: string; sizeStr: string }> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const originalDataUrl = (e.target?.result as string) || '';
+      const img = new Image();
+      img.onload = () => {
+        const MAX_DIM = 1600;
+        let { width, height } = img;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          if (width > height) {
+            height = Math.round((height * MAX_DIM) / width);
+            width = MAX_DIM;
+          } else {
+            width = Math.round((width * MAX_DIM) / height);
+            height = MAX_DIM;
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            const compressed = canvas.toDataURL('image/jpeg', 0.88);
+            const approxKb = Math.round((compressed.length * 3) / 4 / 1024);
+            resolve({ dataUrl: compressed, sizeStr: `${approxKb} KB (оптимизировано)` });
+            return;
+          }
+        }
+        resolve({
+          dataUrl: originalDataUrl,
+          sizeStr: file.size > 0 ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : '320 KB',
+        });
+      };
+      img.onerror = () => {
+        resolve({
+          dataUrl: originalDataUrl,
+          sizeStr: file.size > 0 ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : '320 KB',
+        });
+      };
+      img.src = originalDataUrl;
+    };
+    reader.onerror = () => resolve({ dataUrl: '', sizeStr: '0 KB' });
+    reader.readAsDataURL(file);
+  });
 }
 
 export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData }) => {
@@ -91,7 +139,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     }
   };
 
-  const handleFileSelect = (file: File) => {
+  const handleFileSelect = async (file: File) => {
     setUploadedFile(file);
     setOcrText('');
     setOcrWarning(null);
@@ -99,14 +147,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     setOcrCharCount(0);
 
     if (file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        setFilePreviewUrl(dataUrl);
-        // Automatically trigger OCR extraction immediately upon selection
-        triggerOcr(dataUrl, file.name);
-      };
-      reader.readAsDataURL(file);
+      const { dataUrl } = await prepareImageFile(file);
+      setFilePreviewUrl(dataUrl);
+      // Automatically trigger OCR extraction immediately upon selection
+      triggerOcr(dataUrl, file.name);
     } else if (file.type.startsWith('video/')) {
       try {
         const video = document.createElement('video');
@@ -143,6 +187,22 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
       setFilePreviewUrl(null);
     }
   };
+
+  // Support instant Ctrl+V screenshot paste anywhere in scanner
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
+        const file = e.clipboardData.files[0];
+        if (file.type.startsWith('image/')) {
+          e.preventDefault();
+          setActiveTab('file');
+          handleFileSelect(file);
+        }
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, []);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -289,35 +349,41 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     }
 
     setIsProcessing(true);
-    setProcessingStep('1. Извлечение текста (OCR) и парсинг контента...');
+    setProcessingStep('1. Мультимодальный анализ Gemini AI (распознавание текста и визуального контекста)...');
 
-    setTimeout(() => {
-      setProcessingStep('2. Распознавание действий и визуального контекста...');
-    }, 600);
+    const t1 = setTimeout(() => {
+      setProcessingStep('2. Юридическая сверка с КоАП РК (ст. 434, 445-1, 455, 79) и Законом № 230-VII...');
+    }, 700);
 
-    setTimeout(() => {
-      setProcessingStep('3. Проверка законодательства РК (Закон № 230-VII, ст. 455, 445-1, 79 КоАП)...');
-    }, 1200);
+    const t2 = setTimeout(() => {
+      setProcessingStep('3. Аудит интернет-этики (маты, кибербуллинг, Dark Patterns, скрытая реклама)...');
+    }, 1400);
 
-    setTimeout(() => {
-      setProcessingStep('4. Аудит интернет-этики (Ненормативная лексика, Буллинг, Dark Patterns)...');
-    }, 1800);
+    const t3 = setTimeout(() => {
+      setProcessingStep('4. Расчет штрафов в МРП (1 МРП = 3 932 ₸) и точная фиксация цитат...');
+    }, 2100);
 
-    setTimeout(() => {
-      setProcessingStep('5. Формирование экспертного заключения...');
-    }, 2400);
-
-    setTimeout(async () => {
-      try {
-        const audited = await analyzeContentWithGemini(payload);
-        setIsProcessing(false);
-        onRunAudit(audited);
-      } catch (err) {
-        console.warn('Analysis error:', err);
-        setIsProcessing(false);
-        onRunAudit(PRIMARY_AUDIT_CASE);
-      }
+    const t4 = setTimeout(() => {
+      setProcessingStep('5. Формирование экспертного заключения Check Activity KZ...');
     }, 2800);
+
+    try {
+      const audited = await analyzeContentWithGemini(payload);
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+      setIsProcessing(false);
+      onRunAudit(audited);
+    } catch (err) {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+      console.warn('Analysis error:', err);
+      setIsProcessing(false);
+      onRunAudit(PRIMARY_AUDIT_CASE);
+    }
   };
 
   const displayedFilters =

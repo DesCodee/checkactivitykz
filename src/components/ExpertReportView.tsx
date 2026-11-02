@@ -510,6 +510,22 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                       </span>
                     </div>
 
+                    {v.quote && (
+                      <div className="p-2.5 bg-amber-50/80 rounded-lg border border-amber-200 text-xs text-amber-950 font-['Inter'] flex items-start gap-2">
+                        <span className="material-symbols-outlined text-[16px] text-amber-700 shrink-0 mt-0.5">
+                          format_quote
+                        </span>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-amber-900 text-[10px] uppercase tracking-wide font-['JetBrains_Mono']">
+                            Зафиксированная цитата / Доказательство:
+                          </div>
+                          <div className="font-medium text-slate-900 mt-0.5 italic break-words">
+                            «{v.quote}»
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs text-slate-700 leading-relaxed">
                       <div className="font-semibold text-slate-900 mb-0.5">
                         {isEthics ? 'Суть этического риска:' : 'Основание по закону РК:'}
