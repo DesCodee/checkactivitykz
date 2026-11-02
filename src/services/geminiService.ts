@@ -44,7 +44,7 @@ export async function extractTextWithOcr(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 14000);
+    const timeoutId = setTimeout(() => controller.abort(), 40000);
 
     const response = await fetch('/api/ocr', {
       method: 'POST',
@@ -58,7 +58,10 @@ export async function extractTextWithOcr(
 
     if (response.ok) {
       const data: OcrResult = await response.json();
-      if (data.text && data.text.trim().length > 0) {
+      if (data.text) {
+        data.text = data.text.replace(/\[текст на изображении не обнаружен\]/gi, '').trim();
+      }
+      if (data.text && data.text.length > 0) {
         return data;
       }
     }

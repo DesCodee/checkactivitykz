@@ -235,13 +235,13 @@ app.post('/api/ocr', async (req: Request, res: Response) => {
     if (process.env.GEMINI_API_KEY && base64Data && !ocrExtractedText) {
       try {
         const ocrPrompt = `Ты — профессиональный высокоточный OCR-модуль системы Check Activity KZ.
-Твоя задача — извлечь АБСОЛЮТНО ВЕСЬ видимый текст со скриншота, фото документа, переписки мессенджера (Telegram, WhatsApp, Instagram, TikTok), рекламного баннера или веб-страницы.
+Твоя задача — извлечь АБСОЛЮТНО ВЕСЬ видимый текст со скриншота, фото переписки (Telegram, WhatsApp, Instagram, TikTok), рекламного баннера или веб-страницы.
 
 ПРАВИЛА ИЗВЛЕЧЕНИЯ:
-1. Выпиши ВСЕ слова, фразы, цифры, даты, имена пользователей/ников, ссылки, водяные знаки, ценники, кнопки и дисклеймеры.
+1. Выпиши ВСЕ слова, фразы, цифры, даты, имена пользователей/ников (@...), ссылки, водяные знаки, ценники, кнопки и дисклеймеры.
 2. Сохраняй структуру текста, диалоги переписки и переносы строк.
-3. СТРОГО ОБЯЗАТЕЛЬНО: Если на скриншоте есть НЕЦЕНЗУРНАЯ БРАНЬ, МАТЫ (на русском, казахском, сленге: блять, бля, хуй, пиздец, ебать, сука, нахуй, шешеңді, сиктир, көт и т.д.), оскорбления или угрозы — ОБЯЗАТЕЛЬНО выпиши их ДОСЛОВНО БЕЗ ЦЕНЗУРЫ. Это критически необходимо для правовой фиксации правонарушений по ст. 434 и ст. 73-4 КоАП РК. Никаких звездочек!
-4. Если на изображении нет букв или текста, верни ровно: "[Текст на изображении не обнаружен]".
+3. СТРОГО ОБЯЗАТЕЛЬНО: Если на скриншоте есть НЕЦЕНЗУРНАЯ БРАНЬ, МАТЫ (на русском, казахском, сленге: блять, бля, хуй, пиздец, ебать, сука, нахуй, шешеңді, сиктир, көт, пидор, урод и т.д.), оскорбления или угрозы — ОБЯЗАТЕЛЬНО выпиши их ДОСЛОВНО БЕЗ ЦЕНЗУРЫ. Это критически необходимо для правовой фиксации правонарушений по ст. 434 и ст. 73-4 КоАП РК. Никаких звездочек!
+4. Если на изображении действительно нет букв или текста, верни пустую строку "".
 5. Выведи ТОЛЬКО распознанный текст без каких-либо вводных слов, пояснений от себя или кавычек.`;
 
         ocrExtractedText = await callGeminiApi({
@@ -261,8 +261,12 @@ app.post('/api/ocr', async (req: Request, res: Response) => {
               ],
             },
           ],
-          timeoutMs: 25000,
+          timeoutMs: 28000,
         });
+
+        if (ocrExtractedText) {
+          ocrExtractedText = ocrExtractedText.replace(/\[текст на изображении не обнаружен\]/gi, '').trim();
+        }
       } catch (geminiOcrErr) {
         console.warn('Gemini OCR call failed:', geminiOcrErr);
       }
@@ -432,19 +436,8 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
         | { inlineData: { mimeType: string; data: string } }
       > = [];
 
-      let userTextPrompt = `Проведи полный визуальный и текстовый аудит контента на соблюдение законов Казахстана (КоАП РК, Закон № 230-VII) и норм интернет-этики.\n`;
-
-      if (liveUrlExtracted) {
-        userTextPrompt += `\n[КОНТЕНТ ПО ССЫЛКЕ ${url || text}]:\n${liveUrlExtracted}\n`;
-      } else if (text) {
-        userTextPrompt += `\n[ТЕКСТ ДЛЯ АНАЛИЗА / OCR]:\n${text}\n`;
-      }
-
-      if (fileName) {
-        userTextPrompt += `\nИмя файла: ${fileName}`;
-      }
-
       // If an image is uploaded (screenshot, photo, or video preview)
+      let hasImage = false;
       if (imageDataUrl && typeof imageDataUrl === 'string') {
         const mimeMatch = imageDataUrl.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
         const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
@@ -457,12 +450,12 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
               data: base64Data,
             },
           });
+          hasImage = true;
         }
       }
 
       // If video frames were provided
       if (Array.isArray(videoFrames) && videoFrames.length > 0) {
-        userTextPrompt += `\n[КАДРЫ ВИДЕОЗАПИСИ (${videoFrames.length} шт.)]: Распознай действия в динамике и надписи на экранах.`;
         for (const frame of videoFrames.slice(0, 3)) {
           const frameMatch = frame.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
           if (frameMatch) {
@@ -472,8 +465,40 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
                 data: frameMatch[2],
               },
             });
+            hasImage = true;
           }
         }
+      }
+
+      let userTextPrompt = `Проведи полный визуальный и юридический аудит контента на соблюдение законов Казахстана (КоАП РК, Закон № 230-VII) и норм интернет-этики.\n`;
+
+      if (hasImage) {
+        userTextPrompt += `\n[ВНИМАНИЕ: ПРИКРЕПЛЕНО ИЗОБРАЖЕНИЕ / СКРИНШОТ ДЛЯ АНАЛИЗА]:\n`;
+        userTextPrompt += `1. ТЫ ОБЯЗАН САМ ВИЗУАЛЬНО ПРОЧИТАТЬ ВСЕ НАДПИСИ И ТЕКСТЫ НА ЭТОМ СКРИНШОТЕ (OCR)!\n`;
+        userTextPrompt += `   - Внимательно прочитай каждое слово переписки мессенджера (Telegram, WhatsApp, Instagram), никнеймы, реплики сообщений, рекламные баннеры, кнопки, водяные знаки, ценники и дисклеймеры.\n`;
+        userTextPrompt += `   - В поле "extractedText" ОБЯЗАТЕЛЬНО выведи ВЕСЬ прочитанный со скриншота текст слово в слово.\n`;
+        userTextPrompt += `2. ТЫ ОБЯЗАН ВЫЯВИТЬ И ЗАФИКСИРОВАТЬ ВСЕ НАРУШЕНИЯ:\n`;
+        userTextPrompt += `   - ст. 434 КоАП РК: Матерные слова, нецензурная брань (бля, сука, хуй, пиздец, ебать, нахуй, пидор, шешен, сиктир и т.д.) -> статус "ТРЕБУЕТ МЕР", штраф 5 МРП (19 660 ₸).\n`;
+        userTextPrompt += `   - ст. 445-1 КоАП РК: Реклама азартных игр, онлайн-казино, 1win, 1xbet, слоты, ставки, фриспины -> статус "ТРЕБУЕТ МЕР", штраф до 1000 МРП (3 932 000 ₸).\n`;
+        userTextPrompt += `   - Закон № 230-VII: Реклама товаров/услуг со скидками или призывом купить без обязательной маркировки «Жарнама» и без БИН рекламодателя -> штраф до 200 МРП.\n`;
+        userTextPrompt += `   - ст. 73-4 КоАП / ст. 131 УК РК: Травля, оскорбления, кибербуллинг («тупой», «урод», «позорище»).\n`;
+        userTextPrompt += `   - ст. 79 КоАП РК: Персональные данные третьих лиц (номера телефонов, адреса, ИИН).\n`;
+        userTextPrompt += `   - Нормы интернет-этики: Dark Patterns, ложные таймеры («сгорит через 04:59»), обещания «100% дохода без риска».\n`;
+        userTextPrompt += `3. Если на скриншоте есть нарушения — НЕ СТАВЬ "БЕЗОПАСНО"! Ставь "ТРЕБУЕТ МЕР", riskScore от 75 до 95, и заполни массив "violations" с точными цитатами ("quote").\n`;
+
+        if (text && text.trim().length > 0 && text !== fileName && !text.includes('Скриншот для анализа')) {
+          userTextPrompt += `\n[ДОПОЛНИТЕЛЬНО ПРЕДВАРИТЕЛЬНО ИЗВЛЕЧЕННЫЙ OCR ТЕКСТ / ЗАМЕТКА ПОЛЬЗОВАТЕЛЯ]:\n${text}\n`;
+        }
+      } else {
+        if (liveUrlExtracted) {
+          userTextPrompt += `\n[КОНТЕНТ ПО ССЫЛКЕ ${url || text}]:\n${liveUrlExtracted}\n`;
+        } else if (text) {
+          userTextPrompt += `\n[ТЕКСТ ДЛЯ АНАЛИЗА]:\n${text}\n`;
+        }
+      }
+
+      if (fileName) {
+        userTextPrompt += `\nИмя исходного файла: ${fileName}`;
       }
 
       parts.unshift({ text: userTextPrompt });
@@ -483,7 +508,7 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
           systemInstruction,
           contents: [{ role: 'user', parts }],
           responseJson: true,
-          timeoutMs: 30000,
+          timeoutMs: 32000,
         });
       } catch (geminiError) {
         console.warn('Gemini generateContent call failed:', geminiError);
@@ -509,6 +534,70 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
           recommendation: v.recommendation || '',
         }));
 
+        // Secondary safety check: inspect extractedText for any profanity or casino that Gemini missed in violations array
+        const textToCheck = `${parsed.extractedText || ''} ${liveUrlExtracted || ''} ${text || ''}`.toLowerCase();
+        const profanityPatterns = [
+          /блят[ья]/i, /\bбля\b/i, /ху[йияеё]/i, /пизд[аеёиу]/i, /еб[аатьулоы]/i, /ёб[аать]/i,
+          /сук[аи]/i, /наху[йи]/i, /муда[кч]/i, /гондон/i, /пидор/i, /чмо\b/i, /шешен[ді]/i, /сиктир/i, /көт[і]/i
+        ];
+        const matchedMats: string[] = [];
+        for (const p of profanityPatterns) {
+          const m = textToCheck.match(p);
+          if (m) matchedMats.push(m[0]);
+        }
+        if (matchedMats.length > 0 && !violations.some((v: any) => v.code?.includes('434'))) {
+          violations.unshift({
+            id: `v-profanity-auto`,
+            category: 'ethics',
+            code: 'ст. 434 КоАП РК / Этика: Ненормативная лексика',
+            title: 'Ненормативная обсценная лексика (маты)',
+            severity: 'critical',
+            quote: matchedMats.slice(0, 3).join(', '),
+            basis: `В материале зафиксирована нецензурная брань («${matchedMats.slice(0, 3).join('», «')}»). В публичном цифровом пространстве РК это квалифицируется как мелкое хулиганство (ст. 434 КоАП РК).`,
+            fineAmount: 'Штраф 5 МРП (19 660 ₸) либо арест до 15 суток',
+            jurisdiction: 'МВД РК / Этический комитет',
+            recommendation: 'Полностью исключить ненормативную лексику и нецензурные выражения.',
+          });
+        }
+
+        if (/казино|casino|1win|1xbet|pin-up|слот|рулетк|фриспин/i.test(textToCheck) && !violations.some((v: any) => v.code?.includes('445-1'))) {
+          const casMatch = textToCheck.match(/казино|casino|1win|1xbet|pin-up|слот[ыа-я]*|рулетк[а-я]*|фриспин[а-я]*/i);
+          violations.unshift({
+            id: `v-casino-auto`,
+            category: 'legal',
+            code: 'ст. 445-1 КоАП РК',
+            title: 'Реклама нелицензированных онлайн-казино и азартных игр',
+            severity: 'critical',
+            quote: casMatch ? casMatch[0] : 'Азартные игры / 1Win',
+            basis: 'Прямая реклама, промокоды, ссылки на интернет-казино и слоты категорически запрещены в РК ст. 445-1 КоАП.',
+            fineAmount: 'до 1 000 МРП (3 932 000 ₸) + блокировка ресурса',
+            jurisdiction: 'АФМ РК / МКИ РК',
+            recommendation: 'Немедленно удалить упоминание азартных игр и реферальные ссылки.',
+          });
+        }
+
+        const hasCritical = violations.some((v: any) => v.severity === 'critical');
+        const hasWarning = violations.length > 0;
+        const adjustedRiskScore = hasCritical
+          ? Math.max(parsed.riskScore || 0, 85)
+          : hasWarning
+          ? Math.max(parsed.riskScore || 0, 45)
+          : (typeof parsed.riskScore === 'number' ? parsed.riskScore : 0);
+
+        const adjustedStatus = hasCritical
+          ? 'ТРЕБУЕТ МЕР'
+          : hasWarning
+          ? 'ПРЕДУПРЕЖДЕНИЕ'
+          : (parsed.status || 'БЕЗОПАСНО');
+
+        const adjustedRiskLevel = hasCritical
+          ? 'Критический'
+          : adjustedRiskScore >= 40
+          ? 'Высокий'
+          : adjustedRiskScore >= 20
+          ? 'Средний'
+          : 'Низкий';
+
         return res.json({
           id: caseId,
           referenceNumber: refNum,
@@ -517,11 +606,11 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
           title: targetTitle,
           sourceName: targetTitle,
           sha256: randomHash + 'a9f1...02c8',
-          riskScore: typeof parsed.riskScore === 'number' ? parsed.riskScore : 50,
-          legalScore: typeof parsed.legalScore === 'number' ? parsed.legalScore : 40,
-          ethicsScore: typeof parsed.ethicsScore === 'number' ? parsed.ethicsScore : 40,
-          riskLevel: parsed.riskLevel || 'Средний',
-          status: parsed.status || 'ПРЕДУПРЕЖДЕНИЕ',
+          riskScore: adjustedRiskScore,
+          legalScore: typeof parsed.legalScore === 'number' ? parsed.legalScore : adjustedRiskScore,
+          ethicsScore: typeof parsed.ethicsScore === 'number' ? parsed.ethicsScore : adjustedRiskScore,
+          riskLevel: adjustedRiskLevel,
+          status: adjustedStatus,
           summary: parsed.summary || 'Материал проверен на нормы законодательства РК и интернет-этики.',
           ethicsSummary: parsed.ethicsSummary || 'Сформирована оценка этичности и добросовестности.',
           extractedText: parsed.extractedText || liveUrlExtracted || text || '',

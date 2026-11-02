@@ -23,7 +23,7 @@ interface ScannerViewProps {
   presetData?: { modality: ModalityType; urlOrText: string };
 }
 
-// Client-side image downscaler to guarantee fast upload (<300KB) and instant Gemini Vision OCR
+// Client-side image preparer: preserves text sharpness and prevents PNG transparency from becoming black
 function prepareImageFile(file: File): Promise<{ dataUrl: string; sizeStr: string }> {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -31,8 +31,19 @@ function prepareImageFile(file: File): Promise<{ dataUrl: string; sizeStr: strin
       const originalDataUrl = (e.target?.result as string) || '';
       const img = new Image();
       img.onload = () => {
-        const MAX_DIM = 1600;
+        const MAX_DIM = 2400;
         let { width, height } = img;
+
+        // If file is already within reasonable dimensions and size, keep original lossless quality
+        if (width <= MAX_DIM && height <= MAX_DIM && file.size < 4 * 1024 * 1024) {
+          resolve({
+            dataUrl: originalDataUrl,
+            sizeStr: file.size > 0 ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : '320 KB',
+          });
+          return;
+        }
+
+        // Scale proportionally if very large
         if (width > MAX_DIM || height > MAX_DIM) {
           if (width > height) {
             height = Math.round((height * MAX_DIM) / width);
@@ -41,18 +52,24 @@ function prepareImageFile(file: File): Promise<{ dataUrl: string; sizeStr: strin
             width = Math.round((width * MAX_DIM) / height);
             height = MAX_DIM;
           }
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(img, 0, 0, width, height);
-            const compressed = canvas.toDataURL('image/jpeg', 0.88);
-            const approxKb = Math.round((compressed.length * 3) / 4 / 1024);
-            resolve({ dataUrl: compressed, sizeStr: `${approxKb} KB (оптимизировано)` });
-            return;
-          }
         }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          // CRITICAL: Always fill canvas with pure white background before drawing
+          // This prevents PNG alpha channels / transparency from becoming solid black in JPEG conversion!
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressed = canvas.toDataURL('image/jpeg', 0.94);
+          const approxKb = Math.round((compressed.length * 3) / 4 / 1024);
+          resolve({ dataUrl: compressed, sizeStr: `${approxKb} KB (оптимизировано)` });
+          return;
+        }
+
         resolve({
           dataUrl: originalDataUrl,
           sizeStr: file.size > 0 ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : '320 KB',
@@ -99,6 +116,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   const [isDragging, setIsDragging] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeOcrPromiseRef = useRef<Promise<any> | null>(null);
 
   const toggleFilter = (id: string) => {
     setFilters((prev) =>
@@ -118,25 +136,35 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   };
 
   // OCR Execution handler for images
-  const triggerOcr = async (dataUrl: string, fileName?: string) => {
-    if (!dataUrl) return;
+  const triggerOcr = (dataUrl: string, fileName?: string) => {
+    if (!dataUrl) return Promise.resolve(null);
     setIsOcrLoading(true);
-    try {
-      const res = await extractTextWithOcr(dataUrl, fileName);
-      if (res.text && res.text.trim().length > 0) {
-        setOcrText(res.text);
-        setOcrCharCount(res.charCount || res.text.length);
-      }
-      setOcrSuccess(true);
-      if (res.warningNotice) {
-        setOcrWarning(res.warningNotice);
-      }
-    } catch (err) {
-      console.warn('OCR processing error:', err);
-      setOcrSuccess(true);
-    } finally {
-      setIsOcrLoading(false);
-    }
+    const promise = extractTextWithOcr(dataUrl, fileName)
+      .then((res) => {
+        if (res.text && res.text.trim().length > 0) {
+          const cleanText = res.text.replace(/\[текст на изображении не обнаружен\]/gi, '').trim();
+          if (cleanText.length > 0) {
+            setOcrText(cleanText);
+            setOcrCharCount(cleanText.length);
+          }
+        }
+        setOcrSuccess(true);
+        if (res.warningNotice) {
+          setOcrWarning(res.warningNotice);
+        }
+        return res;
+      })
+      .catch((err) => {
+        console.warn('OCR processing error:', err);
+        setOcrSuccess(true);
+        return null;
+      })
+      .finally(() => {
+        setIsOcrLoading(false);
+      });
+
+    activeOcrPromiseRef.current = promise;
+    return promise;
   };
 
   const handleFileSelect = async (file: File) => {
@@ -310,6 +338,18 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         alert('Пожалуйста, выберите или перетащите файл для проверки.');
         return;
       }
+
+      // If OCR is still in progress, wait for it so we don't submit an empty text payload
+      if (isOcrLoading && activeOcrPromiseRef.current) {
+        setIsProcessing(true);
+        setProcessingStep('Завершение оптического считывания надписей (OCR)...');
+        try {
+          await activeOcrPromiseRef.current;
+        } catch {
+          // continue
+        }
+      }
+
       const isImage = (uploadedFile && uploadedFile.type.startsWith('image/')) || !!filePreviewUrl;
       const isVideo = uploadedFile ? uploadedFile.type.startsWith('video/') : false;
 
@@ -325,7 +365,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
           : `${Math.round(ocrCharCount * 1.5 + 120)} KB`,
         imageDataUrl: filePreviewUrl || undefined,
         videoFrames: isVideo && filePreviewUrl ? [filePreviewUrl] : undefined,
-        text: combinedText || (uploadedFile?.name || 'Скриншот для анализа'),
+        text: combinedText || '', // Never pass uploadedFile.name as text; keep empty so multimodal AI reads directly from image pixels
       };
     } else if (activeTab === 'url') {
       if (!urlInput.trim()) {
