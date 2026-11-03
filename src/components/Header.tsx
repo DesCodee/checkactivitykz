@@ -6,8 +6,8 @@
 import React, { useState } from 'react';
 
 interface HeaderProps {
-  currentView: 'home' | 'scanner' | 'report' | 'archive';
-  onNavigate: (view: 'home' | 'scanner' | 'report' | 'archive') => void;
+  currentView: 'home' | 'scanner' | 'report' | 'archive' | 'monitoring';
+  onNavigate: (view: 'home' | 'scanner' | 'report' | 'archive' | 'monitoring') => void;
   onSearchSelect?: (query: string) => void;
 }
 
@@ -92,6 +92,17 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
               Аудит контента
             </button>
             <button
+              onClick={() => onNavigate('monitoring')}
+              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                currentView === 'monitoring'
+                  ? 'bg-slate-100 text-sky-700 font-semibold'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px]">visibility</span>
+              Мониторинг каналов
+            </button>
+            <button
               onClick={() => onNavigate('report')}
               className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap ${
                 currentView === 'report'
@@ -145,38 +156,50 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-slate-200 shadow-lg md:hidden flex items-center justify-around py-1.5 px-2 safe-area-bottom">
         <button
           onClick={() => onNavigate('home')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-lg transition-colors ${
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-lg transition-colors ${
             currentView === 'home' || currentView === 'scanner'
               ? 'text-sky-600 font-semibold'
               : 'text-slate-500 hover:text-slate-800'
           }`}
         >
           <span className="material-symbols-outlined text-[20px]">policy</span>
-          <span className="text-[11px] mt-0.5 font-['Inter']">Аудит</span>
+          <span className="text-[10px] mt-0.5 font-['Inter']">Аудит</span>
+        </button>
+
+        <button
+          onClick={() => onNavigate('monitoring')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-lg transition-colors ${
+            currentView === 'monitoring'
+              ? 'text-sky-600 font-semibold'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <span className="material-symbols-outlined text-[20px]">visibility</span>
+          <span className="text-[10px] mt-0.5 font-['Inter']">Каналы</span>
         </button>
 
         <button
           onClick={() => onNavigate('report')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-lg transition-colors ${
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-lg transition-colors ${
             currentView === 'report'
               ? 'text-sky-600 font-semibold'
               : 'text-slate-500 hover:text-slate-800'
           }`}
         >
           <span className="material-symbols-outlined text-[20px]">assessment</span>
-          <span className="text-[11px] mt-0.5 font-['Inter']">Отчет</span>
+          <span className="text-[10px] mt-0.5 font-['Inter']">Отчет</span>
         </button>
 
         <button
           onClick={() => onNavigate('archive')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-2 rounded-lg transition-colors ${
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-lg transition-colors ${
             currentView === 'archive'
               ? 'text-sky-600 font-semibold'
               : 'text-slate-500 hover:text-slate-800'
           }`}
         >
           <span className="material-symbols-outlined text-[20px]">history</span>
-          <span className="text-[11px] mt-0.5 font-['Inter']">Журнал</span>
+          <span className="text-[10px] mt-0.5 font-['Inter']">Журнал</span>
         </button>
       </nav>
 

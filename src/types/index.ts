@@ -53,17 +53,34 @@ export interface AuditCase {
   };
   transcript?: {
     time: string;
+    speaker?: string;
     text: string;
     flagged?: boolean;
     flaggedText?: string;
     article?: string;
   }[];
+  audioDataUrl?: string;
+  audioDuration?: string;
+  audioVoiceClarity?: number;
+}
+
+export interface MonitoredPost {
+  id: string;
+  date: string;
+  type: 'post' | 'story' | 'reels' | 'comment' | 'audio_story';
+  content: string;
+  hasViolation: boolean;
+  violationTitle?: string;
+  lawCode?: string;
+  fineRisk?: string;
+  severity?: ViolationSeverity;
+  mediaSnippetUrl?: string;
 }
 
 export interface MonitoringChannel {
   id: string;
   name: string;
-  platform: 'telegram' | 'instagram' | 'tiktok' | 'web' | 'marketplace';
+  platform: 'telegram' | 'instagram' | 'tiktok' | 'web' | 'marketplace' | 'youtube';
   platformLabel: string;
   handleOrUrl: string;
   subscribersOrVolume: string;
@@ -72,6 +89,9 @@ export interface MonitoringChannel {
   violations24h: number;
   status: 'LIVE' | 'PAUSED' | 'ALERT';
   alertNote?: string;
+  riskScore?: number;
+  category?: string;
+  recentPosts?: MonitoredPost[];
 }
 
 export interface LegalFilter {

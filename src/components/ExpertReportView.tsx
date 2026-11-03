@@ -40,6 +40,26 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
   const [hoveredChartItem, setHoveredChartItem] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedExtracted, setCopiedExtracted] = useState(false);
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const audioElementRef = React.useRef<HTMLAudioElement | null>(null);
+
+  const isAudioCase =
+    auditCase.sourceType === 'audio' ||
+    Boolean(auditCase.transcript && auditCase.transcript.length > 0) ||
+    Boolean(auditCase.audioDataUrl);
+
+  const togglePlayAudio = () => {
+    if (!audioElementRef.current) return;
+    if (isPlayingAudio) {
+      audioElementRef.current.pause();
+      setIsPlayingAudio(false);
+    } else {
+      audioElementRef.current
+        .play()
+        .then(() => setIsPlayingAudio(true))
+        .catch(() => setIsPlayingAudio(false));
+    }
+  };
 
   const handleShare = () => {
     navigator.clipboard?.writeText(window.location.href);
@@ -636,8 +656,132 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             </div>
 
             {/* Content Viewport */}
-            <div className="relative min-h-[280px] sm:min-h-[340px] max-h-[500px] bg-slate-100 flex items-center justify-center p-3 sm:p-4 overflow-hidden">
-              {auditCase.previewUrl ? (
+            <div className="relative min-h-[280px] sm:min-h-[340px] max-h-[520px] bg-slate-100 flex flex-col justify-between p-3 sm:p-4 overflow-y-auto">
+              {isAudioCase ? (
+                <div className="w-full flex flex-col gap-3.5 bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
+                  {/* Hidden audio element */}
+                  <audio
+                    ref={audioElementRef}
+                    src={auditCase.audioDataUrl || undefined}
+                    onEnded={() => setIsPlayingAudio(false)}
+                  />
+
+                  {/* Audio Header & Playback Controller */}
+                  <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-900 text-white shadow-xs">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <button
+                        type="button"
+                        onClick={togglePlayAudio}
+                        className="w-11 h-11 rounded-xl bg-sky-500 hover:bg-sky-400 text-white flex items-center justify-center shrink-0 shadow-md transition-all active:scale-95"
+                      >
+                        <span className="material-symbols-outlined text-[28px]">
+                          {isPlayingAudio ? 'pause' : 'play_arrow'}
+                        </span>
+                      </button>
+                      <div className="min-w-0">
+                        <div className="font-['Plus_Jakarta_Sans'] font-bold text-xs sm:text-sm text-slate-100 truncate">
+                          {auditCase.title}
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px] font-mono text-slate-400 mt-0.5">
+                          <span>{auditCase.audioDuration || auditCase.metadata.duration || '00:28'}</span>
+                          <span>•</span>
+                          <span className="text-emerald-400 font-semibold">Аудиопоток зафиксирован</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-sky-950 text-sky-300 border border-sky-800">
+                        {auditCase.metadata.platform || 'Аудио-экспертиза KZ'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Interactive Waveform Visualizer */}
+                  <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 flex items-center gap-1 h-10">
+                    {[12, 28, 45, 80, 95, 60, 35, 90, 100, 75, 48, 85, 30, 65, 90, 70, 42, 80, 68, 35, 52, 78, 40, 18, 55, 88, 92, 44, 25, 70].map((bar, i) => (
+                      <div
+                        key={i}
+                        className={`flex-1 rounded-full transition-all duration-200 ${
+                          isPlayingAudio ? 'bg-sky-500 animate-pulse' : 'bg-slate-300'
+                        }`}
+                        style={{ height: `${bar}%` }}
+                      />
+                    ))}
+                  </div>
+
+                  {/* Acoustic Quality Metrics */}
+                  <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                    <div className="p-2 rounded-lg bg-slate-50 border border-slate-200">
+                      <span className="text-[10px] text-slate-500 block uppercase font-mono">Четкость речи</span>
+                      <span className="font-bold font-mono text-slate-900">{auditCase.audioVoiceClarity || 98.4}%</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 border border-slate-200">
+                      <span className="text-[10px] text-slate-500 block uppercase font-mono">Языки</span>
+                      <span className="font-bold text-slate-900">RU / KZ</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 border border-slate-200">
+                      <span className="text-[10px] text-slate-500 block uppercase font-mono">Тональность</span>
+                      <span className={`font-bold ${auditCase.riskScore >= 60 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                        {auditCase.riskScore >= 70 ? 'Агрессия/Токсично' : auditCase.riskScore >= 40 ? 'Повышенный риск' : 'Нейтральная'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Interactive Transcript Timeline with Flagged Highlights */}
+                  {Array.isArray(auditCase.transcript) && auditCase.transcript.length > 0 && (
+                    <div className="mt-1">
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-800 font-['JetBrains_Mono'] uppercase mb-2">
+                        <span className="flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-[16px] text-sky-600">graphic_eq</span>
+                          Стенограмма аудиозаписи (Таймкоды):
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {auditCase.transcript.length} фрагмент(а)
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+                        {auditCase.transcript.map((line, idx) => (
+                          <div
+                            key={idx}
+                            onClick={() => {
+                              if (line.flagged) {
+                                const matchingV = auditCase.violations[0]?.id;
+                                if (matchingV) setActiveBbox(matchingV);
+                              }
+                            }}
+                            className={`p-2.5 rounded-lg border text-xs leading-relaxed transition-all cursor-pointer ${
+                              line.flagged
+                                ? 'bg-rose-50/70 border-rose-300 ring-1 ring-rose-200 hover:bg-rose-100/60'
+                                : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1 mb-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-['JetBrains_Mono'] font-bold text-[10px] text-sky-700 bg-sky-100 px-1.5 py-0.5 rounded">
+                                  {line.time}
+                                </span>
+                                <span className="font-semibold text-slate-800 text-[11px]">
+                                  {line.speaker || 'Спикер'}
+                                </span>
+                              </div>
+                              {line.flagged && (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-bold font-mono bg-rose-600 text-white">
+                                  {line.article || 'НАРУШЕНИЕ'}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-slate-800 font-mono text-xs">
+                              {line.text}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : auditCase.previewUrl ? (
                 <div className="relative max-h-full flex items-center justify-center w-full">
                   <img
                     src={auditCase.previewUrl}

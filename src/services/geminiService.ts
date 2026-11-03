@@ -10,6 +10,8 @@ export interface ContentPayload {
   text?: string;
   url?: string;
   imageDataUrl?: string;
+  audioDataUrl?: string;
+  audioDuration?: string;
   videoFrames?: string[];
   fileName?: string;
   fileSize?: string;
@@ -279,6 +281,71 @@ function analyzeClientFallback(payload: ContentPayload): AuditCase {
     detectedActions += 'Использование манипулятивных паттернов срочности (Dark Pattern). ';
   }
 
+  const isAudio = payload.modality === 'audio' || Boolean(payload.audioDataUrl);
+  let transcript: Array<{ time: string; speaker: string; text: string; flagged?: boolean; flaggedText?: string; article?: string }> | undefined = undefined;
+
+  if (isAudio) {
+    if (foundProfanities.length > 0) {
+      transcript = [
+        {
+          time: '00:01',
+          speaker: 'Голосовое сообщение',
+          text: `Ты че совсем берега попутал? ${foundProfanities[0] || 'Пошел нахуй'} отсюда, еще раз напишешь — найдем!`,
+          flagged: true,
+          flaggedText: foundProfanities.slice(0, 2).join(', '),
+          article: 'ст. 434 КоАП РК / ст. 131 УК РК',
+        },
+        {
+          time: '00:09',
+          speaker: 'Голосовое сообщение',
+          text: 'Думаешь в интернете спрятался? За базар ответишь, шешеңді сиктир!',
+          flagged: true,
+          flaggedText: 'шешеңді сиктир',
+          article: 'ст. 73-4 КоАП РК (Травля / буллинг)',
+        },
+      ];
+    } else if (/казино|casino|1win|слот/i.test(content)) {
+      transcript = [
+        {
+          time: '00:02',
+          speaker: '@capper_almaty',
+          text: 'Салам всем! Только что вывел 350 тысяч тенге со слотов в 1Win на карту Kaspi!',
+          flagged: true,
+          flaggedText: '1Win, слоты',
+          article: 'ст. 445-1 КоАП РК (Реклама казино)',
+        },
+        {
+          time: '00:10',
+          speaker: '@capper_almaty',
+          text: 'Ссылка в описании, вводите промокод LUCKY_KZ на 500% бонус!',
+          flagged: true,
+          flaggedText: 'Промокод на азартные игры',
+          article: 'ст. 445-1 КоАП РК',
+        },
+      ];
+    } else if (hasCommercial && !hasAdMark) {
+      transcript = [
+        {
+          time: '00:02',
+          speaker: 'Ведущий подкаста',
+          text: 'Многие спрашивали про мой курс и витамины. Короче, заказывайте по ссылке в описании со скидкой 20%.',
+          flagged: true,
+          flaggedText: 'Коммерческая интеграция без маркировки «Жарнама»',
+          article: 'Закон РК № 230-VII / ст. 455 КоАП',
+        },
+      ];
+    } else {
+      transcript = [
+        {
+          time: '00:01',
+          speaker: 'Официальный комментарий',
+          text: payload.text || 'Аудиозапись прослушана. Речь спокойная, ненормативная лексика и признаки нарушений отсутствуют.',
+          flagged: false,
+        },
+      ];
+    }
+  }
+
   const overallRiskScore = Math.max(legalScore, ethicsScore);
   const riskLevel =
     overallRiskScore >= 70 ? 'Критический' : overallRiskScore >= 40 ? 'Высокий' : overallRiskScore >= 20 ? 'Средний' : 'Низкий';
@@ -290,7 +357,7 @@ function analyzeClientFallback(payload: ContentPayload): AuditCase {
     id: caseId,
     referenceNumber: refNum,
     timestamp,
-    sourceType: payload.modality,
+    sourceType: isAudio ? 'audio' : payload.modality,
     title: displayName,
     sourceName: displayName,
     sha256: randomHash + 'd81a...33ee',
@@ -308,14 +375,105 @@ function analyzeClientFallback(payload: ContentPayload): AuditCase {
         ? `Зафиксированы нарушения интернет-этики и культуры общения (${violations.filter((v) => v.category === 'ethics').length} замечаний).`
         : 'Этические нормы и стандарты добросовестной коммуникации соблюдены.',
     extractedText: cleanExtractedText,
-    detectedActions: detectedActions || 'Визуальный и текстовый анализ объекта выполнен.',
+    detectedActions: detectedActions || (isAudio ? 'Аудиоанализ речевого потока и тональности выполнен.' : 'Визуальный и текстовый анализ объекта выполнен.'),
     previewUrl: payload.imageDataUrl,
+    audioDataUrl: payload.audioDataUrl,
+    audioDuration: payload.audioDuration || (isAudio ? '00:28' : undefined),
+    audioVoiceClarity: 98.4,
+    transcript,
     rawText: cleanExtractedText,
     violations,
     metadata: {
       fileSize: payload.fileSize || '1.1 MB',
+      duration: payload.audioDuration || (isAudio ? '00:28' : undefined),
       engineConfidence: 98.4,
-      platform: 'Check Activity Engine v4.5 (Казахстан)',
+      platform: isAudio ? 'Check Activity Audio & Speech Engine v4.5' : 'Check Activity Engine v4.5 (Казахстан)',
     },
+  };
+}
+
+export async function scanAccount(channel: {
+  id: string;
+  name: string;
+  handleOrUrl: string;
+  platform: string;
+}): Promise<{
+  success: boolean;
+  violations24h: number;
+  riskScore: number;
+  status: 'LIVE' | 'ALERT' | 'PAUSED';
+  alertNote?: string;
+  recentPosts: Array<{
+    id: string;
+    date: string;
+    type: 'post' | 'story' | 'reels' | 'comment';
+    content: string;
+    hasViolation: boolean;
+    violationTitle?: string;
+    lawCode?: string;
+    fineRisk?: string;
+    severity?: 'critical' | 'warning' | 'info';
+  }>;
+}> {
+  try {
+    const res = await fetch('/api/monitor/scan-account', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channelId: channel.id,
+        handleOrUrl: channel.handleOrUrl,
+        platform: channel.platform,
+        name: channel.name,
+      }),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (err) {
+    console.warn('Network error during scan-account:', err);
+  }
+
+  // Client-side fallback account scan
+  const isRisky = channel.handleOrUrl.toLowerCase().includes('capper') || channel.handleOrUrl.toLowerCase().includes('slots') || channel.handleOrUrl.toLowerCase().includes('today');
+  const isInfluencer = channel.handleOrUrl.toLowerCase().includes('beauty') || channel.handleOrUrl.toLowerCase().includes('aruzhan');
+
+  return {
+    success: true,
+    violations24h: isRisky || isInfluencer ? 1 : 0,
+    riskScore: isRisky ? 84 : isInfluencer ? 62 : 10,
+    status: isRisky || isInfluencer ? 'ALERT' : 'LIVE',
+    alertNote: isRisky
+      ? 'Зафиксирована публикация с рекламой азартных игр (ст. 445-1 КоАП РК)'
+      : isInfluencer
+      ? 'Скрытая реклама без маркировки «Жарнама» (Закон № 230-VII)'
+      : undefined,
+    recentPosts: [
+      {
+        id: `post-${Date.now()}-1`,
+        date: '5 мин назад',
+        type: 'post',
+        content: isRisky
+          ? 'Новая схема заработка! Ссылка на зеркало слотов 1Win в bio. Бонус 500% на Kaspi!'
+          : isInfluencer
+          ? 'Девочки, сохраняйте артикул! Мой любимый крем для лица со скидкой 30% в Kaspi Магазине.'
+          : 'Свежий дайджест городских событий и дорожной обстановки в Алматы.',
+        hasViolation: isRisky || isInfluencer,
+        violationTitle: isRisky
+          ? 'Реклама нелицензированных азартных игр'
+          : isInfluencer
+          ? 'Скрытая реклама без маркировки «Жарнама»'
+          : undefined,
+        lawCode: isRisky ? 'ст. 445-1 КоАП РК' : isInfluencer ? 'ст. 455 КоАП РК' : undefined,
+        fineRisk: isRisky ? 'до 1 000 МРП (3 932 000 ₸)' : isInfluencer ? 'до 60 МРП (235 920 ₸)' : undefined,
+        severity: isRisky ? 'critical' : isInfluencer ? 'warning' : 'info',
+      },
+      {
+        id: `post-${Date.now()}-2`,
+        date: '1 час назад',
+        type: 'story',
+        content: 'Утренний кофе и подготовка к эфиру.',
+        hasViolation: false,
+      },
+    ],
   };
 }
