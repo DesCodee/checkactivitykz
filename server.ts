@@ -15,15 +15,19 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Shared Gemini client with telemetry header as required by guidelines
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+// Lazy Gemini client helper with telemetry header as required by guidelines
+function getAiClient() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
     },
-  },
-});
+  });
+}
 
 // Helper to scrape text content from live URL
 async function scrapeUrl(targetUrl: string): Promise<{ title: string; text: string; rawSnippet: string }> {
@@ -176,24 +180,27 @@ async function callGeminiApi(params: {
 
   // SDK Fallback using @google/genai
   try {
-    const sdkRes = await ai.models.generateContent({
-      model: 'gemini-3.1-flash-lite',
-      contents: params.contents as any,
-      config: {
-        systemInstruction: params.systemInstruction,
-        responseMimeType: params.responseJson ? 'application/json' : undefined,
-        safetySettings: [
-          { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-          { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-          { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-          { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-        ],
-      },
-    });
+    const aiClient = getAiClient();
+    if (aiClient) {
+      const sdkRes = await aiClient.models.generateContent({
+        model: 'gemini-3.1-flash-lite',
+        contents: params.contents as any,
+        config: {
+          systemInstruction: params.systemInstruction,
+          responseMimeType: params.responseJson ? 'application/json' : undefined,
+          safetySettings: [
+            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+          ],
+        },
+      });
 
-    const candidateText = sdkRes.candidates?.[0]?.content?.parts?.[0]?.text || sdkRes.text;
-    if (candidateText) {
-      return candidateText.trim();
+      const candidateText = sdkRes.candidates?.[0]?.content?.parts?.[0]?.text || sdkRes.text;
+      if (candidateText) {
+        return candidateText.trim();
+      }
     }
   } catch (sdkErr) {
     console.warn('SDK fallback also failed:', sdkErr);
@@ -844,7 +851,10 @@ async function startServer() {
 
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -855,10 +865,40 @@ async function startServer() {
     });
   }
 
-  const PORT = 3000;
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on http://0.0.0.0:${PORT}`);
+  // Parse port & host from process.argv (e.g. tsx server.ts --port 3000 --host 0.0.0.0) or environment
+  let port = Number(process.env.PORT) || 3000;
+  let host = '0.0.0.0';
+
+  const portIndex = process.argv.indexOf('--port');
+  if (portIndex !== -1 && process.argv[portIndex + 1]) {
+    const parsed = parseInt(process.argv[portIndex + 1], 10);
+    if (!isNaN(parsed)) port = parsed;
+  }
+
+  const hostIndex = process.argv.indexOf('--host');
+  if (hostIndex !== -1 && process.argv[hostIndex + 1]) {
+    host = process.argv[hostIndex + 1];
+  }
+
+  const server = app.listen(port, host, () => {
+    console.log(`Server listening on http://${host}:${port}`);
   });
+
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`Port ${port} is already in use; reusing active instance.`);
+    } else {
+      console.error('Server listen error:', err);
+    }
+  });
+
+  const handleShutdown = () => {
+    server.close(() => {
+      process.exit(0);
+    });
+  };
+  process.on('SIGTERM', handleShutdown);
+  process.on('SIGINT', handleShutdown);
 }
 
 startServer();

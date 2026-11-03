@@ -4,8 +4,21 @@
  */
 
 import React, { useState } from 'react';
+import {
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip as RechartsTooltip,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+} from 'recharts';
 import { AuditCase } from '../types';
 import { PRIMARY_AUDIT_CASE } from '../data/mockData';
+import { calculateRiskDistribution, ChartDatum } from '../utils/riskAnalytics';
 
 interface ExpertReportViewProps {
   auditCase?: AuditCase;
@@ -22,6 +35,9 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
     auditCase.violations[0]?.id || null
   );
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'legal' | 'ethics'>('all');
+  const [chartMode, setChartMode] = useState<'donut' | 'bar'>('donut');
+  const [activeRiskFilter, setActiveRiskFilter] = useState<string | null>(null);
+  const [hoveredChartItem, setHoveredChartItem] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedExtracted, setCopiedExtracted] = useState(false);
 
@@ -31,15 +47,72 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
+  const riskAnalytics = calculateRiskDistribution(auditCase.violations);
+
   const legalViolations = auditCase.violations.filter((v) => v.category === 'legal');
   const ethicsViolations = auditCase.violations.filter((v) => v.category === 'ethics');
 
+  const filteredByRisk = activeRiskFilter
+    ? auditCase.violations.filter((v) => {
+        const text = `${v.code} ${v.title} ${v.basis} ${v.quote || ''}`.toLowerCase();
+        if (activeRiskFilter === 'cyberbullying') {
+          return /73-4|131|434|115|кибербуллинг|буллинг|травл|оскорблен|унижен|маты|ненормативн|обсценн|хулиганств|токсичн|агресс|угроз/i.test(text);
+        }
+        if (activeRiskFilter === 'privacy') {
+          return /79|94-v|персональн|пдн|номер телефон|сотов|иин|паспорт|удостоверен|утечк|слив|конфиденциальн/i.test(text);
+        }
+        if (activeRiskFilter === 'hidden_ad') {
+          return /230-vii|230|455|маркировк|жарнама|реклам|скрытая реклама|спонсор|бин|инфлюенс|двуязычи|ст\. 21/i.test(text);
+        }
+        if (activeRiskFilter === 'casino') {
+          return /445-1|казино|casino|1win|1xbet|слот|букмекер|ставк|рулетк|фриспин|азартн/i.test(text);
+        }
+        if (activeRiskFilter === 'dark_pattern') {
+          return /dark pattern|манипуляц|fomo|дефицит|таймер|гарантир|обман|ложный|давлен/i.test(text);
+        }
+        return true;
+      })
+    : auditCase.violations;
+
   const displayedViolations =
     selectedFilter === 'all'
-      ? auditCase.violations
+      ? filteredByRisk
       : selectedFilter === 'legal'
-      ? legalViolations
-      : ethicsViolations;
+      ? filteredByRisk.filter((v) => v.category === 'legal')
+      : filteredByRisk.filter((v) => v.category === 'ethics');
+
+  const CustomTooltip = ({ active, payload }: any) => {
+    if (active && payload && payload.length) {
+      const data = payload[0].payload as ChartDatum;
+      return (
+        <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl border border-slate-700 text-xs font-['Inter'] max-w-[270px] pointer-events-none z-50">
+          <div className="flex items-center gap-2 mb-1">
+            <span
+              className="w-2.5 h-2.5 rounded-full shrink-0"
+              style={{ backgroundColor: data.color }}
+            />
+            <span className="font-bold font-['Plus_Jakarta_Sans'] text-slate-100">
+              {data.name}
+            </span>
+          </div>
+          <div className="font-['JetBrains_Mono'] text-[11px] text-slate-400 mb-2">
+            {data.article}
+          </div>
+          <div className="flex items-center justify-between border-t border-slate-800 pt-1.5 text-[11px]">
+            <span className="text-slate-400">Доля риска в кейсе:</span>
+            <span className="font-bold text-amber-400 font-mono text-xs">{data.value}%</span>
+          </div>
+          {data.count > 0 && (
+            <div className="flex items-center justify-between text-[11px] mt-1">
+              <span className="text-slate-400">Зафиксировано пунктов:</span>
+              <span className="font-semibold text-slate-200">{data.count} шт.</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+    return null;
+  };
 
   const isClean = auditCase.violations.length === 0;
   const extractedContent = auditCase.extractedText || auditCase.rawText;
@@ -243,6 +316,311 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         </div>
       </div>
 
+      {/* Recharts Analytics: Risk Distribution Breakdown (% Ratio) */}
+      <div className="rounded-xl bg-white border border-slate-200 p-4 sm:p-5 shadow-xs flex flex-col gap-4">
+        {/* Analytics Card Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="material-symbols-outlined text-sky-600 text-[20px]">
+                pie_chart
+              </span>
+              <h2 className="font-['Plus_Jakarta_Sans'] text-sm sm:text-base font-bold text-slate-900">
+                Диаграмма распределения выявленных рисков
+              </h2>
+              <span className="text-[10px] font-['JetBrains_Mono'] font-semibold px-2 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200">
+                Recharts Analytics
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Процентное соотношение ключевых категорий: кибербуллинг, нарушение ПДн, скрытая реклама и недобросовестный маркетинг
+            </p>
+          </div>
+
+          {/* Controls: Chart Mode Switcher & Filter Reset */}
+          <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+            {activeRiskFilter && (
+              <button
+                type="button"
+                onClick={() => setActiveRiskFilter(null)}
+                className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 transition-colors flex items-center gap-1"
+                title="Сбросить фильтр по риску"
+              >
+                <span className="material-symbols-outlined text-[14px]">filter_alt_off</span>
+                <span>Сбросить выбор</span>
+              </button>
+            )}
+
+            <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs">
+              <button
+                type="button"
+                onClick={() => setChartMode('donut')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                  chartMode === 'donut'
+                    ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="Круговая диаграмма (Donut)"
+              >
+                <span className="material-symbols-outlined text-[15px]">donut_large</span>
+                <span>Круговая</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setChartMode('bar')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                  chartMode === 'bar'
+                    ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="Гистограмма рисков"
+              >
+                <span className="material-symbols-outlined text-[15px]">bar_chart</span>
+                <span>Гистограмма</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Content: Chart + Category Breakdown Ledger */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
+          {/* Left Chart Viewport (5 cols) */}
+          <div className="lg:col-span-5 relative flex flex-col items-center justify-center p-2 sm:p-3 bg-slate-50/70 rounded-xl border border-slate-200">
+            <div className="w-full h-[240px] sm:h-[260px] relative">
+              {chartMode === 'donut' ? (
+                <>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <RechartsTooltip content={<CustomTooltip />} />
+                      <Pie
+                        data={riskAnalytics.activeChartData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={66}
+                        outerRadius={96}
+                        paddingAngle={riskAnalytics.activeChartData.length > 1 ? 3 : 0}
+                        cornerRadius={5}
+                        dataKey="value"
+                        nameKey="name"
+                        stroke="#ffffff"
+                        strokeWidth={2}
+                        animationDuration={800}
+                        onMouseEnter={(_, index) => {
+                          setHoveredChartItem(riskAnalytics.activeChartData[index]?.id || null);
+                        }}
+                        onMouseLeave={() => setHoveredChartItem(null)}
+                        onClick={(entry: any) => {
+                          const item = entry?.payload || entry;
+                          if (item && item.id && item.id !== 'clean') {
+                            const targetId = String(item.id);
+                            setActiveRiskFilter((prev) => (prev === targetId ? null : targetId));
+                          }
+                        }}
+                        cursor="pointer"
+                      >
+                        {riskAnalytics.activeChartData.map((entry) => (
+                          <Cell
+                            key={`cell-${entry.id}`}
+                            fill={entry.color}
+                            opacity={hoveredChartItem && hoveredChartItem !== entry.id ? 0.5 : 1}
+                          />
+                        ))}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+
+                  {/* Centered HUD Metric */}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                    <span className="font-['Plus_Jakarta_Sans'] text-2xl font-bold text-slate-900 leading-none">
+                      {isClean ? '0%' : `${auditCase.riskScore}%`}
+                    </span>
+                    <span className="text-[10px] font-['JetBrains_Mono'] font-semibold text-slate-500 uppercase mt-1">
+                      {isClean ? 'Безопасно' : 'Индекс риска'}
+                    </span>
+                    <span className="text-[9px] text-slate-400 mt-0.5">
+                      {isClean ? 'Нарушений нет' : `${auditCase.violations.length} замечаний`}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={riskAnalytics.activeChartData}
+                    layout="vertical"
+                    margin={{ top: 10, right: 30, left: 10, bottom: 5 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#E2E8F0" />
+                    <XAxis
+                      type="number"
+                      domain={[0, 100]}
+                      unit="%"
+                      tick={{ fontSize: 10, fill: '#64748B', fontFamily: 'JetBrains Mono' }}
+                      axisLine={{ stroke: '#CBD5E1' }}
+                    />
+                    <YAxis
+                      type="category"
+                      dataKey="shortName"
+                      tick={{ fontSize: 11, fill: '#1E293B', fontWeight: 600 }}
+                      width={110}
+                      axisLine={{ stroke: '#CBD5E1' }}
+                    />
+                    <RechartsTooltip content={<CustomTooltip />} />
+                    <Bar
+                      dataKey="value"
+                      radius={[0, 6, 6, 0]}
+                      animationDuration={800}
+                      onClick={(entry: any) => {
+                        const item = entry?.payload || entry;
+                        if (item && item.id && item.id !== 'clean') {
+                          const targetId = String(item.id);
+                          setActiveRiskFilter((prev) => (prev === targetId ? null : targetId));
+                        }
+                      }}
+                      cursor="pointer"
+                    >
+                      {riskAnalytics.activeChartData.map((entry) => (
+                        <Cell
+                          key={`bar-${entry.id}`}
+                          fill={entry.color}
+                          opacity={hoveredChartItem && hoveredChartItem !== entry.id ? 0.5 : 1}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+
+            <div className="text-[11px] text-slate-500 text-center font-['JetBrains_Mono'] mt-1">
+              {riskAnalytics.isClean
+                ? '✓ 100% Соответствие законодательству РК и нормам сетевой этики'
+                : 'Кликните на сектор диаграммы или карточку справа для быстрой фильтрации'}
+            </div>
+          </div>
+
+          {/* Right Category Cards Ledger (7 cols) */}
+          <div className="lg:col-span-7 flex flex-col gap-2">
+            {/* Dominant Risk Notification Pill if violations detected */}
+            {riskAnalytics.dominantRisk && (
+              <div className="px-3 py-2 rounded-lg bg-amber-50/80 border border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="material-symbols-outlined text-[16px] text-amber-700 shrink-0">
+                    priority_high
+                  </span>
+                  <span className="truncate">
+                    Доминирующий риск:{' '}
+                    <strong>{riskAnalytics.dominantRisk.name}</strong> ({riskAnalytics.dominantRisk.percentage}%)
+                  </span>
+                </div>
+                <span className="font-['JetBrains_Mono'] text-[10px] text-amber-700 bg-white px-2 py-0.5 rounded border border-amber-200 shrink-0">
+                  {riskAnalytics.dominantRisk.article}
+                </span>
+              </div>
+            )}
+
+            {/* Grid of Core Categories: Кибербуллинг, Нарушение ПДн, Скрытая реклама + Казино & Dark Patterns */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {riskAnalytics.coreCategories.map((cat) => {
+                const isSelected = activeRiskFilter === cat.id;
+                const isDetected = cat.count > 0;
+
+                return (
+                  <div
+                    key={cat.id}
+                    onClick={() => {
+                      if (isDetected) {
+                        setActiveRiskFilter((prev) => (prev === cat.id ? null : cat.id));
+                      }
+                    }}
+                    onMouseEnter={() => setHoveredChartItem(cat.id)}
+                    onMouseLeave={() => setHoveredChartItem(null)}
+                    className={`p-2.5 sm:p-3 rounded-xl border transition-all select-none ${
+                      isDetected ? 'cursor-pointer' : 'opacity-70 cursor-default'
+                    } ${
+                      isSelected
+                        ? 'ring-2 ring-sky-500 shadow-sm bg-white'
+                        : isDetected
+                        ? 'bg-white hover:border-slate-300 hover:shadow-xs'
+                        : 'bg-slate-50/60 border-slate-200'
+                    }`}
+                    style={{
+                      borderColor: isSelected ? cat.color : undefined,
+                    }}
+                  >
+                    <div className="flex items-start justify-between gap-1.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div
+                          className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
+                          style={{
+                            backgroundColor: cat.lightColor,
+                            color: cat.color,
+                          }}
+                        >
+                          <span className="material-symbols-outlined text-[15px]">
+                            {cat.icon}
+                          </span>
+                        </div>
+                        <div className="min-w-0">
+                          <h4 className="text-xs font-bold text-slate-900 truncate leading-tight">
+                            {cat.name}
+                          </h4>
+                          <div className="text-[10px] font-['JetBrains_Mono'] text-slate-500 truncate mt-0.5">
+                            {cat.article}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Percentage Badge */}
+                      <span
+                        className="px-1.5 py-0.5 rounded text-xs font-bold font-['JetBrains_Mono'] shrink-0"
+                        style={{
+                          backgroundColor: isDetected ? cat.lightColor : '#F1F5F9',
+                          color: isDetected ? cat.color : '#64748B',
+                        }}
+                      >
+                        {cat.percentage}%
+                      </span>
+                    </div>
+
+                    {/* Visual Percentage Progress Bar */}
+                    <div className="w-full bg-slate-100 h-1.5 rounded-full mt-2 overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-500"
+                        style={{
+                          width: `${cat.percentage}%`,
+                          backgroundColor: cat.color,
+                        }}
+                      />
+                    </div>
+
+                    {/* Footer count & interaction label */}
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 mt-1.5 pt-1 border-t border-slate-100">
+                      <span>
+                        {isDetected
+                          ? `${cat.count} замечаний (${cat.weight} вес)`
+                          : 'Риск не выявлен'}
+                      </span>
+                      {isDetected ? (
+                        <span
+                          className="font-semibold font-mono"
+                          style={{ color: cat.color }}
+                        >
+                          {isSelected ? '✓ Выбрано' : 'Фильтровать'}
+                        </span>
+                      ) : (
+                        <span className="text-emerald-600 font-medium font-mono">
+                          ✓ Чисто
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Main Inspection Grid (Responsive 1-col on mobile, 2-col on desktop) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
         {/* Left Column: Visual or Text Evidence Inspector (6 cols) */}
@@ -397,47 +775,73 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         {/* Right Column: Violations & Ethical Issues Ledger (6 cols) */}
         <div className="lg:col-span-6 flex flex-col gap-3 sm:gap-4">
           {/* Header & Filter Tabs */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <h2 className="font-['Plus_Jakarta_Sans'] text-base sm:text-lg font-bold text-slate-900">
-              Выявленные замечания ({auditCase.violations.length})
-            </h2>
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <h2 className="font-['Plus_Jakarta_Sans'] text-base sm:text-lg font-bold text-slate-900">
+                Выявленные замечания ({displayedViolations.length}{activeRiskFilter ? ` из ${auditCase.violations.length}` : ''})
+              </h2>
 
-            {/* Category Filter Pills */}
-            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs self-start sm:self-auto">
-              <button
-                type="button"
-                onClick={() => setSelectedFilter('all')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                  selectedFilter === 'all'
-                    ? 'bg-white text-slate-900 shadow-xs font-semibold'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Все ({auditCase.violations.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedFilter('legal')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                  selectedFilter === 'legal'
-                    ? 'bg-sky-600 text-white font-semibold'
-                    : 'text-slate-600 hover:text-sky-700'
-                }`}
-              >
-                Закон ({legalViolations.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedFilter('ethics')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                  selectedFilter === 'ethics'
-                    ? 'bg-purple-600 text-white font-semibold'
-                    : 'text-slate-600 hover:text-purple-700'
-                }`}
-              >
-                Этика ({ethicsViolations.length})
-              </button>
+              {/* Category Filter Pills */}
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs self-start sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => setSelectedFilter('all')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                    selectedFilter === 'all'
+                      ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Все ({auditCase.violations.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedFilter('legal')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                    selectedFilter === 'legal'
+                      ? 'bg-sky-600 text-white font-semibold'
+                      : 'text-slate-600 hover:text-sky-700'
+                  }`}
+                >
+                  Закон ({legalViolations.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedFilter('ethics')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                    selectedFilter === 'ethics'
+                      ? 'bg-purple-600 text-white font-semibold'
+                      : 'text-slate-600 hover:text-purple-700'
+                  }`}
+                >
+                  Этика ({ethicsViolations.length})
+                </button>
+              </div>
             </div>
+
+            {/* Active Risk Category Filter Indicator */}
+            {activeRiskFilter && (
+              <div className="flex items-center justify-between p-2 rounded-lg bg-sky-50 border border-sky-200 text-xs text-sky-900">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="material-symbols-outlined text-[16px] text-sky-700">filter_alt</span>
+                  <span className="truncate">
+                    Фильтр по диаграмме:{' '}
+                    <strong>
+                      {riskAnalytics.coreCategories.find((c) => c.id === activeRiskFilter)?.name ||
+                        activeRiskFilter}
+                    </strong>{' '}
+                    ({displayedViolations.length} замечаний)
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveRiskFilter(null)}
+                  className="text-[11px] font-semibold text-sky-700 hover:text-sky-900 underline shrink-0 ml-2"
+                >
+                  Сбросить фильтр
+                </button>
+              </div>
+            )}
           </div>
 
           {/* List of issues */}

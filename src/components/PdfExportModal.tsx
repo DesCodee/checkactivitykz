@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import { AuditCase } from '../types';
+import { calculateRiskDistribution } from '../utils/riskAnalytics';
 
 interface PdfExportModalProps {
   auditCase: AuditCase;
@@ -22,6 +23,7 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({ auditCase, onClo
     }, 300);
   };
 
+  const riskAnalytics = calculateRiskDistribution(auditCase.violations);
   const legalViolations = auditCase.violations.filter((v) => v.category === 'legal');
   const ethicsViolations = auditCase.violations.filter((v) => v.category === 'ethics');
 
@@ -111,6 +113,33 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({ auditCase, onClo
               <div className="text-slate-700">
                 Этических рисков: <strong>{ethicsViolations.length}</strong> • Нормы: Dark Patterns, Кибербуллинг, Hate Speech
               </div>
+            </div>
+          </div>
+
+          {/* Risk Distribution Breakdown (% Ratio) */}
+          <div className="bg-white p-3 rounded-lg border border-slate-200">
+            <div className="text-[10px] font-bold uppercase font-mono text-slate-700 mb-2 flex items-center justify-between">
+              <span>Распределение рисков (% соотношение):</span>
+              <span className="text-slate-400 font-normal">Сумма: 100%</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {riskAnalytics.coreCategories.map((cat) => (
+                <div
+                  key={cat.id}
+                  className="p-2 rounded border border-slate-200 bg-slate-50 flex items-center justify-between"
+                >
+                  <div className="min-w-0 pr-1">
+                    <div className="text-[10px] font-semibold text-slate-800 truncate">{cat.name}</div>
+                    <div className="text-[9px] text-slate-500 font-mono truncate">{cat.article}</div>
+                  </div>
+                  <span
+                    className="font-mono font-bold text-xs shrink-0"
+                    style={{ color: cat.count > 0 ? cat.color : '#94A3B8' }}
+                  >
+                    {cat.percentage}%
+                  </span>
+                </div>
+              ))}
             </div>
           </div>
 
