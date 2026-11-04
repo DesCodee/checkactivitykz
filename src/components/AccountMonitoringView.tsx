@@ -72,7 +72,7 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
       ? 'telegram'
       : lower.includes('tiktok')
       ? 'tiktok'
-      : lower.includes('youtube')
+      : lower.includes('youtube') || lower.includes('youtu.be')
       ? 'youtube'
       : 'instagram';
 
@@ -84,14 +84,18 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
       setQuickStepActive(5);
       const isCasino = lower.includes('capper') || lower.includes('1win') || lower.includes('bet') || lower.includes('slot');
       const isPromo = lower.includes('zheka') || lower.includes('promo') || lower.includes('sale');
-      const handleClean = input.replace(/^https?:\/\/(www\.)?(instagram\.com|tiktok\.com|t\.me)\//i, '@').split('/')[0] || input;
+      const youtubeUrl = platform === 'youtube' && /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i.test(input);
+      const youtubeHandleMatch = input.match(/^(https?:\/\/)?(www\.)?youtube\.com\/(@[^/?#]+)/i);
+      const handleClean = youtubeUrl
+        ? youtubeHandleMatch?.[3] || input
+        : input.replace(/^https?:\/\/(www\.)?(instagram\.com|tiktok\.com|t\.me)\//i, '@').split('/')[0] || input;
 
       const newChan: MonitoringChannel = {
         id: `mon-${Date.now()}`,
-        name: handleClean.replace('@', ''),
+        name: youtubeUrl && !youtubeHandleMatch ? 'YouTube ссылка' : handleClean.replace('@', ''),
         platform,
-        platformLabel: platform === 'instagram' ? 'Instagram KZ' : platform === 'telegram' ? 'Telegram KZ' : 'TikTok KZ',
-        handleOrUrl: handleClean.startsWith('@') ? handleClean : '@' + handleClean,
+        platformLabel: platform === 'instagram' ? 'Instagram KZ' : platform === 'telegram' ? 'Telegram KZ' : platform === 'youtube' ? 'YouTube KZ' : 'TikTok KZ',
+        handleOrUrl: handleClean.startsWith('@') || youtubeUrl ? handleClean : '@' + handleClean,
         subscribersOrVolume: 'Отслеживаемый аккаунт',
         frequency: 'Каждые 30 минут',
         lastScan: 'Только что',
