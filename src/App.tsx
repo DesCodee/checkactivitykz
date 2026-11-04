@@ -10,12 +10,13 @@ import { ScannerView } from './components/ScannerView';
 import { ExpertReportView } from './components/ExpertReportView';
 import { ArchiveMonitoringView } from './components/ArchiveMonitoringView';
 import { AccountMonitoringView } from './components/AccountMonitoringView';
+import { DashboardView } from './components/DashboardView';
 import { PdfExportModal } from './components/PdfExportModal';
 import { Footer } from './components/Footer';
 import { AuditCase, ModalityType } from './types';
 import { PRIMARY_AUDIT_CASE } from './data/mockData';
 
-type ViewType = 'home' | 'scanner' | 'report' | 'archive' | 'monitoring';
+type ViewType = 'home' | 'scanner' | 'report' | 'archive' | 'monitoring' | 'dashboard';
 
 export default function App() {
   const [currentView, setCurrentView] = useState<ViewType>('home');
@@ -122,6 +123,14 @@ export default function App() {
             onSelectCase={handleSelectCase}
             onOpenPdfModal={() => setSelectedPdfCase(currentAuditCase)}
             userHistory={userHistory}
+          />
+        )}
+
+        {currentView === 'dashboard' && (
+          <DashboardView
+            userHistory={userHistory}
+            onOpenReport={handleSelectCase}
+            onNavigateToScanner={handleStartScannerWithPreset}
           />
         )}
       </main>

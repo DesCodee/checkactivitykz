@@ -158,7 +158,7 @@ async function callGeminiApi(params: {
     throw new Error('GEMINI_API_KEY is not configured');
   }
 
-  const timeoutMs = params.timeoutMs || 25000;
+  const timeoutMs = params.timeoutMs || 45000;
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error('Gemini API timeout')), timeoutMs)
   );
@@ -240,14 +240,15 @@ app.post('/api/ocr', async (req: Request, res: Response) => {
               ],
             },
           ],
-          timeoutMs: 28000,
+          timeoutMs: 45000,
         });
 
         if (ocrExtractedText) {
           ocrExtractedText = ocrExtractedText.replace(/\[текст на изображении не обнаружен\]/gi, '').trim();
         }
-      } catch (geminiOcrErr) {
-        console.warn('Gemini OCR call failed:', geminiOcrErr);
+      } catch (geminiOcrErr: any) {
+        // Graceful handling of OCR timeout or rate limits without crashing or alarming error logs
+        console.info('OCR notice (using fallback text if available):', geminiOcrErr?.message || 'timeout/busy');
       }
     }
 

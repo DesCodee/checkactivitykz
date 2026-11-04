@@ -6,8 +6,8 @@
 import React, { useState } from 'react';
 
 interface HeaderProps {
-  currentView: 'home' | 'scanner' | 'report' | 'archive' | 'monitoring';
-  onNavigate: (view: 'home' | 'scanner' | 'report' | 'archive' | 'monitoring') => void;
+  currentView: 'home' | 'scanner' | 'report' | 'archive' | 'monitoring' | 'dashboard';
+  onNavigate: (view: 'home' | 'scanner' | 'report' | 'archive' | 'monitoring' | 'dashboard') => void;
   onSearchSelect?: (query: string) => void;
 }
 
@@ -113,6 +113,17 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
               Экспертный отчет
             </button>
             <button
+              onClick={() => onNavigate('dashboard')}
+              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                currentView === 'dashboard'
+                  ? 'bg-slate-100 text-sky-700 font-semibold'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px]">monitoring</span>
+              Дашборд
+            </button>
+            <button
               onClick={() => onNavigate('archive')}
               className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap ${
                 currentView === 'archive'
@@ -188,6 +199,18 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
         >
           <span className="material-symbols-outlined text-[20px]">assessment</span>
           <span className="text-[10px] mt-0.5 font-['Inter']">Отчет</span>
+        </button>
+
+        <button
+          onClick={() => onNavigate('dashboard')}
+          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-lg transition-colors ${
+            currentView === 'dashboard'
+              ? 'text-sky-600 font-semibold'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <span className="material-symbols-outlined text-[20px]">monitoring</span>
+          <span className="text-[10px] mt-0.5 font-['Inter']">Дашборд</span>
         </button>
 
         <button
