@@ -65,6 +65,13 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
       videoPlayerRef.current.currentTime = sec;
       videoPlayerRef.current.play().catch(() => {});
       videoPlayerRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (auditCase.videoDataUrl && auditCase.videoDataUrl.includes('youtube.com/embed')) {
+      const baseUrl = auditCase.videoDataUrl.split('?')[0];
+      const iframe = document.querySelector('iframe');
+      if (iframe) {
+        iframe.src = `${baseUrl}?start=${sec}&autoplay=1`;
+        iframe.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
     } else if (audioElementRef.current) {
       audioElementRef.current.currentTime = sec;
       audioElementRef.current.play().catch(() => {});
@@ -813,7 +820,15 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
 
                   {/* Active Keyframe Display or Real HTML5 Video Player */}
                   <div className="relative w-full flex items-center justify-center bg-slate-950 rounded-xl overflow-hidden min-h-[220px] max-h-[360px]">
-                    {auditCase.videoDataUrl || auditCase.videoUrl ? (
+                    {auditCase.videoDataUrl && auditCase.videoDataUrl.includes('youtube.com/embed') ? (
+                      <iframe
+                        src={auditCase.videoDataUrl}
+                        title={auditCase.title}
+                        className="w-full h-full min-h-[300px] max-h-[360px] rounded-lg border-0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                      />
+                    ) : auditCase.videoDataUrl || auditCase.videoUrl ? (
                       <video
                         ref={videoPlayerRef}
                         src={auditCase.videoDataUrl || auditCase.videoUrl}

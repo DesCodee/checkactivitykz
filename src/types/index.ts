@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type ModalityType = 'url' | 'screenshot' | 'photo' | 'audio' | 'video';
+export type ModalityType = 'url' | 'screenshot' | 'photo' | 'audio' | 'video' | 'text';
 
 export type ViolationSeverity = 'critical' | 'warning' | 'info';
 

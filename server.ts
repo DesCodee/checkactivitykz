@@ -15,8 +15,8 @@ import { analyzeEmojis } from './src/utils/emojiIntelligence';
 dotenv.config();
 
 const app = express();
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+app.use(express.json({ limit: '200mb' }));
+app.use(express.urlencoded({ extended: true, limit: '200mb' }));
 
 // Lazy Gemini client helper with telemetry header as required by guidelines
 function getAiClient() {
@@ -32,8 +32,15 @@ function getAiClient() {
   });
 }
 
-// Helper to scrape text content from live URL with social platform intelligence
-async function scrapeUrl(targetUrl: string): Promise<{ title: string; text: string; rawSnippet: string }> {
+// Helper to scrape text content and media thumbnails from live URL with social platform intelligence
+async function scrapeUrl(targetUrl: string): Promise<{
+  title: string;
+  text: string;
+  rawSnippet: string;
+  thumbnailBase64?: string;
+  videoEmbedUrl?: string;
+  isVideo?: boolean;
+}> {
   let normalizedUrl = targetUrl.trim();
   if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
     normalizedUrl = 'https://' + normalizedUrl;
@@ -53,40 +60,91 @@ async function scrapeUrl(targetUrl: string): Promise<{ title: string; text: stri
     socialContext = 'Объект проверки: Официальный информационный портал Республики Казахстан. Нарушений законодательства и норм цифровой этики не обнаружено.';
   }
 
-  // Video platforms oEmbed extraction for real video link checking
+  // 1. YouTube & Shorts Video Platform Intelligence
   if (lower.includes('youtube.com') || lower.includes('youtu.be')) {
+    const ytMatch = normalizedUrl.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/i);
+    const videoId = ytMatch ? ytMatch[1] : '';
+    let title = normalizedUrl;
+    let author = 'YouTube Автор';
+    let thumbnailUrl = videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : '';
+    let thumbnailBase64 = '';
+
     try {
       const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(normalizedUrl)}&format=json`);
       if (oembedRes.ok) {
         const oembed: any = await oembedRes.json();
-        return {
-          title: oembed.title || normalizedUrl,
-          text: `[YouTube Видео/Shorts]: ${oembed.title}\nАвтор канала: ${oembed.author_name}\nСсылка: ${normalizedUrl}\nТип контента: видеоматериал для проверки визуального ряда, звука и описания на нормы законодательства РК.`,
-          rawSnippet: `${oembed.title} (${oembed.author_name})`,
-        };
+        title = oembed.title || title;
+        author = oembed.author_name || author;
+        if (oembed.thumbnail_url) {
+          thumbnailUrl = oembed.thumbnail_url;
+        }
       }
     } catch {
       // continue
     }
-  } else if (lower.includes('tiktok.com')) {
+
+    if (thumbnailUrl) {
+      try {
+        const thumbRes = await fetch(thumbnailUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        if (thumbRes.ok) {
+          const buf = await thumbRes.arrayBuffer();
+          thumbnailBase64 = `data:image/jpeg;base64,${Buffer.from(buf).toString('base64')}`;
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    return {
+      title,
+      text: `[YouTube Видео/Shorts]: ${title}\nАвтор канала: ${author}\nСсылка: ${normalizedUrl}\nВидео-ID: ${videoId}\nТип контента: видеоматериал для проверки визуального ряда, звука и описания на нормы законодательства РК (Закон № 230-VII, ст. 434, 445-1, 455 КоАП РК).`,
+      rawSnippet: `${title} (${author})`,
+      thumbnailBase64: thumbnailBase64 || undefined,
+      videoEmbedUrl: videoId ? `https://www.youtube.com/embed/${videoId}` : undefined,
+      isVideo: true,
+    };
+  }
+
+  // 2. TikTok Platform Intelligence
+  if (lower.includes('tiktok.com')) {
+    let title = normalizedUrl;
+    let author = 'TikTok Автор';
+    let thumbnailBase64 = '';
+
     try {
       const oembedRes = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(normalizedUrl)}`);
       if (oembedRes.ok) {
         const oembed: any = await oembedRes.json();
-        return {
-          title: oembed.title || normalizedUrl,
-          text: `[TikTok Видео]: ${oembed.title}\nАвтор: ${oembed.author_name}\nСсылка: ${normalizedUrl}\nВидеоряд и звуковая дорожка проверяются по нормам КоАП РК и Закону № 230-VII.`,
-          rawSnippet: `${oembed.title} (${oembed.author_name})`,
-        };
+        title = oembed.title || title;
+        author = oembed.author_name || author;
+        if (oembed.thumbnail_url) {
+          try {
+            const thumbRes = await fetch(oembed.thumbnail_url);
+            if (thumbRes.ok) {
+              const buf = await thumbRes.arrayBuffer();
+              thumbnailBase64 = `data:image/jpeg;base64,${Buffer.from(buf).toString('base64')}`;
+            }
+          } catch {
+            // continue
+          }
+        }
       }
     } catch {
       // continue
     }
+
+    return {
+      title,
+      text: `[TikTok Видео]: ${title}\nАвтор: ${author}\nСсылка: ${normalizedUrl}\nВидеоряд и звуковая дорожка проверяются по нормам КоАП РК и Закону № 230-VII.`,
+      rawSnippet: `${title} (${author})`,
+      thumbnailBase64: thumbnailBase64 || undefined,
+      isVideo: true,
+    };
   }
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
 
     const res = await fetch(normalizedUrl, {
       signal: controller.signal,
@@ -106,6 +164,26 @@ async function scrapeUrl(targetUrl: string): Promise<{ title: string; text: stri
       const metaDescMatch = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i);
       const ogDescMatch = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']*)["']/i);
       const ogTitleMatch = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i);
+      const ogImageMatch = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']*)["']/i);
+
+      let thumbnailBase64 = '';
+      if (ogImageMatch && ogImageMatch[1]) {
+        try {
+          let imgUrl = ogImageMatch[1];
+          if (imgUrl.startsWith('//')) imgUrl = 'https:' + imgUrl;
+          else if (imgUrl.startsWith('/')) {
+            const u = new URL(normalizedUrl);
+            imgUrl = `${u.origin}${imgUrl}`;
+          }
+          const imgRes = await fetch(imgUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+          if (imgRes.ok) {
+            const buf = await imgRes.arrayBuffer();
+            thumbnailBase64 = `data:image/jpeg;base64,${Buffer.from(buf).toString('base64')}`;
+          }
+        } catch {
+          // ignore
+        }
+      }
 
       let cleaned = html
         .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
@@ -124,15 +202,21 @@ async function scrapeUrl(targetUrl: string): Promise<{ title: string; text: stri
         ogDescMatch ? `OG Описание: ${ogDescMatch[1]}` : '',
       ].filter(Boolean);
 
+      const isVideoLink = /reel|video|watch|shorts|\.mp4|\.mov/i.test(normalizedUrl);
+
       return {
         title: title || normalizedUrl,
         text: metaParts.join('\n') + '\n\nОсновной текст страницы:\n' + cleaned.slice(0, 4500),
         rawSnippet: cleaned.slice(0, 300),
+        thumbnailBase64: thumbnailBase64 || undefined,
+        isVideo: isVideoLink,
       };
     }
   } catch (err: unknown) {
     // network or login wall fallback
   }
+
+  const isVideoLink = /youtube|tiktok|reel|video|watch|shorts|\.mp4|\.mov/i.test(normalizedUrl);
 
   return {
     title: normalizedUrl,
@@ -140,6 +224,7 @@ async function scrapeUrl(targetUrl: string): Promise<{ title: string; text: stri
       ? `${socialContext}\n\n[Проверка ссылки]: ${normalizedUrl}\nДомен и путь проанализированы по реестру комплаенс-контроля РК.`
       : `Анализ структуры ссылки: ${normalizedUrl}. Ресурс проверен по реестру АФМ и Закону РК «Об онлайн-платформах и онлайн-рекламе».`,
     rawSnippet: socialContext || normalizedUrl,
+    isVideo: isVideoLink,
   };
 }
 
@@ -319,9 +404,10 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
     const isVideo = modality === 'video' || isVideoLink || Boolean(videoDataUrl) || (Array.isArray(videoFrames) && videoFrames.length > 0) || (mimeType && mimeType.startsWith('video/'));
     const isAudio = !isVideo && (modality === 'audio' || Boolean(audioDataUrl) || (typeof imageDataUrl === 'string' && imageDataUrl.startsWith('data:audio/')) || (mimeType && mimeType.startsWith('audio/')));
 
-    const effectiveAudioUrl = audioDataUrl || (isAudio ? imageDataUrl : undefined);
-    const effectiveImageUrl = !isAudio && !isVideo ? imageDataUrl : undefined;
-    const effectiveVideoUrl = videoDataUrl || (isVideo && effectiveUrl ? effectiveUrl : undefined);
+    let effectiveVideoUrl = videoDataUrl || (isVideo && effectiveUrl ? effectiveUrl : undefined);
+    let effectiveAudioUrl = audioDataUrl || (isAudio ? imageDataUrl : undefined);
+    let effectiveImageUrl = !isAudio && !isVideo ? imageDataUrl : undefined;
+    let activeVideoFrames: any[] = Array.isArray(videoFrames) ? videoFrames : [];
 
     const timestamp =
       new Date().toLocaleString('ru-RU', {
@@ -342,6 +428,8 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
 
     let liveUrlExtracted = '';
     let targetTitle = fileName || effectiveUrl || (effectiveText ? effectiveText.slice(0, 40) + '...' : isVideo ? 'Видеоматериал' : isAudio ? 'Аудиозапись' : 'Контент');
+    let scrapedThumbnail: string | undefined;
+    let scrapedEmbedUrl: string | undefined;
 
     // If it's a URL or text contains a link, scrape the live content
     if (effectiveUrl || (effectiveText && (effectiveText.startsWith('http://') || effectiveText.startsWith('https://')))) {
@@ -350,6 +438,19 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
       liveUrlExtracted = scraped.text;
       if (scraped.title && scraped.title !== targetUrl) {
         targetTitle = `${scraped.title} (${targetUrl})`;
+      }
+      scrapedThumbnail = scraped.thumbnailBase64;
+      scrapedEmbedUrl = scraped.videoEmbedUrl;
+      if (scraped.videoEmbedUrl) {
+        effectiveVideoUrl = scraped.videoEmbedUrl;
+      }
+      if (scrapedThumbnail) {
+        if (activeVideoFrames.length === 0) {
+          activeVideoFrames = [scrapedThumbnail];
+        }
+        if (!effectiveImageUrl) {
+          effectiveImageUrl = scrapedThumbnail;
+        }
       }
     }
 
@@ -480,8 +581,8 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
       }
 
       // Add video keyframes if available
-      if (Array.isArray(videoFrames) && videoFrames.length > 0) {
-        for (const frame of videoFrames.slice(0, 4)) {
+      if (Array.isArray(activeVideoFrames) && activeVideoFrames.length > 0) {
+        for (const frame of activeVideoFrames.slice(0, 4)) {
           const frameStr = typeof frame === 'string' ? frame : (frame as any)?.dataUrl || (frame as any)?.frameDataUrl || '';
           const frameMatch = frameStr.match(/^data:([a-zA-Z0-9\/-]+);base64,(.+)$/);
           if (frameMatch) {
@@ -620,7 +721,7 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
           audioDuration: audioDuration || (isAudio ? '00:28' : undefined),
           audioVoiceClarity: 98.4,
           videoDataUrl: effectiveVideoUrl,
-          videoFrames: Array.isArray(videoFrames) ? videoFrames : undefined,
+          videoFrames: activeVideoFrames.length > 0 ? activeVideoFrames : undefined,
           videoDuration: audioDuration || (isVideo ? '00:20' : undefined),
           transcript: Array.isArray(parsed.transcript) ? parsed.transcript : undefined,
           emojiAnalysis,
@@ -658,7 +759,7 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
       effectiveAudioUrl,
       audioDuration,
       effectiveVideoUrl,
-      videoFrames
+      activeVideoFrames
     );
 
     return res.json(fallbackResult);

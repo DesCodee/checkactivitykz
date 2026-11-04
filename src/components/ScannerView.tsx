@@ -17,13 +17,6 @@ import {
   extractTextWithOcr,
 } from '../services/geminiService';
 import { generateSampleScreenshot, getSampleText } from '../utils/sampleScreenshots';
-import {
-  SAMPLE_AUDIO_PRESETS,
-  generateSyntheticWavDataUrl,
-  SampleAudioPreset,
-} from '../utils/sampleAudio';
-import { SAMPLE_VIDEO_PRESETS, SampleVideoPreset } from '../utils/sampleVideo';
-import { SAMPLE_URL_PRESETS, SampleUrlPreset } from '../utils/sampleUrls';
 import { analyzeEmojis, EMOJI_DICTIONARY } from '../utils/emojiIntelligence';
 
 interface ScannerViewProps {
@@ -112,96 +105,137 @@ function extractVideoMultiFrames(file: File): Promise<{
 }> {
   return new Promise((resolve) => {
     const video = document.createElement('video');
-    video.preload = 'metadata';
+    video.preload = 'auto';
     video.muted = true;
     video.playsInline = true;
     const objectUrl = URL.createObjectURL(file);
     video.src = objectUrl;
 
-    video.onloadedmetadata = async () => {
-      const duration = video.duration || 5;
-      const minutes = Math.floor(duration / 60).toString().padStart(2, '0');
-      const seconds = Math.floor(duration % 60).toString().padStart(2, '0');
-      const durationLabel = `${minutes}:${seconds}`;
+    let isResolved = false;
+    const captured: string[] = [];
 
-      const seekTimes = [
-        Math.min(Math.max(0.2, duration * 0.1), duration - 0.2),
-        Math.min(Math.max(0.5, duration * 0.35), duration - 0.2),
-        Math.min(Math.max(1.0, duration * 0.65), duration - 0.2),
-        Math.min(Math.max(1.5, duration * 0.9), duration - 0.2),
-      ];
-
-      const captured: string[] = [];
-      for (const t of seekTimes) {
-        try {
-          await new Promise<void>((rSeek) => {
-            const onSeeked = () => {
-              video.removeEventListener('seeked', onSeeked);
-              const canvas = document.createElement('canvas');
-              canvas.width = Math.min(640, video.videoWidth || 640);
-              canvas.height = Math.min(480, video.videoHeight || 360);
-              const ctx = canvas.getContext('2d');
-              if (ctx) {
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                captured.push(canvas.toDataURL('image/jpeg', 0.85));
-              }
-              rSeek();
-            };
-            video.addEventListener('seeked', onSeeked);
-            video.currentTime = Math.max(0.1, t);
-          });
-        } catch {
-          // ignore
-        }
-      }
-
+    const finish = (durationLabel: string) => {
+      if (isResolved) return;
+      isResolved = true;
+      clearTimeout(globalTimer);
       resolve({
-        frames: captured.length > 0 ? captured : [],
+        frames: captured,
         durationLabel,
         playableUrl: objectUrl,
       });
     };
 
+    // Global fail-safe timeout: never hang more than 3.5s
+    const globalTimer = setTimeout(() => {
+      finish('00:20');
+    }, 3500);
+
+    const grabCurrentFrame = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.min(640, video.videoWidth || 640);
+        canvas.height = Math.min(480, video.videoHeight || 360);
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const frame = canvas.toDataURL('image/jpeg', 0.82);
+          if (frame && frame.length > 500 && !captured.includes(frame)) {
+            captured.push(frame);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    video.onloadeddata = () => {
+      grabCurrentFrame();
+    };
+
+    video.onloadedmetadata = async () => {
+      const duration = video.duration && !isNaN(video.duration) ? video.duration : 15;
+      const minutes = Math.floor(duration / 60).toString().padStart(2, '0');
+      const seconds = Math.floor(duration % 60).toString().padStart(2, '0');
+      const durationLabel = `${minutes}:${seconds}`;
+
+      grabCurrentFrame();
+
+      const seekTimes = [
+        Math.min(Math.max(0.2, duration * 0.15), Math.max(0.2, duration - 0.2)),
+        Math.min(Math.max(0.5, duration * 0.45), Math.max(0.2, duration - 0.2)),
+        Math.min(Math.max(1.0, duration * 0.75), Math.max(0.2, duration - 0.2)),
+        Math.min(Math.max(1.5, duration * 0.92), Math.max(0.2, duration - 0.2)),
+      ];
+
+      for (const t of seekTimes) {
+        if (isResolved) break;
+        await new Promise<void>((rSeek) => {
+          const seekTimeout = setTimeout(() => {
+            video.removeEventListener('seeked', onSeeked);
+            rSeek();
+          }, 600);
+
+          const onSeeked = () => {
+            clearTimeout(seekTimeout);
+            video.removeEventListener('seeked', onSeeked);
+            grabCurrentFrame();
+            rSeek();
+          };
+
+          video.addEventListener('seeked', onSeeked);
+          try {
+            video.currentTime = t;
+          } catch {
+            clearTimeout(seekTimeout);
+            rSeek();
+          }
+        });
+      }
+
+      finish(durationLabel);
+    };
+
     video.onerror = () => {
-      resolve({
-        frames: [],
-        durationLabel: '00:15',
-        playableUrl: objectUrl,
-      });
+      finish('00:15');
     };
   });
 }
 
 export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData }) => {
   const [activeTab, setActiveTab] = useState<'file' | 'video' | 'audio' | 'url' | 'text'>(
-    presetData?.modality === 'audio' ? 'audio' : 'file'
+    presetData?.modality === 'video'
+      ? 'video'
+      : presetData?.modality === 'audio'
+      ? 'audio'
+      : presetData?.modality === 'url'
+      ? 'url'
+      : presetData?.modality === 'text'
+      ? 'text'
+      : 'file'
   );
 
   // Input states
   const [urlInput, setUrlInput] = useState(presetData?.urlOrText || '');
-  const [selectedUrlPreset, setSelectedUrlPreset] = useState<SampleUrlPreset | null>(null);
   const [textInput, setTextInput] = useState('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [filePreviewUrl, setFilePreviewUrl] = useState<string | null>(null);
   const [fileTextNote, setFileTextNote] = useState('');
 
   // Video & Reels states
-  const [videoMode, setVideoMode] = useState<'preset' | 'upload'>('preset');
-  const [selectedVideoPreset, setSelectedVideoPreset] = useState<SampleVideoPreset | null>(SAMPLE_VIDEO_PRESETS[0]);
   const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [videoFrames, setVideoFrames] = useState<string[]>(SAMPLE_VIDEO_PRESETS[0].frames);
+  const [videoFrames, setVideoFrames] = useState<string[]>([]);
   const [videoPlayableUrl, setVideoPlayableUrl] = useState<string | null>(null);
   const [videoMediaBase64, setVideoMediaBase64] = useState<string | null>(null);
-  const [videoCaption, setVideoCaption] = useState<string>(SAMPLE_VIDEO_PRESETS[0].caption);
-  const [videoWarning, setVideoWarning] = useState<string | null>(
-    'Внимание: в видеоряде зафиксирована реклама слотов 1Win и азартных игр (ст. 445-1 КоАП РК).'
-  );
-  const [videoDuration, setVideoDuration] = useState<string>(SAMPLE_VIDEO_PRESETS[0].duration);
+  const [videoUrlInput, setVideoUrlInput] = useState<string>('');
+  const [videoCaption, setVideoCaption] = useState<string>('');
+  const [videoWarning, setVideoWarning] = useState<string | null>(null);
+  const [videoDuration, setVideoDuration] = useState<string>('00:00');
   const [activeVideoFrameIndex, setActiveVideoFrameIndex] = useState(0);
+  const [isExtractingFrames, setIsExtractingFrames] = useState(false);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
 
   // Audio & Microphone states
-  const [audioMode, setAudioMode] = useState<'record' | 'upload' | 'preset'>('record');
+  const [audioMode, setAudioMode] = useState<'record' | 'upload'>('record');
   const [audioDataUrl, setAudioDataUrl] = useState<string | null>(null);
   const [audioMediaBase64, setAudioMediaBase64] = useState<string | null>(null);
   const [audioFileName, setAudioFileName] = useState<string>('');
@@ -328,17 +362,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     setAudioMediaBase64(dataUrl);
     setAudioFileName(file.name);
     setAudioDuration('00:30');
-    const lower = file.name.toLowerCase();
-    if (lower.includes('profanity') || lower.includes('chat') || lower.includes('мат') || lower.includes('voice')) {
-      setAudioTranscriptPreview('[00:01] Голосовое: Ты че бля совсем берега попутал? Пошел нахуй отсюда, еще раз напишешь — найдем!\n[00:09] Голосовое: Ответишь за базар, шешеңді сиктир!');
-      setAudioWarning('Внимание: зафиксированы матерные слова и угрозы (ст. 434, 73-4 КоАП РК).');
-    } else if (lower.includes('casino') || lower.includes('slot') || lower.includes('1win')) {
-      setAudioTranscriptPreview('[00:02] Спикер: Салам всем! Только что вывел 350 тысяч тенге со слотов 1Win на карту Kaspi! Ссылка в bio, промокод LUCKY_KZ на 500% бонус!');
-      setAudioWarning('Внимание: голосовое продвижение онлайн-казино и слотов (ст. 445-1 КоАП РК).');
-    } else {
-      setAudioTranscriptPreview('Аудиозапись загружена. Готова к транскрипции с таймкодами (ММ:СС) и проверке контекста.');
-      setAudioWarning(null);
-    }
+    setAudioTranscriptPreview('Аудиозапись загружена. Готова к транскрипции с таймкодами (ММ:СС) и комплаенс-проверке.');
+    setAudioWarning(null);
   };
 
   const handleVideoFileSelect = async (file: File) => {
@@ -351,11 +376,13 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     }
 
     setVideoFile(file);
-    setVideoMode('upload');
     setVideoCaption(file.name);
-    setSelectedVideoPreset(null);
+    setVideoWarning(null);
+    setIsExtractingFrames(true);
 
     const { frames, durationLabel, playableUrl } = await extractVideoMultiFrames(file);
+    setIsExtractingFrames(false);
+
     if (frames.length > 0) {
       setVideoFrames(frames);
       setFilePreviewUrl(frames[0]);
@@ -363,39 +390,25 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     setVideoPlayableUrl(playableUrl);
     setVideoDuration(durationLabel);
 
-    if (file.size <= 35 * 1024 * 1024) {
+    if (file.size <= 40 * 1024 * 1024) {
       const b64 = await readFileAsBase64(file);
       setVideoMediaBase64(b64);
     } else {
       setVideoMediaBase64(null);
     }
-
-    const lower = file.name.toLowerCase();
-    if (lower.includes('casino') || lower.includes('1win') || lower.includes('slot')) {
-      setVideoWarning('Внимание: в видеоряде зафиксирована реклама онлайн-казино (ст. 445-1 КоАП РК).');
-    } else if (lower.includes('profanity') || lower.includes('мат')) {
-      setVideoWarning('Внимание: зафиксированы матерные слова в видеоматериале (ст. 434 КоАП РК).');
-    } else {
-      setVideoWarning(null);
-    }
   };
 
-  const handleLoadAudioPreset = (preset: SampleAudioPreset) => {
-    const freq = preset.category === 'cyberbullying' ? 320 : preset.category === 'casino' ? 520 : 440;
-    const syntheticWav = generateSyntheticWavDataUrl(freq, 4);
-    setAudioDataUrl(syntheticWav);
-    setAudioFileName(preset.fileName);
-    setAudioDuration(preset.duration);
-    setAudioTranscriptPreview(preset.rawTranscript);
-    if (preset.category === 'cyberbullying') {
-      setAudioWarning('Внимание: зафиксированы матерные слова и оскорбления (ст. 434, 73-4 КоАП РК).');
-    } else if (preset.category === 'casino') {
-      setAudioWarning('Внимание: реклама нелицензированных слотов и азартных игр (ст. 445-1 КоАП РК).');
-    } else if (preset.category === 'unmarked_ad') {
-      setAudioWarning('Внимание: скрытая коммерческая интеграция без отметки «Жарнама» (Закон № 230-VII).');
-    } else {
-      setAudioWarning(null);
-    }
+  const handleClearVideo = () => {
+    setVideoFile(null);
+    setVideoFrames([]);
+    setVideoPlayableUrl(null);
+    setVideoMediaBase64(null);
+    setVideoUrlInput('');
+    setVideoCaption('');
+    setVideoWarning(null);
+    setVideoDuration('00:00');
+    setActiveVideoFrameIndex(0);
+    if (videoFileInputRef.current) videoFileInputRef.current.value = '';
   };
 
   const handleTogglePlayAudio = () => {
@@ -578,61 +591,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     triggerOcr(sample.dataUrl, sample.fileName);
   };
 
-  // Quick KZ Law & Ethics Presets
-  const applyPreset = (
-    type:
-      | 'ad_missing'
-      | 'casino'
-      | 'phone_leak'
-      | 'cyberbullying'
-      | 'dark_pattern'
-      | 'hidden_ad'
-      | 'clean_ad'
-      | 'profanity_chat'
-  ) => {
-    if (type === 'profanity_chat') {
-      setActiveTab('text');
-      setTextInput(
-        '— Ты че бля совсем тупой? Пошел нахуй отсюда, урод конченый.\n— Сам заткнись, пидор, еще раз напишешь — найдем и закопаем.'
-      );
-    } else if (type === 'ad_missing') {
-      setActiveTab('text');
-      setTextInput(
-        '🔥 Только сегодня скидка 40% на все премиум курсы по инвестициям и криптовалюте в Астане! Переходи по ссылке в описании профиля, пиши промокод KAZAKHSTAN и забирай доступ прямо сейчас.'
-      );
-    } else if (type === 'casino') {
-      setActiveTab('text');
-      setTextInput(
-        'Казино 1win KZ дарит 500% бонус на первый депозит в тенге! Крути слоты, забирай фриспины по промокоду ALMATY_BONUS. Ссылка на зеркало в шапке профиля.'
-      );
-    } else if (type === 'phone_leak') {
-      setActiveTab('text');
-      setTextInput(
-        'Срочно продам парковочное место в ЖК «Триумф Астана». Звоните владельцу напрямую: +7 701 555-12-34 (Канат), документы на руках.'
-      );
-    } else if (type === 'cyberbullying') {
-      setActiveTab('text');
-      setTextInput(
-        'Посмотрите на этого жалкого неудачника @username. Он не может связать двух слов, полный идиот и позорище нашего города. Давайте дружно напишем ему в директ всё, что мы о нем думаем, чтобы он удалил свой аккаунт.'
-      );
-    } else if (type === 'dark_pattern') {
-      setActiveTab('text');
-      setTextInput(
-        '🚨 ОСТАЛОСЬ 2 МЕСТА! Таймер сгорает через 04:59! Если не оплатишь прямо сейчас, твой доступ будет навсегда заблокирован, а цена вырастет в 10 раз! 100% ГАРАНТИЯ ДОХОДА БЕЗ РИСКА. Жми немедленно!'
-      );
-    } else if (type === 'hidden_ad') {
-      setActiveTab('text');
-      setTextInput(
-        'Девочки, вы часто спрашивали, как я сохраняю такую идеальную кожу. Я абсолютно случайно наткнулась на эту сыворотку от MiracleCosmetics, это не реклама, я просто искренне делюсь находкой от души! Покупайте только у них по ссылке в профиле.'
-      );
-    } else if (type === 'clean_ad') {
-      setActiveTab('text');
-      setTextInput(
-        'Жарнама / Реклама.\nОфициальный представитель бытовой техники в Казахстане (ТОО «ТехноАстана», БИН 190440012345). Скидки до 20% на технику для дома с 1 по 30 ноября на сайте tech-almaty.kz. Барлық тауарлар сертификатталған. Тауарлар саны шектеулі.'
-      );
-    }
-  };
-
   const handleExecute = async () => {
     let payload: ContentPayload;
 
@@ -690,26 +648,38 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         };
       }
     } else if (activeTab === 'video') {
-      const frames = videoFrames.length > 0 ? videoFrames : filePreviewUrl ? [filePreviewUrl] : [];
-      if (frames.length === 0 && !videoCaption.trim() && !videoPlayableUrl) {
-        alert('Пожалуйста, выберите видео-кейс или загрузите видеофайл.');
+      const hasUploadedVideo = videoFile || videoPlayableUrl || videoFrames.length > 0;
+      const hasVideoUrl = videoUrlInput.trim().length > 0;
+
+      if (!hasUploadedVideo && !hasVideoUrl) {
+        alert('Пожалуйста, загрузите видеофайл или укажите ссылку на видео (YouTube, TikTok, Reels).');
         return;
       }
-      payload = {
-        modality: 'video',
-        fileName: selectedVideoPreset?.fileName || videoFile?.name || 'reels_clip.mp4',
-        fileSize: videoFile && videoFile.size > 0 ? `${(videoFile.size / (1024 * 1024)).toFixed(2)} MB` : '3.8 MB',
-        imageDataUrl: frames[0] || undefined,
-        videoFrames: frames,
-        videoDataUrl: videoPlayableUrl || undefined,
-        mediaBase64: videoMediaBase64 || undefined,
-        mimeType: videoFile?.type || 'video/mp4',
-        audioDuration: videoDuration || '00:20',
-        text: videoCaption || selectedVideoPreset?.caption || 'Видео Reels/TikTok для проверки',
-      };
+
+      if (hasVideoUrl && !hasUploadedVideo) {
+        payload = {
+          modality: 'video',
+          url: videoUrlInput.trim(),
+          text: videoCaption.trim() ? `${videoUrlInput.trim()}\n\n[Описание]: ${videoCaption.trim()}` : videoUrlInput.trim(),
+        };
+      } else {
+        const frames = videoFrames.length > 0 ? videoFrames : filePreviewUrl ? [filePreviewUrl] : [];
+        payload = {
+          modality: 'video',
+          fileName: videoFile?.name || 'video_clip.mp4',
+          fileSize: videoFile && videoFile.size > 0 ? `${(videoFile.size / (1024 * 1024)).toFixed(2)} MB` : '3.8 MB',
+          imageDataUrl: frames[0] || undefined,
+          videoFrames: frames,
+          videoDataUrl: videoPlayableUrl || undefined,
+          mediaBase64: videoMediaBase64 || undefined,
+          mimeType: videoFile?.type || 'video/mp4',
+          audioDuration: videoDuration || '00:20',
+          text: videoCaption || videoFile?.name || 'Видеоматериал для проверки',
+        };
+      }
     } else if (activeTab === 'audio') {
       if (!audioDataUrl && !audioTranscriptPreview.trim()) {
-        alert('Пожалуйста, запишите аудио с микрофона, выберите файл или используйте готовый аудио-кейс.');
+        alert('Пожалуйста, запишите аудио с микрофона или выберите аудиофайл.');
         return;
       }
       payload = {
@@ -731,7 +701,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
       payload = {
         modality: isVideoLink ? 'video' : 'url',
         url: urlInput.trim(),
-        text: selectedUrlPreset?.scrapedSnippet ? `${urlInput.trim()}\n\n${selectedUrlPreset.scrapedSnippet}` : urlInput.trim(),
+        text: urlInput.trim(),
       };
     } else {
       if (!textInput.trim()) {
@@ -1140,50 +1110,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                       </div>
                     )}
 
-                    {/* Quick Insert Template Chips */}
-                    <div className="flex flex-wrap items-center gap-1.5 py-0.5">
-                      <span className="text-[11px] font-medium text-slate-500">Быстрый шаблон текста:</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const text = '— Ты че бля совсем тупой? Пошел нахуй отсюда, урод конченый.\n— Сам заткнись, пидор, еще раз напишешь — найдем и закопаем.';
-                          setOcrText(text);
-                          setOcrCharCount(text.length);
-                          setOcrSuccess(true);
-                          setOcrWarning('Внимание: зафиксирована ненормативная лексика и обсценная брань (ст. 434 КоАП РК).');
-                        }}
-                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 transition-colors"
-                      >
-                        💬 Чат с матами (ст. 434)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const text = '★ ОНЛАЙН КАЗИНО KZ ★\n1WIN KZ: 500% БОНУС!\nКрути слоты и забирай джекпот в тенге ₸\nПРОМОКОД: ALMATY_SLOTS\nИГРАТЬ ПРЯМО СЕЙЧАС ➔';
-                          setOcrText(text);
-                          setOcrCharCount(text.length);
-                          setOcrSuccess(true);
-                          setOcrWarning('Внимание: в тексте обнаружены признаки рекламы азартных игр (ст. 445-1 КоАП РК).');
-                        }}
-                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 transition-colors"
-                      >
-                        🎰 Казино / 1Win (ст. 445-1)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const text = '🔥 ГРАНДИОЗНАЯ РАСПРОДАЖА В АСТАНЕ!\nСКИДКИ ДО 50% НА ВСЕ СМАРТФОНЫ И НОУТБУКИ\nЗаказывай онлайн по ссылке https://astana-store-sale.kz/promo\n(Маркировка «Жарнама» и данные рекламодателя БИН отсутствуют)';
-                          setOcrText(text);
-                          setOcrCharCount(text.length);
-                          setOcrSuccess(true);
-                          setOcrWarning('Внимание: отсутствуют обязательная маркировка «Жарнама» и данные рекламодателя (Закон № 230-VII).');
-                        }}
-                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors"
-                      >
-                        📢 Реклама без БИН (Закон 230-VII)
-                      </button>
-                    </div>
-
                     {/* Editable OCR Textarea */}
                     <div className="relative">
                       <textarea
@@ -1248,119 +1174,67 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                 className="hidden"
               />
 
-              {/* Video Mode Switcher */}
-              <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-lg border border-slate-200 text-xs font-semibold">
-                <button
-                  type="button"
-                  onClick={() => setVideoMode('preset')}
-                  className={`flex-1 py-1.5 px-3 rounded-md transition-all flex items-center justify-center gap-1.5 ${
-                    videoMode === 'preset'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[16px] text-purple-600">playlist_play</span>
-                  <span>Готовые видео-кейсы Reels / TikTok</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setVideoMode('upload');
-                    videoFileInputRef.current?.click();
-                  }}
-                  className={`flex-1 py-1.5 px-3 rounded-md transition-all flex items-center justify-center gap-1.5 ${
-                    videoMode === 'upload'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[16px] text-sky-600">video_file</span>
-                  <span>Загрузить MP4 / MOV файл</span>
-                </button>
+              {/* Video URL Input Field */}
+              <div className="p-3.5 sm:p-4 rounded-xl bg-purple-50/50 border border-purple-200 flex flex-col gap-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-900 flex items-center gap-1.5 font-['Plus_Jakarta_Sans']">
+                    <span className="material-symbols-outlined text-[18px] text-purple-600">link</span>
+                    <span>Анализ видео по ссылке (YouTube, TikTok, Reels, Shorts, VK Video):</span>
+                  </label>
+                  <span className="text-[10px] font-mono font-medium text-purple-700 bg-purple-100 px-2 py-0.5 rounded">
+                    Online Video AI
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1 flex items-center">
+                    <span className="material-symbols-outlined absolute left-3 text-slate-400 text-[18px]">
+                      videocam
+                    </span>
+                    <input
+                      type="url"
+                      value={videoUrlInput}
+                      onChange={(e) => setVideoUrlInput(e.target.value)}
+                      placeholder="Вставьте ссылку: https://youtube.com/watch?v=..., https://tiktok.com/@..., https://instagram.com/reel/..."
+                      className="w-full bg-white pl-9 pr-3 py-2 rounded-lg border border-purple-200 text-xs text-slate-900 placeholder:text-slate-400 focus:border-purple-500 focus:outline-none shadow-2xs font-['Inter']"
+                    />
+                  </div>
+                  {videoUrlInput && (
+                    <button
+                      type="button"
+                      onClick={() => setVideoUrlInput('')}
+                      className="px-2.5 py-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-white text-xs border border-transparent hover:border-slate-200"
+                    >
+                      Очистить
+                    </button>
+                  )}
+                </div>
+                {videoUrlInput && (
+                  <div className="text-[11px] text-purple-800 flex items-center gap-1.5 font-mono">
+                    <span className="material-symbols-outlined text-[14px]">check_circle</span>
+                    <span>
+                      {videoUrlInput.includes('youtube.com') || videoUrlInput.includes('youtu.be')
+                        ? 'Обнаружено видео YouTube: извлечение превью, метаданных и комплаенс-анализ'
+                        : videoUrlInput.includes('tiktok.com')
+                        ? 'Обнаружен видеоролик TikTok: анализ видеоряда и описания'
+                        : videoUrlInput.includes('instagram.com')
+                        ? 'Обнаружен Instagram Reels / публикация: комплаенс-контроль'
+                        : 'Ссылка на видео готова к мультимодальной проверке'}
+                    </span>
+                  </div>
+                )}
               </div>
 
-              {/* Ready-made video presets cards */}
-              {videoMode === 'preset' && (
-                <div className="flex flex-col gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 font-['JetBrains_Mono'] flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-[16px] text-purple-600">bolt</span>
-                    Выберите видеоматериал для проверки:
-                  </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    {SAMPLE_VIDEO_PRESETS.map((preset) => (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedVideoPreset(preset);
-                          setVideoFrames(preset.frames);
-                          setVideoCaption(preset.caption);
-                          setVideoDuration(preset.duration);
-                          setActiveVideoFrameIndex(0);
-                          if (preset.category === 'casino') {
-                            setVideoWarning('Внимание: в видеоряде зафиксирована реклама слотов 1Win и азартных игр (ст. 445-1 КоАП РК).');
-                          } else if (preset.category === 'unmarked_ad') {
-                            setVideoWarning('Внимание: скрытая коммерческая интеграция без отметки «Жарнама» (Закон № 230-VII).');
-                          } else if (preset.category === 'profanity') {
-                            setVideoWarning('Внимание: зафиксированы матерные слова и обсценная брань в видеоряде (ст. 434 КоАП РК).');
-                          } else {
-                            setVideoWarning(null);
-                          }
-                        }}
-                        className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between ${
-                          selectedVideoPreset?.id === preset.id
-                            ? 'bg-purple-50/60 border-purple-300 ring-2 ring-purple-200'
-                            : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/50'
-                        }`}
-                      >
-                        <div>
-                          <div className="flex items-center justify-between gap-1 mb-1.5">
-                            <span className="text-[10px] font-mono font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded">
-                              {preset.author}
-                            </span>
-                            <span className="text-[10px] font-mono text-slate-500">
-                              {preset.duration} • {preset.resolution}
-                            </span>
-                          </div>
-                          <div className="text-xs font-bold text-slate-900 leading-snug">
-                            {preset.title}
-                          </div>
-                          <p className="text-[11px] text-slate-600 mt-1 line-clamp-2">
-                            {preset.caption}
-                          </p>
-                        </div>
-
-                        <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-slate-100 text-[10px] font-mono">
-                          <span className="flex items-center gap-1 text-slate-500">
-                            {preset.emojis.join(' ')}
-                          </span>
-                          {preset.hasViolation ? (
-                            <span className="text-rose-700 font-bold bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
-                              {preset.violationCode}
-                            </span>
-                          ) : (
-                            <span className="text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                              ✓ Безопасно
-                            </span>
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Upload Dropzone when in upload mode and no file yet */}
-              {videoMode === 'upload' && !videoPlayableUrl && !videoFile && (
+              {/* Upload Dropzone when no file selected */}
+              {!videoPlayableUrl && !videoFile && (
                 <div
                   onClick={() => videoFileInputRef.current?.click()}
-                  className="border-2 border-dashed border-purple-300 hover:border-purple-400 bg-purple-50/40 rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all"
+                  className="border-2 border-dashed border-slate-300 hover:border-purple-400 bg-slate-50/70 hover:bg-purple-50/30 rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all"
                 >
-                  <div className="w-12 h-12 rounded-full bg-white border border-purple-200 flex items-center justify-center text-purple-600 mb-2 shadow-xs">
+                  <div className="w-12 h-12 rounded-full bg-white border border-slate-200 flex items-center justify-center text-purple-600 mb-2 shadow-xs">
                     <span className="material-symbols-outlined text-[26px]">video_file</span>
                   </div>
                   <div className="font-semibold text-xs sm:text-sm text-slate-900">
-                    Нажмите или перетащите видеофайл для анализа
+                    Загрузить видеофайл для детальной раскадровки
                   </div>
                   <div className="text-[11px] text-slate-500 mt-1">
                     Поддерживаются MP4, MOV, WebM, M4V (до 100 МБ)
@@ -1371,14 +1245,22 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                       e.stopPropagation();
                       videoFileInputRef.current?.click();
                     }}
-                    className="mt-3 px-3.5 py-1.5 rounded-lg bg-white border border-purple-300 text-xs font-medium text-purple-700 shadow-xs hover:bg-purple-50"
+                    className="mt-3 px-3.5 py-1.5 rounded-lg bg-white border border-purple-300 text-xs font-semibold text-purple-700 shadow-xs hover:bg-purple-50"
                   >
-                    Выбрать видеофайл
+                    Выбрать видеофайл на устройстве
                   </button>
                 </div>
               )}
 
-              {/* Active Video Preview Deck with HTML5 Player & Keyframes */}
+              {/* Frame Extraction Spinner */}
+              {isExtractingFrames && (
+                <div className="p-4 rounded-xl bg-purple-50 border border-purple-200 flex items-center justify-center gap-3 text-xs text-purple-800 font-medium">
+                  <div className="w-4 h-4 border-2 border-purple-600 border-t-transparent rounded-full animate-spin"></div>
+                  <span>Извлечение ключевых сцен и покадровая раскадровка видео...</span>
+                </div>
+              )}
+
+              {/* Active Video Preview Deck with Real HTML5 Player & Keyframes */}
               {(videoPlayableUrl || videoFrames.length > 0) && (
                 <div className="p-3.5 sm:p-4 rounded-xl bg-white border border-purple-200 shadow-xs flex flex-col gap-3">
                   <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
@@ -1387,7 +1269,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                         videocam
                       </span>
                       <span className="text-xs font-bold text-slate-900 font-['Plus_Jakarta_Sans']">
-                        {videoFile ? `Видеофайл: ${videoFile.name}` : 'Видеоряд и покадровая раскадровка:'}
+                        {videoFile ? `Загружено видео: ${videoFile.name}` : 'Видеоматериал:'}
                       </span>
                     </div>
                     <div className="flex items-center gap-2 font-mono text-[10px] text-slate-500">
@@ -1395,13 +1277,19 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                       {videoFile && (
                         <span>• {(videoFile.size / (1024 * 1024)).toFixed(1)} MB</span>
                       )}
-                      <span>•</span>
-                      <span className="text-purple-700 font-bold">Check Activity Video AI</span>
+                      <button
+                        type="button"
+                        onClick={handleClearVideo}
+                        className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 ml-1"
+                        title="Удалить видео"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">close</span>
+                      </button>
                     </div>
                   </div>
 
-                  {/* HTML5 Video Player if available */}
-                  {videoPlayableUrl ? (
+                  {/* HTML5 Video Player */}
+                  {videoPlayableUrl && (
                     <div className="relative rounded-lg overflow-hidden border border-slate-300 bg-slate-950 aspect-video max-h-[300px] flex items-center justify-center">
                       <video
                         src={videoPlayableUrl}
@@ -1410,68 +1298,46 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                         className="w-full h-full max-h-[290px] object-contain rounded"
                       />
                     </div>
-                  ) : videoFrames.length > 0 ? (
-                    <div className="relative rounded-lg overflow-hidden border border-slate-300 bg-slate-900 aspect-video max-h-[280px] flex items-center justify-center">
-                      <img
-                        src={videoFrames[activeVideoFrameIndex] || videoFrames[0]}
-                        alt="Video keyframe"
-                        className="w-full h-full object-contain"
-                      />
-                      <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-xs text-white text-[10px] font-mono">
-                        Кадр {activeVideoFrameIndex + 1} из {videoFrames.length}
+                  )}
+
+                  {/* Keyframes Filmstrip */}
+                  {videoFrames.length > 0 && (
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 uppercase">
+                        <span>Раскадровка ключевых кадров (Keyframe Filmstrip):</span>
+                        <span>{videoFrames.length} кадров</span>
+                      </div>
+                      <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                        {videoFrames.map((frame, idx) => (
+                          <div
+                            key={idx}
+                            className="relative rounded-md overflow-hidden border border-slate-200 shrink-0 shadow-2xs"
+                            style={{ width: '110px', height: '62px' }}
+                          >
+                            <img src={frame} alt={`Frame ${idx + 1}`} className="w-full h-full object-cover" />
+                            <span className="absolute bottom-1 right-1 bg-black/70 px-1 py-0.2 rounded text-[9px] text-white font-mono">
+                              00:0{idx * 4 + 1}
+                            </span>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  ) : null}
+                  )}
 
-                {/* Keyframes Filmstrip */}
-                <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                  {videoFrames.map((frame, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => setActiveVideoFrameIndex(idx)}
-                      className={`relative rounded-md overflow-hidden border shrink-0 transition-all ${
-                        activeVideoFrameIndex === idx
-                          ? 'border-purple-600 ring-2 ring-purple-300'
-                          : 'border-slate-200 hover:border-slate-400 opacity-80 hover:opacity-100'
-                      }`}
-                      style={{ width: '120px', height: '68px' }}
-                    >
-                      <img src={frame} alt={`Frame ${idx + 1}`} className="w-full h-full object-cover" />
-                      <span className="absolute bottom-1 right-1 bg-black/70 px-1 py-0.2 rounded text-[9px] text-white font-mono">
-                        {idx === 0 ? '00:02' : idx === 1 ? '00:08' : '00:15'}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-
-                {/* Warning notice if present */}
-                {videoWarning && (
-                  <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
-                    <span className="material-symbols-outlined text-[18px] text-rose-600 shrink-0">warning</span>
-                    <span className="font-medium">{videoWarning}</span>
-                  </div>
-                )}
-
-                {/* Caption / Subtitles Field */}
-                <div>
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <label className="font-semibold text-slate-700 font-['JetBrains_Mono'] uppercase text-[11px]">
-                      Описание, субтитры и хештеги видео:
+                  {/* Caption / Context Notes */}
+                  <div>
+                    <label className="block font-semibold text-slate-700 font-['JetBrains_Mono'] uppercase text-[11px] mb-1">
+                      Описание, контекст или сопутствующий текст:
                     </label>
-                    <span className="text-[10px] text-slate-400 font-mono">
-                      Символов: {videoCaption.length}
-                    </span>
+                    <textarea
+                      value={videoCaption}
+                      onChange={(e) => setVideoCaption(e.target.value)}
+                      rows={2}
+                      placeholder="Укажите автора, контекст или комментарии к видео (необязательно)..."
+                      className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 text-xs text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none font-['Inter'] leading-relaxed"
+                    />
                   </div>
-                  <textarea
-                    value={videoCaption}
-                    onChange={(e) => setVideoCaption(e.target.value)}
-                    rows={2}
-                    placeholder="Описание видео, хештеги и распознанные субтитры..."
-                    className="w-full bg-slate-50 p-2.5 rounded-lg border border-slate-200 text-xs text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none font-['Inter'] leading-relaxed"
-                  />
                 </div>
-              </div>
               )}
             </div>
           )}
@@ -1522,20 +1388,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                   }`}
                 >
                   <span className="material-symbols-outlined text-[16px] text-sky-600">upload_file</span>
-                  <span>Загрузить аудиофайл</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setAudioMode('preset')}
-                  className={`flex-1 py-1.5 px-3 rounded-md transition-all flex items-center justify-center gap-1.5 ${
-                    audioMode === 'preset'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[16px] text-amber-500">bolt</span>
-                  <span>Тестовые аудио-кейсы</span>
+                  <span>Загрузить аудиофайл (MP3, WAV, M4A, OGG)</span>
                 </button>
               </div>
 
@@ -1593,7 +1446,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                         Запись аудиосообщения или звонка с микрофона
                       </div>
                       <p className="text-xs text-slate-500 max-w-md">
-                        Нажмите кнопку ниже и произнесите речь или воспроизведите голосовое. AI проанализирует тональность, наличие матов (ст. 434 КоАП РК), скрытую рекламу и кибербуллинг.
+                        Нажмите кнопку ниже и произнесите речь или воспроизведите аудиозапись. AI выполнит транскрипцию с таймкодами (ММ:СС), определит язык и проверит соблюдение норм РК.
                       </p>
                       <button
                         type="button"
@@ -1621,7 +1474,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                     Перетащите аудиофайл или голосовую запись
                   </div>
                   <div className="text-[11px] text-slate-500 mt-1">
-                    Поддерживаются MP3, WAV, M4A, OGG, WebM, AAC до 40 МБ
+                    Поддерживаются MP3, WAV, M4A, OGG, WebM, AAC (до 100 МБ)
                   </div>
                   <button
                     type="button"
@@ -1633,44 +1486,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                   >
                     Выбрать аудиофайл
                   </button>
-                </div>
-              )}
-
-              {/* Mode 3: Ready-made Audio Presets */}
-              {audioMode === 'preset' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {SAMPLE_AUDIO_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() => handleLoadAudioPreset(preset)}
-                      className="p-3 text-left rounded-xl bg-white border border-slate-200 hover:border-sky-400 hover:shadow-xs transition-all flex flex-col justify-between group"
-                    >
-                      <div>
-                        <div className="flex items-center justify-between gap-1.5 mb-1">
-                          <span className={`px-2 py-0.5 rounded text-[9px] font-bold font-mono border ${preset.badgeColor}`}>
-                            {preset.badge}
-                          </span>
-                          <span className="text-[11px] text-slate-400 font-mono">
-                            {preset.duration}
-                          </span>
-                        </div>
-                        <h5 className="font-bold text-xs text-slate-900 group-hover:text-sky-700 transition-colors">
-                          {preset.name}
-                        </h5>
-                        <p className="text-[11px] text-slate-500 mt-1 line-clamp-2 leading-relaxed">
-                          {preset.description}
-                        </p>
-                      </div>
-
-                      <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-sky-600 font-semibold">
-                        <span>Загрузить для экспертизы</span>
-                        <span className="material-symbols-outlined text-[16px] group-hover:translate-x-0.5 transition-transform">
-                          arrow_forward
-                        </span>
-                      </div>
-                    </button>
-                  ))}
                 </div>
               )}
 
@@ -1765,72 +1580,56 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                 <input
                   type="url"
                   value={urlInput}
-                  onChange={(e) => {
-                    setUrlInput(e.target.value);
-                    setSelectedUrlPreset(null);
-                  }}
-                  placeholder="Вставьте ссылку: https://instagram.com/..., https://t.me/..., https://tiktok.com/..."
-                  className="w-full bg-slate-50 pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none"
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  placeholder="Вставьте ссылку: https://youtube.com/..., https://tiktok.com/..., https://instagram.com/..., https://t.me/..."
+                  className="w-full bg-slate-50 pl-10 pr-20 py-2.5 rounded-lg border border-slate-200 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none"
                 />
+                {urlInput && (
+                  <button
+                    type="button"
+                    onClick={() => setUrlInput('')}
+                    className="absolute right-2 px-2.5 py-1 rounded text-xs text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                  >
+                    Очистить
+                  </button>
+                )}
               </div>
 
-              {/* Ready-made URL Presets for Kazakhstan Testing */}
+              {/* Supported Platforms & Live Detection */}
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex flex-col gap-2">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 font-['JetBrains_Mono'] flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[16px] text-sky-600">bolt</span>
-                  Тестовые ссылки на соцсети Казахстана (1 клик):
-                </span>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {SAMPLE_URL_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() => {
-                        setUrlInput(preset.url);
-                        setSelectedUrlPreset(preset);
-                      }}
-                      className={`p-2.5 rounded-lg border text-left transition-all ${
-                        urlInput === preset.url
-                          ? 'bg-sky-50 border-sky-300 ring-1 ring-sky-200'
-                          : 'bg-white border-slate-200 hover:border-slate-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-1 mb-1">
-                        <span className="text-[10px] font-mono font-bold text-sky-700 bg-sky-100 px-1.5 py-0.5 rounded">
-                          {preset.platformLabel}
-                        </span>
-                        {preset.hasViolation && (
-                          <span className="text-[9px] font-bold text-rose-700 bg-rose-50 px-1 py-0.5 rounded border border-rose-200">
-                            {preset.violationCode}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-xs font-semibold text-slate-900 leading-tight">
-                        {preset.title}
-                      </div>
-                      <div className="text-[11px] text-slate-500 font-mono truncate mt-0.5">
-                        {preset.url}
-                      </div>
-                    </button>
-                  ))}
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 font-['JetBrains_Mono'] flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-sky-600">travel_explore</span>
+                    Поддерживаемые онлайн-ресурсы:
+                  </span>
+                  <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-semibold">
+                    Real-time Scraper + Gemini AI
+                  </span>
                 </div>
-              </div>
 
-              {selectedUrlPreset && (
-                <div className="p-3 rounded-lg bg-sky-50 border border-sky-200 text-xs text-slate-700 flex flex-col gap-1">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-sky-900 font-mono text-[11px]">
-                      ПРЕДПРОСМОТР ПУБЛИКАЦИИ:
-                    </span>
-                    <span className="text-emerald-700 font-bold text-[10px] bg-emerald-100 px-1.5 py-0.5 rounded">
-                      Сниппет получен
-                    </span>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                  <div className={`p-2 rounded-lg border flex items-center gap-1.5 ${urlInput.includes('youtube.com') || urlInput.includes('youtu.be') ? 'bg-red-50 border-red-300 text-red-900 font-semibold ring-1 ring-red-200' : 'bg-white border-slate-200 text-slate-700'}`}>
+                    <span className="material-symbols-outlined text-[16px] text-red-600">smart_display</span>
+                    <span>YouTube / Shorts</span>
                   </div>
-                  <p className="text-slate-800 leading-snug">
-                    {selectedUrlPreset.scrapedSnippet}
-                  </p>
+                  <div className={`p-2 rounded-lg border flex items-center gap-1.5 ${urlInput.includes('tiktok.com') ? 'bg-purple-50 border-purple-300 text-purple-900 font-semibold ring-1 ring-purple-200' : 'bg-white border-slate-200 text-slate-700'}`}>
+                    <span className="material-symbols-outlined text-[16px] text-purple-600">movie</span>
+                    <span>TikTok Videos</span>
+                  </div>
+                  <div className={`p-2 rounded-lg border flex items-center gap-1.5 ${urlInput.includes('instagram.com') ? 'bg-pink-50 border-pink-300 text-pink-900 font-semibold ring-1 ring-pink-200' : 'bg-white border-slate-200 text-slate-700'}`}>
+                    <span className="material-symbols-outlined text-[16px] text-pink-600">photo_camera</span>
+                    <span>Instagram Reels / Post</span>
+                  </div>
+                  <div className={`p-2 rounded-lg border flex items-center gap-1.5 ${urlInput.includes('t.me') || urlInput.includes('telegram') ? 'bg-sky-50 border-sky-300 text-sky-900 font-semibold ring-1 ring-sky-200' : 'bg-white border-slate-200 text-slate-700'}`}>
+                    <span className="material-symbols-outlined text-[16px] text-sky-600">send</span>
+                    <span>Telegram Каналы</span>
+                  </div>
                 </div>
-              )}
+
+                <p className="text-[11px] text-slate-500 leading-relaxed mt-0.5">
+                  CheckActivity автоматически извлекает метаданные страницы, обложку/превью видео, заголовки, описание и проводит всестороннюю сверку с нормами законодательства РК (Закон № 230-VII, ст. 434, 445-1, 455 КоАП РК).
+                </p>
+              </div>
             </div>
           )}
 
@@ -1898,78 +1697,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
           );
         })()}
 
-        {/* Quick Test Presets (Categorized for Legal + Ethics) */}
-        <div>
-          <span className="block text-[11px] sm:text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2 font-['JetBrains_Mono']">
-            Быстрые тестовые сценарии:
-          </span>
-          <div className="flex flex-wrap gap-1.5 sm:gap-2">
-            <span className="text-[11px] font-mono font-bold text-sky-700 bg-sky-50 px-2 py-1 rounded border border-sky-200 flex items-center">
-              Закон РК:
-            </span>
-            <button
-              type="button"
-              onClick={() => applyPreset('ad_missing')}
-              className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-xs text-slate-700 border border-slate-200 font-medium transition-colors"
-            >
-              Без «Жарнама» (ст. 455)
-            </button>
-            <button
-              type="button"
-              onClick={() => applyPreset('casino')}
-              className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-xs text-red-700 border border-red-200 font-medium transition-colors"
-            >
-              Казино / Ставки (ст. 445-1)
-            </button>
-            <button
-              type="button"
-              onClick={() => applyPreset('phone_leak')}
-              className="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-xs text-amber-700 border border-amber-200 font-medium transition-colors"
-            >
-              Слив номера (ст. 79 ПДн)
-            </button>
 
-            <span className="text-[11px] font-mono font-bold text-purple-700 bg-purple-50 px-2 py-1 rounded border border-purple-200 flex items-center ml-0 sm:ml-2">
-              Интернет-этика:
-            </span>
-            <button
-              type="button"
-              onClick={() => applyPreset('profanity_chat')}
-              className="px-2.5 py-1 rounded-md bg-red-50 hover:bg-red-100 text-xs text-red-700 border border-red-200 font-medium transition-colors"
-            >
-              Маты / Ненормативная лексика
-            </button>
-            <button
-              type="button"
-              onClick={() => applyPreset('cyberbullying')}
-              className="px-2.5 py-1 rounded-md bg-purple-50 hover:bg-purple-100 text-xs text-purple-800 border border-purple-200 font-medium transition-colors"
-            >
-              Кибербуллинг / Оскорбления
-            </button>
-            <button
-              type="button"
-              onClick={() => applyPreset('dark_pattern')}
-              className="px-2.5 py-1 rounded-md bg-purple-50 hover:bg-purple-100 text-xs text-purple-800 border border-purple-200 font-medium transition-colors"
-            >
-              Dark Pattern / Агрессивный FOMO
-            </button>
-            <button
-              type="button"
-              onClick={() => applyPreset('hidden_ad')}
-              className="px-2.5 py-1 rounded-md bg-purple-50 hover:bg-purple-100 text-xs text-purple-800 border border-purple-200 font-medium transition-colors"
-            >
-              Скрытая реклама
-            </button>
-
-            <button
-              type="button"
-              onClick={() => applyPreset('clean_ad')}
-              className="px-2.5 py-1 rounded-md bg-emerald-50 hover:bg-emerald-100 text-xs text-emerald-800 border border-emerald-200 font-medium transition-colors ml-auto"
-            >
-              ✓ Чистый контент (OK)
-            </button>
-          </div>
-        </div>
 
         {/* Regulatory & Ethics Modules Selector */}
         <div className="border-t border-slate-100 pt-4">
