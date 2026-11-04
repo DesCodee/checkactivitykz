@@ -4,6 +4,7 @@
  */
 
 import { AuditCase, ModalityType, Violation } from '../types';
+import { analyzeEmojis } from '../utils/emojiIntelligence';
 
 export interface ContentPayload {
   modality: ModalityType;
@@ -13,6 +14,9 @@ export interface ContentPayload {
   audioDataUrl?: string;
   audioDuration?: string;
   videoFrames?: string[];
+  videoDataUrl?: string;
+  mediaBase64?: string;
+  mimeType?: string;
   fileName?: string;
   fileSize?: string;
 }
@@ -346,18 +350,87 @@ function analyzeClientFallback(payload: ContentPayload): AuditCase {
     }
   }
 
-  const overallRiskScore = Math.max(legalScore, ethicsScore);
+  // Emoji Intelligence
+  const emojiAnalysis = analyzeEmojis(content + ' ' + (payload.text || ''));
+  if (emojiAnalysis.flaggedEmojis.length > 0) {
+    for (const item of emojiAnalysis.flaggedEmojis) {
+      if (item.category === 'gambling' && !violations.some((v) => v.code?.includes('445-1'))) {
+        violations.unshift({
+          id: `v-emoji-${item.emoji}`,
+          category: 'legal',
+          code: 'ст. 445-1 КоАП РК / Эмодзи-триггер',
+          title: `Гэмблинг-эмодзи ${item.emoji} (${item.label})`,
+          severity: item.riskLevel,
+          quote: item.emoji,
+          basis: `Обнаружен графический символ азартных игр ${item.emoji}: ${item.description}`,
+          fineAmount: 'до 1 000 МРП (3 932 000 ₸)',
+          jurisdiction: 'АФМ РК / Контроль онлайн-казино',
+          recommendation: 'Исключить символы азартных игр и призывы к ставкам.',
+        });
+        legalScore = Math.max(legalScore, 85);
+      } else if (item.category === 'profanity_insult' && !violations.some((v) => v.code?.includes('434') || v.code?.includes('73-4'))) {
+        violations.unshift({
+          id: `v-emoji-${item.emoji}`,
+          category: 'ethics',
+          code: 'ст. 434, 73-4 КоАП РК / Эмодзи-триггер',
+          title: `Оскорбительный / токсичный эмодзи ${item.emoji} (${item.label})`,
+          severity: item.riskLevel,
+          quote: item.emoji,
+          basis: `Обнаружен оскорбительный символ ${item.emoji}: ${item.description}`,
+          fineAmount: 'Штраф от 5 МРП (19 660 ₸)',
+          jurisdiction: 'МВД РК / Этический комитет',
+          recommendation: 'Удалить оскорбительные символы и агрессивные смайлы.',
+        });
+        ethicsScore = Math.max(ethicsScore, 80);
+      }
+    }
+  }
+
+  const isVideo = payload.modality === 'video' || (Array.isArray(payload.videoFrames) && payload.videoFrames.length > 0);
+  const overallRiskScore = Math.min(100, Math.max(legalScore, ethicsScore, emojiAnalysis.totalRiskPoints > 30 ? 75 : 0));
   const riskLevel =
     overallRiskScore >= 70 ? 'Критический' : overallRiskScore >= 40 ? 'Высокий' : overallRiskScore >= 20 ? 'Средний' : 'Низкий';
   const status = overallRiskScore >= 40 ? 'ТРЕБУЕТ МЕР' : overallRiskScore >= 20 ? 'ПРЕДУПРЕЖДЕНИЕ' : 'БЕЗОПАСНО';
 
   const cleanExtractedText = payload.text || payload.url || displayName;
 
+  const mediaFindings = violations.map((v) => ({
+    timestamp: isAudio || isVideo ? (v.id?.includes('manipulation') ? '00:08' : '00:02') : '00:01',
+    source: isAudio
+      ? ('аудио' as const)
+      : isVideo
+      ? (v.category === 'ethics' ? ('аудио' as const) : ('текст на экране' as const))
+      : ('текст на экране' as const),
+    category: v.title || v.code,
+    quote_or_description: v.quote || v.basis,
+    confidence: v.severity === 'critical' ? ('высокая' as const) : ('средняя' as const),
+    reasoning: v.basis || v.recommendation || 'Выявлено возможное несоответствие нормам законодательства РК.',
+  }));
+
+  const overallRisk: 'нет' | 'низкий' | 'средний' | 'высокий' =
+    overallRiskScore >= 70 ? 'высокий' : overallRiskScore >= 40 ? 'средний' : overallRiskScore > 0 ? 'низкий' : 'нет';
+
+  const mediaAnalysis = {
+    summary:
+      overallRiskScore > 0
+        ? `Выявлены несоответствия нормам законодательства РК (${violations.length} предупреждений).`
+        : 'Материал проверен. Признаков нарушений законодательства РК не зафиксировано.',
+    language: /шешен|сиктир|көт|жарнама/i.test(content) ? 'казахский' : /салам|ассалам/i.test(content) ? 'смешанный' : 'русский',
+    overall_risk: overallRisk,
+    findings: mediaFindings,
+    needs_human_review: overallRisk !== 'нет',
+    limitations: isAudio
+      ? 'Фоновые акустические шумы могли повлиять на точность детекции отдельных фраз.'
+      : isVideo
+      ? 'При анализе видеопотока возможны артефакты сжатия и наложение нескольких источников звука.'
+      : 'Автоматическая оценка требует экспертного подтверждения.',
+  };
+
   return {
     id: caseId,
     referenceNumber: refNum,
     timestamp,
-    sourceType: isAudio ? 'audio' : payload.modality,
+    sourceType: isAudio ? 'audio' : isVideo ? 'video' : payload.modality,
     title: displayName,
     sourceName: displayName,
     sha256: randomHash + 'd81a...33ee',
@@ -366,28 +439,34 @@ function analyzeClientFallback(payload: ContentPayload): AuditCase {
     ethicsScore,
     riskLevel,
     status,
-    summary:
-      legalScore > 0
-        ? `Выявлены правовые несоответствия законодательству РК (Закон № 230-VII, ст. 455, 445-1 КоАП РК).`
-        : 'Правовых нарушений норм законодательства РК не выявлено.',
+    summary: mediaAnalysis.summary,
     ethicsSummary:
       ethicsScore > 0
         ? `Зафиксированы нарушения интернет-этики и культуры общения (${violations.filter((v) => v.category === 'ethics').length} замечаний).`
         : 'Этические нормы и стандарты добросовестной коммуникации соблюдены.',
     extractedText: cleanExtractedText,
-    detectedActions: detectedActions || (isAudio ? 'Аудиоанализ речевого потока и тональности выполнен.' : 'Визуальный и текстовый анализ объекта выполнен.'),
+    detectedActions: detectedActions || (isAudio ? 'Аудиоанализ речевого потока и тональности выполнен.' : isVideo ? 'Видеоанализ раскадровки Reels/TikTok выполнен.' : 'Визуальный и текстовый анализ объекта выполнен.'),
     previewUrl: payload.imageDataUrl,
     audioDataUrl: payload.audioDataUrl,
     audioDuration: payload.audioDuration || (isAudio ? '00:28' : undefined),
     audioVoiceClarity: 98.4,
+    videoDataUrl: payload.videoDataUrl,
+    videoFrames: payload.videoFrames,
+    videoDuration: isVideo ? '00:20' : undefined,
+    emojiAnalysis,
+    mediaAnalysis,
     transcript,
     rawText: cleanExtractedText,
     violations,
     metadata: {
       fileSize: payload.fileSize || '1.1 MB',
-      duration: payload.audioDuration || (isAudio ? '00:28' : undefined),
+      duration: payload.audioDuration || (isAudio ? '00:28' : isVideo ? '00:20' : undefined),
       engineConfidence: 98.4,
-      platform: isAudio ? 'Check Activity Audio & Speech Engine v4.5' : 'Check Activity Engine v4.5 (Казахстан)',
+      platform: isAudio
+        ? 'Check Activity Audio & Speech Engine v4.5'
+        : isVideo
+        ? 'Check Activity Video & Reels Engine v5.0'
+        : 'Check Activity Engine v4.5 (Казахстан)',
     },
   };
 }

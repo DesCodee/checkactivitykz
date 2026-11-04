@@ -19,7 +19,7 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
 }) => {
   const [channels, setChannels] = useState<MonitoringChannel[]>(() => {
     try {
-      const saved = localStorage.getItem('checkactivity_monitored_accounts');
+      const saved = localStorage.getItem('checkactivity_monitored_accounts_v3');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -37,6 +37,8 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
   const [selectedDossierChannel, setSelectedDossierChannel] = useState<MonitoringChannel | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [quickUrlInput, setQuickUrlInput] = useState('');
+  const [quickStepActive, setQuickStepActive] = useState<number | null>(null);
 
   // New account form state
   const [newHandle, setNewHandle] = useState('');
@@ -48,7 +50,7 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
   // Save to localStorage whenever channels change
   useEffect(() => {
     try {
-      localStorage.setItem('checkactivity_monitored_accounts', JSON.stringify(channels));
+      localStorage.setItem('checkactivity_monitored_accounts_v3', JSON.stringify(channels));
     } catch {
       // ignore
     }
@@ -57,6 +59,71 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  const handleQuickAddUrl = () => {
+    if (!quickUrlInput.trim()) {
+      showToast('Пожалуйста, введите ссылку на профиль или пост.');
+      return;
+    }
+    const input = quickUrlInput.trim();
+    const lower = input.toLowerCase();
+    const platform = lower.includes('t.me') || lower.includes('telegram')
+      ? 'telegram'
+      : lower.includes('tiktok')
+      ? 'tiktok'
+      : lower.includes('youtube')
+      ? 'youtube'
+      : 'instagram';
+
+    setQuickStepActive(1);
+    setTimeout(() => setQuickStepActive(2), 400);
+    setTimeout(() => setQuickStepActive(3), 800);
+    setTimeout(() => setQuickStepActive(4), 1200);
+    setTimeout(() => {
+      setQuickStepActive(5);
+      const isCasino = lower.includes('capper') || lower.includes('1win') || lower.includes('bet') || lower.includes('slot');
+      const isPromo = lower.includes('zheka') || lower.includes('promo') || lower.includes('sale');
+      const handleClean = input.replace(/^https?:\/\/(www\.)?(instagram\.com|tiktok\.com|t\.me)\//i, '@').split('/')[0] || input;
+
+      const newChan: MonitoringChannel = {
+        id: `mon-${Date.now()}`,
+        name: handleClean.replace('@', ''),
+        platform,
+        platformLabel: platform === 'instagram' ? 'Instagram KZ' : platform === 'telegram' ? 'Telegram KZ' : 'TikTok KZ',
+        handleOrUrl: handleClean.startsWith('@') ? handleClean : '@' + handleClean,
+        subscribersOrVolume: 'Отслеживаемый аккаунт',
+        frequency: 'Каждые 30 минут',
+        lastScan: 'Только что',
+        violations24h: isCasino ? 2 : isPromo ? 1 : 0,
+        status: isCasino || isPromo ? 'ALERT' : 'LIVE',
+        alertNote: isCasino
+          ? 'Обнаружены признаки рекламы нелицензированных онлайн-казино (ст. 445-1 КоАП РК)'
+          : isPromo
+          ? 'Публикация без обязательной маркировки рекламы (Закон № 230-VII)'
+          : undefined,
+        riskScore: isCasino ? 88 : isPromo ? 62 : 12,
+        category: isCasino ? 'Подозрительный / Гемблинг' : 'Инфлюенсер / Блогер',
+        recentPosts: [
+          {
+            id: `post-q-${Date.now()}`,
+            date: 'Только что',
+            type: 'story',
+            content: `Мониторинг зафиксировал свежую публикацию профиля ${handleClean}.`,
+            hasViolation: isCasino || isPromo,
+            violationTitle: isCasino ? 'Реклама азартных игр (ст. 445-1 КоАП РК)' : isPromo ? 'Скрытая реклама без «Жарнама»' : undefined,
+            lawCode: isCasino ? 'ст. 445-1 КоАП РК' : isPromo ? 'ст. 455 КоАП РК' : undefined,
+            fineRisk: isCasino ? 'до 1 000 МРП' : isPromo ? 'до 60 МРП' : undefined,
+            severity: isCasino ? 'critical' : isPromo ? 'warning' : 'info',
+          },
+        ],
+      };
+
+      setChannels((prev) => [newChan, ...prev]);
+      setQuickUrlInput('');
+      setQuickStepActive(null);
+      showToast(`Аккаунт ${newChan.handleOrUrl} успешно включен в круглосуточный 24/7 список мониторинга!`);
+    }, 1700);
   };
 
   // Run instant AI scan on single account
@@ -325,6 +392,155 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
             <span className="material-symbols-outlined text-[18px]">add_circle</span>
             <span>+ Добавить аккаунт</span>
           </button>
+        </div>
+      </div>
+
+      {/* 24/7 Monitoring Process & Hero Banner from User Reference Screenshot */}
+      <div className="bg-gradient-to-r from-sky-50 via-white to-slate-50 border border-sky-200/80 rounded-2xl p-4 sm:p-6 shadow-xs flex flex-col gap-4 sm:gap-5">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <span className="text-[11px] font-['JetBrains_Mono'] uppercase tracking-wider font-bold text-sky-700 bg-sky-100 px-2.5 py-1 rounded-md border border-sky-200">
+            КЛЮЧЕВАЯ ФУНКЦИЯ
+          </span>
+          <span className="text-xs text-slate-500 font-medium font-['JetBrains_Mono']">
+            Интеграция: Instagram • Telegram • TikTok • YouTube
+          </span>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <h2 className="font-['Plus_Jakarta_Sans'] text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+            24/7 Мониторинг подозрительных аккаунтов
+          </h2>
+          <p className="text-xs text-slate-600">
+            Система в автоматическом режиме осуществляет постоянный сбор постов, сторис и комментариев с последующим анализом правовых и этических аномалий.
+          </p>
+        </div>
+
+        {/* 5-Step Process Visualizer Bar matching User Screenshot */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 sm:gap-2.5">
+          {[
+            { step: 'ШАГ 1', title: 'Ввод ссылки', desc: 'Профиль или публикация' },
+            { step: 'ШАГ 2', title: 'Включение в 24/7 список', desc: 'Авто-постановка на учет' },
+            { step: 'ШАГ 3', title: 'Сбор постов и сторис', desc: 'Периодический парсинг' },
+            { step: 'ШАГ 4', title: 'ИИ-анализ аномалий', desc: 'Сверка с КоАП и этикой' },
+            { step: 'ШАГ 5', title: 'Уведомление и статус', desc: 'Протокол комплаенса' },
+          ].map((item, idx) => {
+            const isStepActive = quickStepActive === idx + 1;
+            return (
+              <div
+                key={item.step}
+                className={`bg-white border rounded-xl p-3 shadow-xs flex flex-col relative transition-all ${
+                  isStepActive
+                    ? 'border-sky-500 ring-2 ring-sky-200 bg-sky-50/50'
+                    : 'border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span
+                    className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border ${
+                      isStepActive
+                        ? 'bg-sky-600 text-white border-sky-600 animate-pulse'
+                        : 'bg-sky-50 text-sky-700 border-sky-200'
+                    }`}
+                  >
+                    {item.step}
+                  </span>
+                  {idx < 4 && (
+                    <span className="hidden sm:inline material-symbols-outlined text-slate-400 text-[14px]">
+                      chevron_right
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs font-bold text-slate-900 mt-0.5">{item.title}</span>
+                <span className="text-[10px] text-slate-500 mt-0.5">{item.desc}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Quick Link Enrollment Bar matching Step 1 & Step 2 */}
+        <div className="flex flex-col sm:flex-row items-center gap-2 bg-white p-2 rounded-xl border border-slate-200 shadow-xs">
+          <div className="relative flex-1 w-full">
+            <span className="material-symbols-outlined absolute left-3 top-2.5 text-slate-400 text-[18px]">
+              link
+            </span>
+            <input
+              type="text"
+              value={quickUrlInput}
+              onChange={(e) => setQuickUrlInput(e.target.value)}
+              placeholder="Вставьте ссылку на аккаунт или публикацию: https://instagram.com/kris_p_almaty или @zheka_fatbelly..."
+              className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-transparent border-0 focus:outline-none text-slate-900 placeholder:text-slate-400 font-['Inter']"
+            />
+          </div>
+          <button
+            onClick={handleQuickAddUrl}
+            disabled={quickStepActive !== null}
+            className="w-full sm:w-auto px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 shrink-0 shadow-xs disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[16px]">
+              {quickStepActive ? 'hourglass_top' : 'add_task'}
+            </span>
+            {quickStepActive ? `Выполняется шаг ${quickStepActive}...` : 'Добавить в 24/7 список'}
+          </button>
+        </div>
+
+        {/* Anomalies Under Control and Statuses from User Screenshot */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+          <div className="bg-white p-3.5 sm:p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between">
+            <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5 mb-2 font-['Plus_Jakarta_Sans']">
+              <span className="material-symbols-outlined text-sky-600 text-[18px]">verified_user</span>
+              Аномалии под контролем:
+            </span>
+            <div className="grid grid-cols-2 gap-2 text-xs text-slate-700">
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                <span>Всплески активности</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                <span>Спам и ботофермы</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-600"></span>
+                <span className="font-semibold text-rose-700">Реклама казино</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-600"></span>
+                <span>Язык вражды</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
+                <span>Утечки персданных</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
+                <span>Скрытые манипуляции</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-3.5 sm:p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between">
+            <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5 mb-2 font-['Plus_Jakarta_Sans']">
+              <span className="material-symbols-outlined text-emerald-600 text-[18px]">assignment_turned_in</span>
+              Статусы комплаенс-контроля:
+            </span>
+            <div className="flex flex-wrap gap-2">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                ✔ Безопасно
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                ⚠ Предупреждение
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-rose-50 text-rose-800 border border-rose-200">
+                <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                ! Требует внимания
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 mt-2 font-['JetBrains_Mono']">
+              Сверка по нормам КоАП РК, Закона № 230-VII и кодекса цифровой этики.
+            </p>
+          </div>
         </div>
       </div>
 

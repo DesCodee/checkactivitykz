@@ -19,6 +19,7 @@ import {
 import { AuditCase } from '../types';
 import { PRIMARY_AUDIT_CASE } from '../data/mockData';
 import { calculateRiskDistribution, ChartDatum } from '../utils/riskAnalytics';
+import { analyzeEmojis } from '../utils/emojiIntelligence';
 
 interface ExpertReportViewProps {
   auditCase?: AuditCase;
@@ -39,9 +40,97 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
   const [activeRiskFilter, setActiveRiskFilter] = useState<string | null>(null);
   const [hoveredChartItem, setHoveredChartItem] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedReport, setCopiedReport] = useState(false);
   const [copiedExtracted, setCopiedExtracted] = useState(false);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const [activeVideoFrameIndex, setActiveVideoFrameIndex] = useState(0);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const audioElementRef = React.useRef<HTMLAudioElement | null>(null);
+  const videoPlayerRef = React.useRef<HTMLVideoElement | null>(null);
+
+  const seekToTimestamp = (timestampStr: string) => {
+    if (!timestampStr) return;
+    const clean = timestampStr.replace(/[^0-9:]/g, '');
+    const parts = clean.split(':').map((p) => parseFloat(p));
+    let sec = 0;
+    if (parts.length === 2) {
+      sec = (parts[0] || 0) * 60 + (parts[1] || 0);
+    } else if (parts.length === 3) {
+      sec = (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+    } else if (parts.length === 1) {
+      sec = parts[0] || 0;
+    }
+
+    if (videoPlayerRef.current) {
+      videoPlayerRef.current.currentTime = sec;
+      videoPlayerRef.current.play().catch(() => {});
+      videoPlayerRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (audioElementRef.current) {
+      audioElementRef.current.currentTime = sec;
+      audioElementRef.current.play().catch(() => {});
+      audioElementRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
+
+  const handleCopyReport = () => {
+    const findingsList =
+      auditCase.mediaAnalysis?.findings && auditCase.mediaAnalysis.findings.length > 0
+        ? auditCase.mediaAnalysis.findings
+            .map(
+              (f) =>
+                `[${f.timestamp}] [${f.source}] ${f.category}\nЦитата/Описание: «${f.quote_or_description}»\nДостоверность: ${f.confidence} | Обоснование: ${f.reasoning}`
+            )
+            .join('\n\n')
+        : auditCase.violations
+            .map(
+              (v, i) =>
+                `${i + 1}. [${v.category === 'ethics' ? 'ЭТИКА' : 'ЗАКОН РК'}] ${v.title} (${v.code})\nЦитата: «${v.quote || '-'}»\nОбоснование: ${v.basis}\nШтраф/Регулятор: ${v.fineAmount || '-'} (${v.jurisdiction || '-'})\nРекомендация: ${v.recommendation || '-'}`
+            )
+            .join('\n\n');
+
+    const reportText = [
+      `═════════════════════════════════════════════════`,
+      `ЭКСПЕРТНЫЙ ОТЧЁТ CHECK ACTIVITY KZ: ${auditCase.referenceNumber}`,
+      `═════════════════════════════════════════════════`,
+      `Объект: ${auditCase.title}`,
+      `Дата и время: ${auditCase.timestamp}`,
+      `Индекс риска: ${auditCase.riskScore}% (${auditCase.riskLevel})`,
+      `Правовой комплаенс: ${auditCase.legalScore || 0}% | Интернет-этика: ${auditCase.ethicsScore || 0}%`,
+      `Статус: ${auditCase.status}`,
+      auditCase.mediaAnalysis?.language ? `Язык материала: ${auditCase.mediaAnalysis.language}` : '',
+      auditCase.mediaAnalysis?.overall_risk ? `Общий уровень риска: ${auditCase.mediaAnalysis.overall_risk}` : '',
+      `Резюме: ${auditCase.mediaAnalysis?.summary || auditCase.summary}`,
+      ``,
+      `ВЫЯВЛЕННЫЕ РИСКИ И НАРУШЕНИЯ:`,
+      findingsList || 'Нарушений не выявлено. Материал соответствует нормам законодательства РК.',
+      ``,
+      auditCase.mediaAnalysis?.limitations ? `Ограничения анализа: ${auditCase.mediaAnalysis.limitations}` : '',
+      `═════════════════════════════════════════════════`,
+      `Результат предварительный, требуется проверка человеком.`,
+      `═════════════════════════════════════════════════`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    navigator.clipboard?.writeText(reportText);
+    setCopiedReport(true);
+    setTimeout(() => setCopiedReport(false), 2500);
+  };
+
+  const isVideoCase =
+    auditCase.sourceType === 'video' ||
+    Boolean(auditCase.videoDataUrl) ||
+    Boolean(auditCase.videoUrl) ||
+    (Array.isArray(auditCase.videoFrames) && auditCase.videoFrames.length > 0);
+
+  // Auto-cycle video frames if playback is enabled
+  React.useEffect(() => {
+    if (!isVideoPlaying || !auditCase.videoFrames || auditCase.videoFrames.length <= 1) return;
+    const interval = setInterval(() => {
+      setActiveVideoFrameIndex((prev) => (prev + 1) % auditCase.videoFrames!.length);
+    }, 1200);
+    return () => clearInterval(interval);
+  }, [isVideoPlaying, auditCase.videoFrames]);
 
   const isAudioCase =
     auditCase.sourceType === 'audio' ||
@@ -142,6 +231,12 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
       extractedContent
     ));
 
+  const emojiReport =
+    auditCase.emojiAnalysis ||
+    analyzeEmojis(
+      `${extractedContent || ''} ${auditCase.rawText || ''} ${auditCase.title || ''}`
+    );
+
   return (
     <div className="w-full max-w-6xl mx-auto px-3 sm:px-6 py-6 sm:py-8 flex flex-col gap-5 sm:gap-6 font-['Inter']">
       {/* Top Breadcrumb & Action Header */}
@@ -176,6 +271,18 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
 
         {/* Action Buttons (Responsive Wrapping) */}
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleCopyReport}
+            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs sm:text-sm shadow-xs transition-colors"
+            title="Скопировать структурированный экспертный отчёт"
+          >
+            <span className="material-symbols-outlined text-[18px]">
+              {copiedReport ? 'check' : 'content_copy'}
+            </span>
+            <span>{copiedReport ? 'Отчёт скопирован!' : 'Скопировать отчёт'}</span>
+          </button>
+
           <button
             type="button"
             onClick={onOpenPdfModal}
@@ -656,8 +763,162 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             </div>
 
             {/* Content Viewport */}
-            <div className="relative min-h-[280px] sm:min-h-[340px] max-h-[520px] bg-slate-100 flex flex-col justify-between p-3 sm:p-4 overflow-y-auto">
-              {isAudioCase ? (
+            <div className="relative min-h-[280px] sm:min-h-[340px] max-h-[560px] bg-slate-100 flex flex-col justify-between p-3 sm:p-4 overflow-y-auto">
+              {isVideoCase ? (
+                <div className="w-full flex flex-col gap-3 bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
+                  {/* Video Header & Meta */}
+                  <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-900 text-white">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => setIsVideoPlaying(!isVideoPlaying)}
+                        className="w-9 h-9 rounded-lg bg-sky-500 hover:bg-sky-400 text-white flex items-center justify-center shrink-0 shadow-md transition-all active:scale-95"
+                        title={isVideoPlaying ? 'Остановить воспроизведение' : 'Автопросмотр кадров'}
+                      >
+                        <span className="material-symbols-outlined text-[22px]">
+                          {isVideoPlaying ? 'pause' : 'play_arrow'}
+                        </span>
+                      </button>
+                      <div className="min-w-0">
+                        <div className="font-['Plus_Jakarta_Sans'] font-bold text-xs text-slate-100 truncate">
+                          {auditCase.title}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-400 mt-0.5">
+                          <span className="text-sky-300 font-semibold">{auditCase.videoDuration || '00:15'}</span>
+                          <span>•</span>
+                          <span>{auditCase.videoFrames?.length || 4} ключевых кадров</span>
+                          <span>•</span>
+                          <span className="text-emerald-400">9:16 Reels / Shorts</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setIsVideoPlaying(!isVideoPlaying)}
+                        className={`px-2 py-1 rounded text-[10px] font-mono font-bold border transition-colors flex items-center gap-1 ${
+                          isVideoPlaying
+                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                            : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                        }`}
+                      >
+                        <span className="material-symbols-outlined text-[13px]">
+                          {isVideoPlaying ? 'sync' : 'slideshow'}
+                        </span>
+                        <span>{isVideoPlaying ? 'Цикл...' : 'По кадрам'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Active Keyframe Display or Real HTML5 Video Player */}
+                  <div className="relative w-full flex items-center justify-center bg-slate-950 rounded-xl overflow-hidden min-h-[220px] max-h-[360px]">
+                    {auditCase.videoDataUrl || auditCase.videoUrl ? (
+                      <video
+                        ref={videoPlayerRef}
+                        src={auditCase.videoDataUrl || auditCase.videoUrl}
+                        controls
+                        playsInline
+                        className="w-full h-full max-h-[350px] object-contain rounded-lg"
+                      />
+                    ) : auditCase.videoFrames && auditCase.videoFrames[activeVideoFrameIndex] ? (
+                      <img
+                        src={
+                          typeof auditCase.videoFrames[activeVideoFrameIndex] === 'string'
+                            ? (auditCase.videoFrames[activeVideoFrameIndex] as string)
+                            : (auditCase.videoFrames[activeVideoFrameIndex] as any)?.frameDataUrl || auditCase.previewUrl
+                        }
+                        alt={`Кадр ${activeVideoFrameIndex + 1}`}
+                        className="max-h-[300px] w-auto max-w-full object-contain rounded-lg"
+                      />
+                    ) : auditCase.previewUrl ? (
+                      <img
+                        src={auditCase.previewUrl}
+                        alt={auditCase.title}
+                        className="max-h-[300px] w-auto max-w-full object-contain rounded-lg"
+                      />
+                    ) : (
+                      <div className="p-8 text-center text-slate-400 text-xs">Кадры видео загружены</div>
+                    )}
+
+                    {!auditCase.videoDataUrl && !auditCase.videoUrl && (
+                      <>
+                        {/* Frame Timecode badge */}
+                        <div className="absolute top-2 left-2 bg-black/75 backdrop-blur-xs text-white px-2 py-0.5 rounded text-[10px] font-mono font-semibold flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                          <span>00:0{(activeVideoFrameIndex * 3) + 1}.2</span>
+                        </div>
+
+                        {/* Frame Index badge */}
+                        <div className="absolute top-2 right-2 bg-black/75 backdrop-blur-xs text-slate-300 px-2 py-0.5 rounded text-[10px] font-mono">
+                          {activeVideoFrameIndex + 1} / {auditCase.videoFrames?.length || 1}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Keyframe Filmstrip Carousel */}
+                  {Array.isArray(auditCase.videoFrames) && auditCase.videoFrames.length > 0 && (
+                    <div className="flex flex-col gap-1.5">
+                      <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 uppercase">
+                        <span>Кинопленка ключевых кадров (Keyframe Filmstrip):</span>
+                        <span>Кликните для перехода по времени</span>
+                      </div>
+                      <div className="flex items-center gap-2 overflow-x-auto pb-1 pt-0.5">
+                        {auditCase.videoFrames.map((frame, fIdx) => {
+                          const frameSrc = typeof frame === 'string' ? frame : (frame as any)?.frameDataUrl;
+                          const frameTime = `00:0${(fIdx * 3) + 1}.2`;
+                          return (
+                            <button
+                              key={fIdx}
+                              type="button"
+                              onClick={() => {
+                                setActiveVideoFrameIndex(fIdx);
+                                setIsVideoPlaying(false);
+                                if (videoPlayerRef.current) {
+                                  videoPlayerRef.current.currentTime = (fIdx * 3) + 1;
+                                }
+                              }}
+                              className={`relative shrink-0 rounded-lg overflow-hidden border-2 transition-all p-0.5 ${
+                                activeVideoFrameIndex === fIdx
+                                  ? 'border-sky-500 ring-2 ring-sky-200 scale-102 shadow-sm'
+                                  : 'border-slate-200 hover:border-slate-300 opacity-80 hover:opacity-100'
+                              }`}
+                            >
+                              <img
+                                src={frameSrc}
+                                alt={`Кадр ${fIdx + 1}`}
+                                className="w-16 h-20 sm:w-20 sm:h-24 object-cover rounded"
+                              />
+                              <span className="absolute bottom-1 right-1 bg-black/80 text-[9px] text-white font-mono px-1 rounded">
+                                {frameTime}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Video Forensic Metadata */}
+                  <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                    <div className="p-2 rounded-lg bg-slate-50 border border-slate-200">
+                      <span className="text-[10px] text-slate-500 block uppercase font-mono">Распознавание</span>
+                      <span className="font-bold font-mono text-sky-700">Multi-Frame OCR</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 border border-slate-200">
+                      <span className="text-[10px] text-slate-500 block uppercase font-mono">Формат</span>
+                      <span className="font-bold text-slate-900">Reels / Shorts (9:16)</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-slate-50 border border-slate-200">
+                      <span className="text-[10px] text-slate-500 block uppercase font-mono">Статус анализа</span>
+                      <span className={`font-bold ${auditCase.riskScore >= 60 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                        {auditCase.riskScore >= 70 ? 'Выявлены риски' : auditCase.riskScore >= 30 ? 'Предупреждение' : 'Безопасно'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ) : isAudioCase ? (
                 <div className="w-full flex flex-col gap-3.5 bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
                   {/* Hidden audio element */}
                   <audio
@@ -900,6 +1161,111 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
               </div>
             )}
 
+            {/* Emoji Intelligence Card */}
+            <div className="p-3.5 sm:p-4 bg-white border-t border-slate-200">
+              <div className="flex items-center justify-between gap-2 mb-2.5">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-base">🎯</span>
+                  <span className="text-xs font-bold uppercase font-['JetBrains_Mono'] text-slate-800 truncate">
+                    Анализ эмодзи и скрытых символов (Emoji Intelligence)
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {emojiReport.flaggedEmojis.length > 0 ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-red-100 text-red-800 border border-red-200">
+                      РИСК: +{emojiReport.totalRiskPoints} БАЛЛОВ
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      СИМВОЛЫ БЕЗОПАСНЫ
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Emoji Chips Ribbon */}
+              {emojiReport.detectedEmojis.length > 0 ? (
+                <div className="flex flex-col gap-2.5">
+                  <div className="flex flex-wrap items-center gap-1.5 p-2 rounded-lg bg-slate-50 border border-slate-200">
+                    <span className="text-[11px] font-mono text-slate-500 mr-1">
+                      Зафиксировано ({emojiReport.detectedEmojis.length}):
+                    </span>
+                    {emojiReport.detectedEmojis.map((emoji, idx) => {
+                      const isFlagged = emojiReport.flaggedEmojis.some((f) => f.emoji === emoji);
+                      return (
+                        <span
+                          key={idx}
+                          className={`inline-flex items-center justify-center text-lg w-8 h-8 rounded-md transition-transform ${
+                            isFlagged
+                              ? 'bg-rose-100 ring-2 ring-rose-400 scale-105 shadow-xs'
+                              : 'bg-white border border-slate-200'
+                          }`}
+                          title={isFlagged ? 'Выявлен скрытый триггер' : 'Нейтральный эмодзи'}
+                        >
+                          {emoji}
+                        </span>
+                      );
+                    })}
+                  </div>
+
+                  {/* Flagged Explanations Ledger */}
+                  {emojiReport.flaggedEmojis.length > 0 ? (
+                    <div className="flex flex-col gap-2">
+                      {emojiReport.flaggedEmojis.map((item, fIdx) => (
+                        <div
+                          key={fIdx}
+                          className={`p-2.5 rounded-lg border text-xs flex items-start gap-2.5 ${
+                            item.riskLevel === 'critical'
+                              ? 'bg-red-50/70 border-red-200 text-red-950'
+                              : 'bg-amber-50/70 border-amber-200 text-amber-950'
+                          }`}
+                        >
+                          <span className="text-2xl shrink-0 leading-none mt-0.5">{item.emoji}</span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-1 mb-0.5 flex-wrap">
+                              <span className="font-bold font-['Plus_Jakarta_Sans'] text-slate-900 text-xs">
+                                {item.label}
+                              </span>
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${
+                                  item.category === 'gambling'
+                                    ? 'bg-red-100 text-red-700'
+                                    : item.category === 'profanity_insult'
+                                    ? 'bg-purple-100 text-purple-700'
+                                    : item.category === 'sexual'
+                                    ? 'bg-rose-100 text-rose-700'
+                                    : 'bg-amber-100 text-amber-800'
+                                }`}
+                              >
+                                {item.category === 'gambling'
+                                  ? 'Казино / Слоты (ст. 445-1)'
+                                  : item.category === 'profanity_insult'
+                                  ? 'Мат / Буллинг (ст. 434)'
+                                  : item.category === 'sexual'
+                                  ? '18+ Контент (ст. 133-1)'
+                                  : 'Dark Pattern / FOMO'}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-700 leading-relaxed font-['Inter']">
+                              {item.description}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-600 bg-emerald-50/60 p-2.5 rounded-lg border border-emerald-200">
+                      ✓ Проверка символов завершена. Все обнаруженные эмодзи соответствуют нормам сетевого этикета и не содержат скрытых ссылок на азартные игры, ненормативную лексику или манипулятивные триггеры.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center">
+                  В анализируемом контенте эмодзи и пиктограммы не обнаружены.
+                </div>
+              )}
+            </div>
+
             {/* Quick summary strip */}
             <div className="p-3 sm:p-4 bg-white border-t border-slate-200 text-xs text-slate-700 leading-relaxed">
               <div className="font-semibold text-slate-900 mb-1 flex items-center gap-1.5">
@@ -987,6 +1353,123 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
               </div>
             )}
           </div>
+
+          {/* Media Analysis Result Card (JSON Schema Presentation) */}
+          {auditCase.mediaAnalysis && (
+            <div className="rounded-xl bg-white border border-slate-200 p-4 sm:p-5 shadow-xs flex flex-col gap-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[20px] text-sky-600">
+                    query_stats
+                  </span>
+                  <span className="font-['Plus_Jakarta_Sans'] text-sm font-bold text-slate-900">
+                    Анализ аудио/видеоматериала (AI Check)
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                    Язык: <strong className="text-slate-900 capitalize">{auditCase.mediaAnalysis.language}</strong>
+                  </span>
+                  <span
+                    className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded border ${
+                      auditCase.mediaAnalysis.overall_risk === 'высокий'
+                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                        : auditCase.mediaAnalysis.overall_risk === 'средний'
+                        ? 'bg-amber-50 text-amber-700 border-amber-200'
+                        : auditCase.mediaAnalysis.overall_risk === 'низкий'
+                        ? 'bg-sky-50 text-sky-700 border-sky-200'
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    }`}
+                  >
+                    Риск: {auditCase.mediaAnalysis.overall_risk.toUpperCase()}
+                  </span>
+                  {auditCase.mediaAnalysis.needs_human_review && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
+                      Верификация оператором
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Summary */}
+              <div className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                <strong className="text-slate-900">Сводка материала:</strong> {auditCase.mediaAnalysis.summary}
+              </div>
+
+              {/* Findings with Clickable Timestamps */}
+              {Array.isArray(auditCase.mediaAnalysis.findings) && auditCase.mediaAnalysis.findings.length > 0 ? (
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between text-[11px] font-mono font-semibold uppercase text-slate-500">
+                    <span>Зафиксированные факты ({auditCase.mediaAnalysis.findings.length}):</span>
+                    <span>Кликните на таймкод для перемотки</span>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    {auditCase.mediaAnalysis.findings.map((f, fIdx) => (
+                      <div
+                        key={fIdx}
+                        className="p-2.5 sm:p-3 rounded-lg border border-slate-200 hover:border-sky-300 bg-white transition-all flex flex-col gap-1.5 shadow-2xs"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => seekToTimestamp(f.timestamp)}
+                              className="px-2 py-0.5 rounded bg-sky-100 hover:bg-sky-200 text-sky-800 text-[11px] font-mono font-bold flex items-center gap-1 transition-colors"
+                              title="Перемотать плеер на этот таймкод"
+                            >
+                              <span className="material-symbols-outlined text-[13px]">play_arrow</span>
+                              <span>{f.timestamp}</span>
+                            </button>
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-100 text-slate-600 border border-slate-200">
+                              {f.source}
+                            </span>
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
+                                f.confidence === 'высокая'
+                                  ? 'text-rose-700 bg-rose-50'
+                                  : 'text-amber-700 bg-amber-50'
+                              }`}
+                            >
+                              {f.confidence} точность
+                            </span>
+                          </div>
+                          <span className="font-['Plus_Jakarta_Sans'] text-xs font-bold text-slate-900">
+                            {f.category}
+                          </span>
+                        </div>
+
+                        <div className="text-xs text-slate-800 bg-slate-50 p-2 rounded border border-slate-100 font-mono">
+                          «{f.quote_or_description}»
+                        </div>
+
+                        <div className="text-xs text-slate-600 leading-snug">
+                          <strong className="text-slate-800">Обоснование:</strong> {f.reasoning}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px] text-emerald-600">check_circle</span>
+                  <span>Признаков нарушений в аудио- и видеоряде не обнаружено.</span>
+                </div>
+              )}
+
+              {/* Limitations */}
+              {auditCase.mediaAnalysis.limitations && (
+                <div className="text-[11px] text-slate-500 bg-slate-50 p-2 rounded-lg border border-slate-200 flex items-start gap-1.5">
+                  <span className="material-symbols-outlined text-[15px] text-slate-400 shrink-0 mt-0.5">
+                    info
+                  </span>
+                  <span>
+                    <strong>Ограничения AI:</strong> {auditCase.mediaAnalysis.limitations}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* List of issues */}
           {displayedViolations.length === 0 ? (
@@ -1118,6 +1601,14 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
               })}
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Mandatory Regulatory & Legal Bottom Notice */}
+      <div className="w-full text-center pt-6 pb-2 border-t border-slate-200 mt-2">
+        <div className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-50/90 border border-amber-300 text-amber-950 text-xs sm:text-sm font-semibold shadow-xs">
+          <span className="material-symbols-outlined text-[20px] text-amber-700 shrink-0">gavel</span>
+          <span>Результат предварительный, требуется проверка человеком.</span>
         </div>
       </div>
     </div>

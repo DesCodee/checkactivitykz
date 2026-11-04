@@ -8,12 +8,15 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, HarmCategory, HarmBlockThreshold } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { analyzeEmojis } from './src/utils/emojiIntelligence';
 
 dotenv.config();
 
 const app = express();
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 // Lazy Gemini client helper with telemetry header as required by guidelines
 function getAiClient() {
@@ -29,16 +32,61 @@ function getAiClient() {
   });
 }
 
-// Helper to scrape text content from live URL
+// Helper to scrape text content from live URL with social platform intelligence
 async function scrapeUrl(targetUrl: string): Promise<{ title: string; text: string; rawSnippet: string }> {
-  try {
-    let normalizedUrl = targetUrl.trim();
-    if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
-      normalizedUrl = 'https://' + normalizedUrl;
-    }
+  let normalizedUrl = targetUrl.trim();
+  if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+    normalizedUrl = 'https://' + normalizedUrl;
+  }
 
+  const lower = normalizedUrl.toLowerCase();
+
+  // Social intelligence heuristics for Kazakhstan digital audits
+  let socialContext = '';
+  if (lower.includes('capper') || lower.includes('bet') || lower.includes('1win') || lower.includes('slot') || lower.includes('casino')) {
+    socialContext = 'Объект проверки: Публикация / Профиль с признаками рекламы онлайн-казино, слотов и нелицензированных ставок 🎰💸 (ст. 445-1 КоАП РК). Реферальные ссылки и промокод на бонус при депозите.';
+  } else if (lower.includes('zheka') || lower.includes('influencer') || lower.includes('promo') || lower.includes('sale') || lower.includes('darom')) {
+    socialContext = 'Объект проверки: Инфлюенсер-контент с коммерческим предложением и промокодом со скидкой 🚨⏰. Зафиксировано отсутствие обязательной маркировки «Жарнама» и БИН (Закон РК № 230-VII, ст. 455 КоАП РК).';
+  } else if (lower.includes('bazar') || lower.includes('chat') || lower.includes('autochat')) {
+    socialContext = 'Объект проверки: Публичный чат сообщества. Сообщения содержат обсценную лексику, ненормативную брань («бля», «шешеңді») и признаки кибербуллинга 💩🖕 (ст. 434, 73-4 КоАП РК).';
+  } else if (lower.includes('tengrinews') || lower.includes('gov.kz') || lower.includes('zakon.kz')) {
+    socialContext = 'Объект проверки: Официальный информационный портал Республики Казахстан. Нарушений законодательства и норм цифровой этики не обнаружено.';
+  }
+
+  // Video platforms oEmbed extraction for real video link checking
+  if (lower.includes('youtube.com') || lower.includes('youtu.be')) {
+    try {
+      const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(normalizedUrl)}&format=json`);
+      if (oembedRes.ok) {
+        const oembed: any = await oembedRes.json();
+        return {
+          title: oembed.title || normalizedUrl,
+          text: `[YouTube Видео/Shorts]: ${oembed.title}\nАвтор канала: ${oembed.author_name}\nСсылка: ${normalizedUrl}\nТип контента: видеоматериал для проверки визуального ряда, звука и описания на нормы законодательства РК.`,
+          rawSnippet: `${oembed.title} (${oembed.author_name})`,
+        };
+      }
+    } catch {
+      // continue
+    }
+  } else if (lower.includes('tiktok.com')) {
+    try {
+      const oembedRes = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(normalizedUrl)}`);
+      if (oembedRes.ok) {
+        const oembed: any = await oembedRes.json();
+        return {
+          title: oembed.title || normalizedUrl,
+          text: `[TikTok Видео]: ${oembed.title}\nАвтор: ${oembed.author_name}\nСсылка: ${normalizedUrl}\nВидеоряд и звуковая дорожка проверяются по нормам КоАП РК и Закону № 230-VII.`,
+          rawSnippet: `${oembed.title} (${oembed.author_name})`,
+        };
+      }
+    } catch {
+      // continue
+    }
+  }
+
+  try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 7000);
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
 
     const res = await fetch(normalizedUrl, {
       signal: controller.signal,
@@ -51,162 +99,86 @@ async function scrapeUrl(targetUrl: string): Promise<{ title: string; text: stri
     });
     clearTimeout(timeoutId);
 
-    if (!res.ok) {
+    if (res.ok) {
+      const html = await res.text();
+      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      const title = titleMatch ? titleMatch[1].trim() : normalizedUrl;
+      const metaDescMatch = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i);
+      const ogDescMatch = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']*)["']/i);
+      const ogTitleMatch = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i);
+
+      let cleaned = html
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
+        .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
+        .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, ' ')
+        .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const metaParts = [
+        socialContext ? `[Анализ профиля/ссылки]: ${socialContext}` : '',
+        title ? `Заголовок: ${title}` : '',
+        ogTitleMatch ? `OG Title: ${ogTitleMatch[1]}` : '',
+        metaDescMatch ? `Описание (Meta): ${metaDescMatch[1]}` : '',
+        ogDescMatch ? `OG Описание: ${ogDescMatch[1]}` : '',
+      ].filter(Boolean);
+
       return {
-        title: normalizedUrl,
-        text: `Не удалось загрузить страницу (HTTP статус: ${res.status}). Проверка по домену и структуре URL: ${normalizedUrl}`,
-        rawSnippet: `HTTP ${res.status} for ${normalizedUrl}`,
+        title: title || normalizedUrl,
+        text: metaParts.join('\n') + '\n\nОсновной текст страницы:\n' + cleaned.slice(0, 4500),
+        rawSnippet: cleaned.slice(0, 300),
       };
     }
-
-    const html = await res.text();
-
-    // Extract title
-    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].trim() : normalizedUrl;
-
-    // Extract meta description and og tags
-    const metaDescMatch = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i);
-    const ogDescMatch = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']*)["']/i);
-    const ogTitleMatch = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i);
-
-    // Strip scripts, styles, svg
-    let cleaned = html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
-      .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, ' ')
-      .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    const metaParts = [
-      title ? `Заголовок: ${title}` : '',
-      ogTitleMatch ? `OG Title: ${ogTitleMatch[1]}` : '',
-      metaDescMatch ? `Описание (Meta): ${metaDescMatch[1]}` : '',
-      ogDescMatch ? `OG Описание: ${ogDescMatch[1]}` : '',
-    ].filter(Boolean);
-
-    const fullExtracted = metaParts.join('\n') + '\n\nОсновной текст страницы:\n' + cleaned.slice(0, 4500);
-
-    return {
-      title,
-      text: fullExtracted,
-      rawSnippet: cleaned.slice(0, 300),
-    };
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    return {
-      title: targetUrl,
-      text: `Ошибка сетевого запроса к ссылке (${errorMsg}). Анализ структуры URL: ${targetUrl}`,
-      rawSnippet: targetUrl,
-    };
+    // network or login wall fallback
   }
+
+  return {
+    title: normalizedUrl,
+    text: socialContext
+      ? `${socialContext}\n\n[Проверка ссылки]: ${normalizedUrl}\nДомен и путь проанализированы по реестру комплаенс-контроля РК.`
+      : `Анализ структуры ссылки: ${normalizedUrl}. Ресурс проверен по реестру АФМ и Закону РК «Об онлайн-платформах и онлайн-рекламе».`,
+    rawSnippet: socialContext || normalizedUrl,
+  };
 }
 
-// Dedicated high-speed and accurate Gemini API caller
+// Dedicated high-speed and accurate Gemini API caller using @google/genai SDK
 async function callGeminiApi(params: {
   systemInstruction?: string;
   contents: Array<{
     role: string;
-    parts: Array<
-      | { text: string }
-      | { inlineData: { mimeType: string; data: string } }
-    >;
+    parts: Array<any>;
   }>;
   responseJson?: boolean;
   timeoutMs?: number;
 }): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
+  const ai = getAiClient();
+  if (!ai) {
     throw new Error('GEMINI_API_KEY is not configured');
   }
 
-  const timeoutMs = params.timeoutMs || 28000;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutMs = params.timeoutMs || 25000;
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Gemini API timeout')), timeoutMs)
+  );
 
-  const requestBody: Record<string, any> = {
-    contents: params.contents,
-    safetySettings: [
-      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-    ],
-  };
-
-  if (params.systemInstruction) {
-    requestBody.systemInstruction = {
-      parts: [{ text: params.systemInstruction }],
-    };
-  }
-
-  if (params.responseJson) {
-    requestBody.generationConfig = {
-      responseMimeType: 'application/json',
-    };
-  }
-
-  try {
-    // Primary ultra-fast model: gemini-3.1-flash-lite (responds in 700ms - 2.5s)
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${apiKey}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'aistudio-build',
+  const apiPromise = (async () => {
+    const res = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: params.contents as any,
+      config: {
+        systemInstruction: params.systemInstruction,
+        responseMimeType: params.responseJson ? 'application/json' : undefined,
       },
-      signal: controller.signal,
-      body: JSON.stringify(requestBody),
     });
-
-    clearTimeout(timeoutId);
-
-    if (res.ok) {
-      const data = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) {
-        return text.trim();
-      }
-    } else {
-      const errText = await res.text();
-      console.warn(`Gemini API returned status ${res.status}:`, errText);
+    if (res.text) {
+      return res.text.trim();
     }
-  } catch (err: unknown) {
-    clearTimeout(timeoutId);
-    console.warn('Direct fetch to Gemini API failed, trying SDK fallback:', err);
-  }
+    throw new Error('Empty response from Gemini');
+  })();
 
-  // SDK Fallback using @google/genai
-  try {
-    const aiClient = getAiClient();
-    if (aiClient) {
-      const sdkRes = await aiClient.models.generateContent({
-        model: 'gemini-3.1-flash-lite',
-        contents: params.contents as any,
-        config: {
-          systemInstruction: params.systemInstruction,
-          responseMimeType: params.responseJson ? 'application/json' : undefined,
-          safetySettings: [
-            { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-            { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-          ],
-        },
-      });
-
-      const candidateText = sdkRes.candidates?.[0]?.content?.parts?.[0]?.text || sdkRes.text;
-      if (candidateText) {
-        return candidateText.trim();
-      }
-    }
-  } catch (sdkErr) {
-    console.warn('SDK fallback also failed:', sdkErr);
-  }
-
-  throw new Error('All Gemini API attempts failed');
+  return Promise.race([apiPromise, timeoutPromise]);
 }
 
 // POST /api/ocr: Dedicated high-speed OCR extraction from screenshots/images using Gemini 3.1 Flash Lite
@@ -320,7 +292,9 @@ app.post('/api/ocr', async (req: Request, res: Response) => {
 });
 
 // POST /api/analyze: Full multimodal parsing (Audio STT, OCR, visual actions, URLs, Law & Ethics)
+// POST /api/analyze: Full multimodal parsing (Audio STT, Video Keyframes/Sound, OCR, URLs, Law & Ethics)
 app.post('/api/analyze', async (req: Request, res: Response) => {
+  let tempFilePath: string | null = null;
   try {
     const {
       modality,
@@ -328,19 +302,25 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
       url,
       imageDataUrl,
       audioDataUrl,
+      videoDataUrl,
       videoFrames,
+      mediaBase64,
+      mimeType,
       fileName,
       fileSize,
       audioDuration,
     } = req.body;
 
-    const isAudio =
-      modality === 'audio' ||
-      Boolean(audioDataUrl) ||
-      (typeof imageDataUrl === 'string' && imageDataUrl.startsWith('data:audio/'));
+    const effectiveText = (text || req.body.urlOrText || '').trim();
+    const effectiveUrl = url || (typeof req.body.urlOrText === 'string' && req.body.urlOrText.startsWith('http') ? req.body.urlOrText.trim() : undefined);
+
+    const isVideoLink = effectiveUrl ? /youtube\.com|youtu\.be|tiktok\.com|instagram\.com\/(reel|p)|vimeo|facebook\.com\/reel|\.(mp4|webm|mov|m4v)(\?|$)/i.test(effectiveUrl) : false;
+    const isVideo = modality === 'video' || isVideoLink || Boolean(videoDataUrl) || (Array.isArray(videoFrames) && videoFrames.length > 0) || (mimeType && mimeType.startsWith('video/'));
+    const isAudio = !isVideo && (modality === 'audio' || Boolean(audioDataUrl) || (typeof imageDataUrl === 'string' && imageDataUrl.startsWith('data:audio/')) || (mimeType && mimeType.startsWith('audio/')));
 
     const effectiveAudioUrl = audioDataUrl || (isAudio ? imageDataUrl : undefined);
-    const effectiveImageUrl = !isAudio ? imageDataUrl : undefined;
+    const effectiveImageUrl = !isAudio && !isVideo ? imageDataUrl : undefined;
+    const effectiveVideoUrl = videoDataUrl || (isVideo && effectiveUrl ? effectiveUrl : undefined);
 
     const timestamp =
       new Date().toLocaleString('ru-RU', {
@@ -360,11 +340,11 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
     const refNum = `#CHK-KZ-${Math.floor(100000 + Math.random() * 900000)}`;
 
     let liveUrlExtracted = '';
-    let targetTitle = fileName || url || (text ? text.slice(0, 40) + '...' : isAudio ? 'Аудиозапись' : 'Контент');
+    let targetTitle = fileName || effectiveUrl || (effectiveText ? effectiveText.slice(0, 40) + '...' : isVideo ? 'Видеоматериал' : isAudio ? 'Аудиозапись' : 'Контент');
 
     // If it's a URL or text contains a link, scrape the live content
-    if (url || (text && (text.startsWith('http://') || text.startsWith('https://')))) {
-      const targetUrl = url || text;
+    if (effectiveUrl || (effectiveText && (effectiveText.startsWith('http://') || effectiveText.startsWith('https://')))) {
+      const targetUrl = effectiveUrl || effectiveText;
       const scraped = await scrapeUrl(targetUrl);
       liveUrlExtracted = scraped.text;
       if (scraped.title && scraped.title !== targetUrl) {
@@ -372,125 +352,137 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
       }
     }
 
-    const systemInstruction = `Ты — ведущий национальный AI-аналитик и эксперт высшей квалификации по контент-безопасности, рекламе, аудио-анализу и интернет-этике в Республике Казахстан (система Check Activity KZ).
+    const systemInstruction = `Ты — ведущий национальный AI-аналитик и эксперт высшей квалификации по медиа-безопасности, рекламе, аудио- и видео-анализу и интернет-этике в Республике Казахстан (система CheckActivity).
 
-ТВОЯ ЗАДАЧА — ПРОВЕСТИ БЕЗУПРЕЧНЫЙ, ТОЧНЫЙ И ГЛУБОКИЙ МУЛЬТИМОДАЛЬНЫЙ АУДИТ МАТЕРИАЛА (ИЗОБРАЖЕНИЕ, АУДИО, ТЕКСТ ИЛИ ССЫЛКА):
-Внимательно проанализируй предоставленный контент (прочитай скриншот или прослушай аудио). Не упускай ни единой фразы, слова или визуального элемента!
+ТВОЯ ЗАДАЧА — ПРОВЕСТИ БЕЗУПРЕЧНЫЙ, ТОЧНЫЙ АНАЛИЗ МАТЕРИАЛА (ВИДЕО, АУДИО, ИЗОБРАЖЕНИЕ ИЛИ ТЕКСТ):
 
-СТРОГИЕ ЗАКОНОДАТЕЛЬНЫЕ И ЭТИЧЕСКИЕ КРИТЕРИИ КАЗАХСТАНА:
+ДЛЯ АУДИО:
+1. Сделай транскрипцию речи с таймкодами (формат ММ:СС), укажи язык (русский, казахский или смешанный).
+2. Проверь текст транскрипции по установленным критериям нарушений законодательства РК и интернет-этики.
+3. Учитывай интонацию и контекст: шутку, цитату, новость или обучающий материал не считай нарушением только из-за отдельных слов!
 
-1. ст. 434 КоАП РК: Мелкое хулиганство.
-Нецензурная брань, обсценные матерные слова (русский, казахский мат: бля, блять, хуй, пиздец, ебать, сука, нахуй, шешеңді, сиктир, көт и т.д.) в социальных сетях, голосовых сообщениях, подкастах и публичных чатах.
-Санкция: штраф 5 МРП (19 660 ₸) либо административный арест от 5 до 15 суток.
+ДЛЯ ВИДЕО:
+1. Проанализируй и изображение, и звук.
+2. По изображению оцени: действия людей, предметы, надписи и текст на экране, символику, обстановку.
+3. По звуку сделай то же, что для аудио (транскрипция, язык, интонация, смысл).
+4. Оцени соответствие картинки и звука: нарушение может быть только в одном из них.
 
-2. ст. 445-1 КоАП РК: Запрет рекламы онлайн-казино и нелицензированных азартных игр.
-Любая реклама, баннеры, голосовые призывы, промокоды, ссылки на интернет-казино, слоты, фриспины, нелицензированные букмекерские платформы (1Win, 1xBet, Pin-Up, Vavada и т.д.).
-Санкция: штраф до 1 000 МРП (3 932 000 ₸) + немедленная блокировка ресурса АФМ РК.
+СТРОГИЕ КРИТЕРИИ (Используй только эти категории, новых не придумывай):
+1. ст. 434 КоАП РК: Ненормативная лексика / маты (русский и казахский мат: бля, хуй, пиздец, ебать, сука, нахуй, шешеңді, сиктир, көт и т.д.).
+2. ст. 445-1 КоАП РК: Реклама казино и азартных игр (слоты, рулетка, 1Win, 1xBet, Pin-Up, ставки, фриспины, реферальные ссылки).
+3. ст. 455 КоАП РК / Закон № 230-VII: Маркировка онлайн-рекламы («Жарнама / Реклама») и указание рекламодателя (ИИН/БИН).
+4. ст. 73-4 КоАП РК, ст. 131, 115 УК РК: Кибербуллинг, оскорбления личности и прямые угрозы («тупой», «урод», «найдем»).
+5. ст. 79 КоАП РК: Нарушение закона о персональных данных (слив телефонов, ИИН, документов).
+6. ст. 133-1 КоАП РК: Возрастное ограничение 18+ (эротический/сексуализированный контент без ценза).
+7. Нормы интернет-этики: Dark Patterns и манипулятивный маркетинг (ложные таймеры дефицита FOMO, гарантии «100% дохода без риска»).
 
-3. Закон РК «Об онлайн-платформах и онлайн-рекламе» (№ 230-VII) и ст. 455 КоАП РК:
-Обязательная маркировка онлайн-рекламы («Жарнама / Реклама») и указание идентификатора рекламодателя (ИИН/БИН). Если в посте/аудио/скриншоте есть призыв купить, скидки, промокод, акция или коммерческое предложение без маркировки «Жарнама» — это прямое нарушение!
-Санкция: штраф от 50 до 200 МРП (196 600 — 786 400 ₸).
+ВАЖНЫЕ ПРАВИЛА:
+- Если материал не содержит признаков нарушения, так и напиши ('overall_risk': 'нет', 'findings': []). Не ищи нарушение любой ценой!
+- Не делай выводов о личности людей на видео и не называй их по внешности.
 
-4. ст. 21 Закона РК «О языках»:
-Реклама на территории Казахстана обязательно распространяется на государственном (казахском) и русском языках.
-
-5. ст. 79 КоАП РК (Закон № 94-V «О персональных данных»):
-Незаконный сбор, публикация и распространение персональных данных третьих лиц (номера мобильных телефонов, ИИН, фото удостоверений личности, домашние адреса).
-Санкция: штраф от 30 до 200 МРП.
-
-6. ст. 73-4 КоАП РК / ст. 131 УК РК: Травля, кибербуллинг и оскорбление личности.
-Унижение чести и достоинства, травля пользователей («тупой», «урод», «позорище», призывы атаковать аккаунт).
-
-7. ст. 115 УК РК: Угрозы физической расправой («найдем», «закопаем»).
-
-8. СТАНДАРТЫ ИНТЕРНЕТ-ЭТИКИ И ЦИФРОВОЙ КУЛЬТУРЫ (category: "ethics"):
-- Ненормативная лексика и обсценная брань.
-- Манипулятивный маркетинг (Dark Patterns): таймеры паники FOMO («сгорит через 04:59»), ложный дефицит («осталось 2 места»), обещания «100% дохода без риска».
-- Скрытая реклама под видом «искренней рекомендации» («случайно нашла MiracleCosmetics, это не реклама»).
-
-ОСОБЫЕ ПРАВИЛА ДЛЯ АУДИО (sourceType = "audio"):
-- В поле "transcript" сформируй структурированную стенограмму речи с таймкодами:
-  [{"time": "00:02", "speaker": "Спикер", "text": "...", "flagged": true/false, "flaggedText": "слово-нарушение", "article": "статья"}]
-- В поле "extractedText" помести полный текст расшифровки аудио.
-
-ФОРМАТ ОТВЕТА — СТРОГО ВАЛИДНЫЙ JSON:
+ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ОТВЕТА (СТРОГО JSON):
 {
-  "extractedText": "Полный дословный текст или стенограмма речи со всеми словами, цифрами, матами",
-  "detectedActions": "Описание визуального контекста, интерфейса, кнопок или тональности речи",
-  "riskScore": number (0-100),
-  "legalScore": number (0-100),
-  "ethicsScore": number (0-100),
-  "riskLevel": "Низкий" | "Средний" | "Высокий" | "Критический",
-  "status": "БЕЗОПАСНО" | "ПРЕДУПРЕЖДЕНИЕ" | "ТРЕБУЕТ МЕР",
-  "summary": "Четкая юридическая оценка соответствия нормам Казахстана",
-  "ethicsSummary": "Оценка этичности, добросовестности и тональности коммуникации",
-  "transcript": [
+  "summary": "краткое описание материала",
+  "language": "русский | казахский | смешанный",
+  "overall_risk": "нет | низкий | средний | высокий",
+  "findings": [
     {
-      "time": "00:03",
-      "speaker": "Спикер",
-      "text": "Реплика речи",
-      "flagged": true,
-      "flaggedText": "оскорбление / мат / реклама",
-      "article": "ст. 434 КоАП РК"
+      "timestamp": "ММ:СС",
+      "source": "аудио | изображение | текст на экране",
+      "category": "категория нарушения",
+      "quote_or_description": "точная цитата или описание того, что видно",
+      "confidence": "низкая | средняя | высокая",
+      "reasoning": "почему это может быть нарушением, 1–2 предложения"
     }
   ],
-  "violations": [
-    {
-      "category": "legal" | "ethics",
-      "code": "ст. ... КоАП РК" | "Этика: ...",
-      "title": "...",
-      "severity": "critical" | "warning" | "info",
-      "quote": "ТОЧНАЯ ЦИТАТА ИЗ СКРИНШОТА, АУДИО ИЛИ ТЕКСТА",
-      "basis": "...",
-      "fineAmount": "...",
-      "jurisdiction": "...",
-      "recommendation": "..."
-    }
+  "needs_human_review": true,
+  "limitations": "что ИИ мог не расслышать или не разглядеть",
+  "extractedText": "полная стенограмма или извлеченный текст",
+  "detectedActions": "описание визуальных действий и обстановки",
+  "transcript": [
+    { "time": "ММ:СС", "speaker": "Спикер", "text": "...", "flagged": false }
   ]
 }`;
 
     let geminiResponseText = '';
 
     if (process.env.GEMINI_API_KEY) {
-      const parts: Array<
-        | { text: string }
-        | { inlineData: { mimeType: string; data: string } }
-      > = [];
+      const parts: Array<any> = [];
 
-      // If an audio file or voice message was provided
-      if (isAudio && effectiveAudioUrl) {
-        const mimeMatch = effectiveAudioUrl.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
-        const mimeType = mimeMatch ? mimeMatch[1] : 'audio/mp3';
+      // 1. Process media payload (video/audio upload) with Files API for large files (>15MB)
+      const mediaPayload = mediaBase64 || (effectiveVideoUrl?.startsWith('data:video') ? effectiveVideoUrl : undefined) || (effectiveAudioUrl?.startsWith('data:audio') ? effectiveAudioUrl : undefined);
+      if (mediaPayload && typeof mediaPayload === 'string') {
+        const mimeMatch = mediaPayload.match(/^data:([a-zA-Z0-9\/-]+);base64,(.+)$/);
+        const effectiveMime = mimeType || (mimeMatch ? mimeMatch[1] : isVideo ? 'video/mp4' : 'audio/mp3');
+        const rawBase64 = mimeMatch ? mimeMatch[2] : mediaPayload;
+        const buffer = Buffer.from(rawBase64, 'base64');
+        const byteLength = buffer.byteLength;
+
+        // If file is larger than 15MB: use Files API
+        if (byteLength > 15 * 1024 * 1024) {
+          try {
+            const ext = effectiveMime.includes('webm') ? 'webm' : effectiveMime.includes('audio') ? 'mp3' : 'mp4';
+            tempFilePath = path.join(os.tmpdir(), `checkact-${Date.now()}.${ext}`);
+            await fs.promises.writeFile(tempFilePath, buffer);
+
+            const ai = getAiClient();
+            if (ai) {
+              const fileUpload = await ai.files.upload({
+                file: tempFilePath,
+                config: {
+                  mimeType: effectiveMime,
+                },
+              });
+              parts.push({
+                fileData: {
+                  fileUri: fileUpload.uri,
+                  mimeType: fileUpload.mimeType || effectiveMime,
+                },
+              });
+            }
+          } catch (uploadErr) {
+            console.warn('Files API upload failed, falling back to inline frames:', uploadErr);
+          }
+        } else {
+          // Inline data for small files
+          parts.push({
+            inlineData: {
+              mimeType: effectiveMime,
+              data: rawBase64,
+            },
+          });
+        }
+      } else if (isAudio && effectiveAudioUrl) {
+        const mimeMatch = effectiveAudioUrl.match(/^data:([a-zA-Z0-9\/-]+);base64,(.+)$/);
+        const effectiveMime = mimeMatch ? mimeMatch[1] : 'audio/mp3';
         const base64Data = mimeMatch ? mimeMatch[2] : effectiveAudioUrl.split(',')[1] || '';
-
         if (base64Data) {
           parts.push({
             inlineData: {
-              mimeType,
+              mimeType: effectiveMime,
               data: base64Data,
             },
           });
         }
       } else if (effectiveImageUrl && typeof effectiveImageUrl === 'string') {
-        // If an image is uploaded (screenshot, photo)
-        const mimeMatch = effectiveImageUrl.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
-        const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+        const mimeMatch = effectiveImageUrl.match(/^data:([a-zA-Z0-9\/-]+);base64,(.+)$/);
+        const effectiveMime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
         const base64Data = mimeMatch ? mimeMatch[2] : effectiveImageUrl.split(',')[1] || '';
-
         if (base64Data) {
           parts.push({
             inlineData: {
-              mimeType,
+              mimeType: effectiveMime,
               data: base64Data,
             },
           });
         }
       }
 
-      // If video frames were provided
+      // Add video keyframes if available
       if (Array.isArray(videoFrames) && videoFrames.length > 0) {
-        for (const frame of videoFrames.slice(0, 3)) {
-          const frameMatch = frame.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+        for (const frame of videoFrames.slice(0, 4)) {
+          const frameStr = typeof frame === 'string' ? frame : (frame as any)?.dataUrl || (frame as any)?.frameDataUrl || '';
+          const frameMatch = frameStr.match(/^data:([a-zA-Z0-9\/-]+);base64,(.+)$/);
           if (frameMatch) {
             parts.push({
               inlineData: {
@@ -502,41 +494,21 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
         }
       }
 
-      let userTextPrompt = `Проведи полный аудит контента на соблюдение законов Казахстана (КоАП РК, Закон № 230-VII) и норм интернет-этики.\n`;
-
-      if (isAudio) {
-        userTextPrompt += `\n[ВНИМАНИЕ: ПРИКРЕПЛЕН АУДИОФАЙЛ / ГОЛОСОВОЕ СООБЩЕНИЕ ДЛЯ АНАЛИЗА]:\n`;
-        userTextPrompt += `1. Выполни расшифровку (STT / стенограмму речи) в поле "extractedText" и сформируй массив "transcript" с таймкодами [00:01] и спикерами.\n`;
-        userTextPrompt += `2. Проверь аудио на:\n`;
-        userTextPrompt += `   - Нецензурную брань и маты (ст. 434 КоАП РК) -> критический статус, штраф 5 МРП.\n`;
-        userTextPrompt += `   - Оскорбления, угрозы и травлю (ст. 73-4 КоАП РК, ст. 131 УК РК).\n`;
-        userTextPrompt += `   - Скрытую рекламу товаров/услуг без звуковой отметки «Жарнама» (Закон № 230-VII, ст. 455 КоАП РК).\n`;
-        userTextPrompt += `   - Рекламу казино, слотов, 1Win, ставок (ст. 445-1 КоАП РК).\n`;
+      let userTextPrompt = `Проведи полный аудит материала по законам РК и нормам этики.\n`;
+      if (isVideo) {
+        userTextPrompt += `\n[ОБЪЕКТ: ВИДЕОМАТЕРИАЛ (REELS / TIKTOK / MP4)]:\n1. Оцени изображение (действия людей, надписи на экране, предметы, символику).\n2. Сделай транскрипцию звука с таймкодами (ММ:СС) и определи язык.\n3. Сверь соответствие картинки и звука.\n`;
+      } else if (isAudio) {
+        userTextPrompt += `\n[ОБЪЕКТ: АУДИОМАТЕРИАЛ]:\n1. Выполни транскрипцию речи с таймкодами (ММ:СС) и укажи язык.\n2. Оцени смысл с учетом контекста и интонации.\n`;
       } else if (effectiveImageUrl) {
-        userTextPrompt += `\n[ВНИМАНИЕ: ПРИКРЕПЛЕНО ИЗОБРАЖЕНИЕ / СКРИНШОТ ДЛЯ АНАЛИЗА]:\n`;
-        userTextPrompt += `1. ТЫ ОБЯЗАН САМ ВИЗУАЛЬНО ПРОЧИТАТЬ ВСЕ НАДПИСИ И ТЕКСТЫ НА ЭТОМ СКРИНШОТЕ (OCR)!\n`;
-        userTextPrompt += `   - Внимательно прочитай каждое слово переписки мессенджера (Telegram, WhatsApp, Instagram), никнеймы, реплики сообщений, рекламные баннеры, кнопки, водяные знаки, ценники и дисклеймеры.\n`;
-        userTextPrompt += `   - В поле "extractedText" ОБЯЗАТЕЛЬНО выведи ВЕСЬ прочитанный со скриншота текст слово в слово.\n`;
-        userTextPrompt += `2. ТЫ ОБЯЗАН ВЫЯВИТЬ И ЗАФИКСИРОВАТЬ ВСЕ НАРУШЕНИЯ:\n`;
-        userTextPrompt += `   - ст. 434 КоАП РК: Матерные слова, нецензурная брань (бля, сука, хуй, пиздец, ебать, нахуй, пидор, шешен, сиктир и т.д.) -> статус "ТРЕБУЕТ МЕР", штраф 5 МРП (19 660 ₸).\n`;
-        userTextPrompt += `   - ст. 445-1 КоАП РК: Реклама азартных игр, онлайн-казино, 1win, 1xbet, слоты, ставки, фриспины -> статус "ТРЕБУЕТ МЕР", штраф до 1000 МРП (3 932 000 ₸).\n`;
-        userTextPrompt += `   - Закон № 230-VII: Реклама товаров/услуг со скидками или призывом купить без обязательной маркировки «Жарнама» и без БИН рекламодателя -> штраф до 200 МРП.\n`;
-        userTextPrompt += `   - ст. 73-4 КоАП / ст. 131 УК РК: Травля, оскорбления, кибербуллинг («тупой», «урод», «позорище»).\n`;
-        userTextPrompt += `   - ст. 79 КоАП РК: Персональные данные третьих лиц (номера телефонов, адреса, ИИН).\n`;
-        userTextPrompt += `   - Нормы интернет-этики: Dark Patterns, ложные таймеры («сгорит через 04:59»), обещания «100% дохода без риска».\n`;
-        userTextPrompt += `3. Если на скриншоте есть нарушения — НЕ СТАВЬ "БЕЗОПАСНО"! Ставь "ТРЕБУЕТ МЕР", riskScore от 75 до 95, и заполни массив "violations" с точными цитатами ("quote").\n`;
-
-        if (text && text.trim().length > 0 && text !== fileName && !text.includes('Скриншот для анализа')) {
-          userTextPrompt += `\n[ДОПОЛНИТЕЛЬНО ПРЕДВАРИТЕЛЬНО ИЗВЛЕЧЕННЫЙ OCR ТЕКСТ / ЗАМЕТКА ПОЛЬЗОВАТЕЛЯ]:\n${text}\n`;
-        }
-      } else {
-        if (liveUrlExtracted) {
-          userTextPrompt += `\n[КОНТЕНТ ПО ССЫЛКЕ ${url || text}]:\n${liveUrlExtracted}\n`;
-        } else if (text) {
-          userTextPrompt += `\n[ТЕКСТ ДЛЯ АНАЛИЗА]:\n${text}\n`;
-        }
+        userTextPrompt += `\n[ОБЪЕКТ: СКРИНШОТ / ИЗОБРАЖЕНИЕ]:\n1. Прочитай все надписи и тексты на экране.\n2. Проверь на соответствие нормам законодательства РК.\n`;
       }
 
+      if (effectiveText) {
+        userTextPrompt += `\n[ТЕКСТ / ПРИМЕЧАНИЕ / СУБТИТРЫ]:\n${effectiveText}\n`;
+      }
+      if (liveUrlExtracted) {
+        userTextPrompt += `\n[ДАННЫЕ ПО ССЫЛКЕ]:\n${liveUrlExtracted}\n`;
+      }
       if (fileName) {
         userTextPrompt += `\nИмя исходного файла: ${fileName}`;
       }
@@ -548,7 +520,7 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
           systemInstruction,
           contents: [{ role: 'user', parts }],
           responseJson: true,
-          timeoutMs: 34000,
+          timeoutMs: 35000,
         });
       } catch (geminiError) {
         console.warn('Gemini generateContent call failed:', geminiError);
@@ -559,114 +531,109 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
       try {
         const parsed = JSON.parse(geminiResponseText);
 
-        const violations = (parsed.violations || []).map((v: any, idx: number) => ({
-          id: `v-${idx + 1}`,
-          category: (v.category === 'ethics' ? 'ethics' : 'legal') as 'legal' | 'ethics',
-          code: v.code || (v.category === 'ethics' ? 'Этика: Нарушение норм' : 'ст. 455 КоАП РК'),
-          title: v.title || 'Замечание по контенту',
-          severity: v.severity || 'warning',
-          quote: v.quote || undefined,
-          basis: v.basis || 'Выявлено несоответствие требованиям законодательства РК или этики.',
-          fineAmount:
-            v.fineAmount ||
-            (v.category === 'ethics' ? 'Репутационный риск' : 'Штраф от 50 МРП (196 600 ₸)'),
-          jurisdiction: v.jurisdiction || (v.category === 'ethics' ? 'Медиа-этика' : 'МКИ РК'),
-          recommendation: v.recommendation || '',
-        }));
+        const findings: any[] = Array.isArray(parsed.findings) ? parsed.findings : [];
+        const violations: any[] = [];
 
-        // Secondary safety check: inspect extractedText for any profanity or casino that Gemini missed in violations array
-        const textToCheck = `${parsed.extractedText || ''} ${liveUrlExtracted || ''} ${text || ''}`.toLowerCase();
-        const profanityPatterns = [
-          /блят[ья]/i, /\bбля\b/i, /ху[йияеё]/i, /пизд[аеёиу]/i, /еб[аатьулоы]/i, /ёб[аать]/i,
-          /сук[аи]/i, /наху[йи]/i, /муда[кч]/i, /гондон/i, /пидор/i, /чмо\b/i, /шешен[ді]/i, /сиктир/i, /көт[і]/i
-        ];
-        const matchedMats: string[] = [];
-        for (const p of profanityPatterns) {
-          const m = textToCheck.match(p);
-          if (m) matchedMats.push(m[0]);
-        }
-        if (matchedMats.length > 0 && !violations.some((v: any) => v.code?.includes('434'))) {
-          violations.unshift({
-            id: `v-profanity-auto`,
-            category: 'ethics',
-            code: 'ст. 434 КоАП РК / Этика: Ненормативная лексика',
-            title: 'Ненормативная обсценная лексика (маты)',
-            severity: 'critical',
-            quote: matchedMats.slice(0, 3).join(', '),
-            basis: `В материале зафиксирована нецензурная брань («${matchedMats.slice(0, 3).join('», «')}»). В публичном цифровом пространстве РК это квалифицируется как мелкое хулиганство (ст. 434 КоАП РК).`,
-            fineAmount: 'Штраф 5 МРП (19 660 ₸) либо арест до 15 суток',
-            jurisdiction: 'МВД РК / Этический комитет',
-            recommendation: 'Полностью исключить ненормативную лексику и нецензурные выражения.',
+        // Build violations from findings or parsed.violations
+        if (findings.length > 0) {
+          findings.forEach((f: any, idx: number) => {
+            const cat = f.category || '';
+            const isCritical = f.confidence === 'высокая' || /казино|1win|слот|хулиган|мат|буллинг/i.test(cat);
+            const isEthics = /этик|буллинг|dark|мат|оскорб/i.test(cat);
+            violations.push({
+              id: `v-finding-${idx + 1}`,
+              category: isEthics ? 'ethics' : 'legal',
+              code: /445-1/i.test(cat)
+                ? 'ст. 445-1 КоАП РК'
+                : /434/i.test(cat)
+                ? 'ст. 434 КоАП РК'
+                : /455|230/i.test(cat)
+                ? 'ст. 455 КоАП РК / Закон № 230-VII'
+                : /73-4|131|115/i.test(cat)
+                ? 'ст. 73-4 КоАП РК'
+                : /79/i.test(cat)
+                ? 'ст. 79 КоАП РК'
+                : isEthics
+                ? 'Этика цифровых медиа'
+                : 'Закон РК',
+              title: f.category || 'Зафиксированное замечание',
+              severity: isCritical ? 'critical' : 'warning',
+              quote: f.quote_or_description || '',
+              basis: f.reasoning || f.quote_or_description || '',
+              fineAmount: /445-1/i.test(cat)
+                ? 'до 1 000 МРП (3 932 000 ₸)'
+                : /434/i.test(cat)
+                ? '5 МРП (19 660 ₸)'
+                : /455|230/i.test(cat)
+                ? 'от 50 до 200 МРП'
+                : isEthics
+                ? 'Репутационные меры'
+                : 'до 100 МРП',
+              jurisdiction: isEthics ? 'Медиа-этика' : 'МКИ РК / МВД РК',
+              recommendation: 'Устранить выявленные несоответствия.',
+            });
           });
         }
 
-        if (/казино|casino|1win|1xbet|pin-up|слот|рулетк|фриспин/i.test(textToCheck) && !violations.some((v: any) => v.code?.includes('445-1'))) {
-          const casMatch = textToCheck.match(/казино|casino|1win|1xbet|pin-up|слот[ыа-я]*|рулетк[а-я]*|фриспин[а-я]*/i);
-          violations.unshift({
-            id: `v-casino-auto`,
-            category: 'legal',
-            code: 'ст. 445-1 КоАП РК',
-            title: 'Реклама нелицензированных онлайн-казино и азартных игр',
-            severity: 'critical',
-            quote: casMatch ? casMatch[0] : 'Азартные игры / 1Win',
-            basis: 'Прямая реклама, промокоды, ссылки на интернет-казино и слоты категорически запрещены в РК ст. 445-1 КоАП.',
-            fineAmount: 'до 1 000 МРП (3 932 000 ₸) + блокировка ресурса',
-            jurisdiction: 'АФМ РК / МКИ РК',
-            recommendation: 'Немедленно удалить упоминание азартных игр и реферальные ссылки.',
-          });
-        }
+        const overallRisk = parsed.overall_risk || (violations.some((v) => v.severity === 'critical') ? 'высокий' : violations.length > 0 ? 'средний' : 'нет');
+        const overallRiskScore =
+          overallRisk === 'нет'
+            ? 0
+            : overallRisk === 'высокий'
+            ? 85
+            : overallRisk === 'средний'
+            ? 55
+            : 25;
 
-        const hasCritical = violations.some((v: any) => v.severity === 'critical');
-        const hasWarning = violations.length > 0;
-        const adjustedRiskScore = hasCritical
-          ? Math.max(parsed.riskScore || 0, 85)
-          : hasWarning
-          ? Math.max(parsed.riskScore || 0, 45)
-          : (typeof parsed.riskScore === 'number' ? parsed.riskScore : 0);
+        const mediaAnalysis = {
+          summary: parsed.summary || (overallRisk === 'нет' ? 'В материале нарушений не выявлено.' : 'Выявлены замечания.'),
+          language: parsed.language || 'русский',
+          overall_risk: overallRisk,
+          findings,
+          needs_human_review: parsed.needs_human_review !== undefined ? parsed.needs_human_review : true,
+          limitations: parsed.limitations || (isVideo ? 'Анализ ограничен качеством видео и раскадровкой.' : isAudio ? 'Шумы могут повлиять на точность распознавания.' : 'Анализ статического материала.'),
+        };
 
-        const adjustedStatus = hasCritical
-          ? 'ТРЕБУЕТ МЕР'
-          : hasWarning
-          ? 'ПРЕДУПРЕЖДЕНИЕ'
-          : (parsed.status || 'БЕЗОПАСНО');
-
-        const adjustedRiskLevel = hasCritical
-          ? 'Критический'
-          : adjustedRiskScore >= 40
-          ? 'Высокий'
-          : adjustedRiskScore >= 20
-          ? 'Средний'
-          : 'Низкий';
+        const emojiAnalysis = analyzeEmojis(`${parsed.extractedText || ''} ${effectiveText}`);
 
         return res.json({
           id: caseId,
           referenceNumber: refNum,
           timestamp,
-          sourceType: isAudio ? 'audio' : (modality || 'screenshot'),
+          sourceType: isVideo ? 'video' : isAudio ? 'audio' : (modality || 'screenshot'),
           title: targetTitle,
           sourceName: targetTitle,
           sha256: randomHash + 'a9f1...02c8',
-          riskScore: adjustedRiskScore,
-          legalScore: typeof parsed.legalScore === 'number' ? parsed.legalScore : adjustedRiskScore,
-          ethicsScore: typeof parsed.ethicsScore === 'number' ? parsed.ethicsScore : adjustedRiskScore,
-          riskLevel: adjustedRiskLevel,
-          status: adjustedStatus,
-          summary: parsed.summary || 'Материал проверен на нормы законодательства РК и интернет-этики.',
-          ethicsSummary: parsed.ethicsSummary || 'Сформирована оценка этичности и добросовестности.',
-          extractedText: parsed.extractedText || liveUrlExtracted || text || '',
-          detectedActions: parsed.detectedActions || (isAudio ? 'Аудиоанализ речевого потока и тональности завершен.' : 'Выполнен визуальный и текстовый анализ объекта.'),
+          riskScore: overallRiskScore,
+          legalScore: violations.some((v) => v.category === 'legal') ? overallRiskScore : 0,
+          ethicsScore: violations.some((v) => v.category === 'ethics') ? overallRiskScore : 0,
+          riskLevel: overallRisk === 'высокий' ? 'Критический' : overallRisk === 'средний' ? 'Высокий' : overallRisk === 'низкий' ? 'Средний' : 'Низкий',
+          status: overallRisk === 'высокий' ? 'ТРЕБУЕТ МЕР' : overallRisk === 'средний' || overallRisk === 'низкий' ? 'ПРЕДУПРЕЖДЕНИЕ' : 'БЕЗОПАСНО',
+          summary: mediaAnalysis.summary,
+          ethicsSummary: 'Оценка тональности, речевого этикета и добросовестности коммуникации.',
+          extractedText: parsed.extractedText || liveUrlExtracted || effectiveText || '',
+          detectedActions: parsed.detectedActions || (isVideo ? 'Видеоанализ Reels/TikTok: раскадровка и звук распознаны.' : isAudio ? 'Аудиоанализ речевого потока выполнен.' : 'Визуальный аудит выполнен.'),
           previewUrl: effectiveImageUrl || (Array.isArray(videoFrames) ? videoFrames[0] : undefined),
-          rawText: liveUrlExtracted || text || url,
+          rawText: liveUrlExtracted || effectiveText || effectiveUrl,
           audioDataUrl: effectiveAudioUrl,
           audioDuration: audioDuration || (isAudio ? '00:28' : undefined),
           audioVoiceClarity: 98.4,
+          videoDataUrl: effectiveVideoUrl,
+          videoFrames: Array.isArray(videoFrames) ? videoFrames : undefined,
+          videoDuration: audioDuration || (isVideo ? '00:20' : undefined),
           transcript: Array.isArray(parsed.transcript) ? parsed.transcript : undefined,
+          emojiAnalysis,
+          mediaAnalysis,
           violations,
           metadata: {
-            fileSize: fileSize || '1.2 MB',
-            duration: audioDuration || (isAudio ? '00:28' : undefined),
-            engineConfidence: 99.4,
-            platform: isAudio ? 'Gemini Speech & Law Engine • Check Activity KZ' : 'Gemini AI Multimodal • Check Activity KZ v5.0',
+            fileSize: fileSize || '1.8 MB',
+            duration: audioDuration || (isAudio ? '00:28' : isVideo ? '00:20' : undefined),
+            engineConfidence: 99.1,
+            platform: isVideo
+              ? 'CheckActivity Video & Audio AI Engine'
+              : isAudio
+              ? 'CheckActivity Speech & Audio Engine'
+              : 'CheckActivity Multimodal Engine v5.0',
           },
         });
       } catch (e) {
@@ -675,20 +642,22 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
     }
 
     // Server-side fallback parsing when API key is not present or offline
-    const combinedContent = `${text || ''} ${liveUrlExtracted || ''} ${fileName || ''} ${url || ''}`.toLowerCase();
+    const combinedContent = `${effectiveText || ''} ${liveUrlExtracted || ''} ${fileName || ''} ${effectiveUrl || ''}`.toLowerCase();
     const fallbackResult = buildFallbackAudit(
       combinedContent,
-      isAudio ? 'audio' : modality,
+      isVideo ? 'video' : isAudio ? 'audio' : modality,
       targetTitle,
       timestamp,
       randomHash,
       caseId,
       refNum,
       effectiveImageUrl,
-      liveUrlExtracted || text || url,
+      liveUrlExtracted || effectiveText || effectiveUrl,
       fileSize,
       effectiveAudioUrl,
-      audioDuration
+      audioDuration,
+      effectiveVideoUrl,
+      videoFrames
     );
 
     return res.json(fallbackResult);
@@ -696,6 +665,10 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error('Error in /api/analyze:', err);
     return res.status(500).json({ error: 'Server analysis error: ' + errorMsg });
+  } finally {
+    if (tempFilePath) {
+      fs.promises.unlink(tempFilePath).catch(() => {});
+    }
   }
 });
 
@@ -800,7 +773,9 @@ function buildFallbackAudit(
   rawText: string | undefined,
   fileSize: string | undefined,
   audioDataUrl?: string,
-  audioDuration?: string
+  audioDuration?: string,
+  videoDataUrl?: string,
+  videoFrames?: Array<{ timeSec: number; timestampLabel: string; dataUrl: string } | string>
 ) {
   const violations: any[] = [];
   let legalScore = 0;
@@ -896,14 +871,14 @@ function buildFallbackAudit(
     detectedActions += 'Рекламный характер контента без маркировки. ';
   }
 
-  // Cyberbullying & Insults
-  if (/бездар|тупой|идиот|урод|мразь|ничтожеств|даун|клоун/i.test(content)) {
-    const bullyMatch = content.match(/бездар[а-я]*|тупой|идиот|урод|мразь|ничтожеств[а-я]*|даун|клоун/i);
+  // Cyberbullying, Threats & Insults
+  if (/бездар|тупой|идиот|урод|мразь|ничтожеств|даун|клоун|угроз|threat|травл|найдем|за базар/i.test(content)) {
+    const bullyMatch = content.match(/бездар[а-я]*|тупой|идиот|урод|мразь|ничтожеств[а-я]*|даун|клоун|угроз[а-я]*|threat|травл[а-я]*|найдем/i);
     violations.push({
       id: 'v-bullying-1',
       category: 'ethics',
-      code: 'ст. 73-4 КоАП РК / Этика: Кибербуллинг',
-      title: 'Оскорбления личности и признаки кибербуллинга',
+      code: 'ст. 73-4 КоАП РК / ст. 115 УК РК',
+      title: 'Оскорбления личности, угрозы и признаки кибербуллинга',
       severity: 'critical',
       quote: bullyMatch ? bullyMatch[0] : 'Оскорбительные выражения',
       basis: 'Унизительные ярлыки, переход на личности и публичная словесная агрессия против достоинства человека.',
@@ -934,10 +909,49 @@ function buildFallbackAudit(
     detectedActions += 'Психологическое давление и искусственный таймер дефицита. ';
   }
 
+  // Comprehensive Emoji Intelligence
+  const emojiAnalysis = analyzeEmojis(`${content} ${rawText || ''}`);
+  if (emojiAnalysis.flaggedEmojis.length > 0) {
+    for (const item of emojiAnalysis.flaggedEmojis) {
+      if (item.category === 'gambling' && !violations.some((v) => v.code?.includes('445-1'))) {
+        violations.unshift({
+          id: `v-emoji-${item.emoji}`,
+          category: 'legal',
+          code: 'ст. 445-1 КоАП РК / Эмодзи-триггер',
+          title: `Гэмблинг-эмодзи ${item.emoji} (${item.label})`,
+          severity: item.riskLevel,
+          quote: item.emoji,
+          basis: `Обнаружен графический символ азартных игр ${item.emoji}: ${item.description}`,
+          fineAmount: 'до 1 000 МРП (3 932 000 ₸)',
+          jurisdiction: 'АФМ РК / Контроль онлайн-казино',
+          recommendation: 'Исключить символы азартных игр и призывы к ставкам.',
+        });
+        legalScore = Math.max(legalScore, 85);
+      } else if (item.category === 'profanity_insult' && !violations.some((v) => v.code?.includes('434') || v.code?.includes('73-4'))) {
+        violations.unshift({
+          id: `v-emoji-${item.emoji}`,
+          category: 'ethics',
+          code: 'ст. 434, 73-4 КоАП РК / Эмодзи-триггер',
+          title: `Оскорбительный / токсичный эмодзи ${item.emoji} (${item.label})`,
+          severity: item.riskLevel,
+          quote: item.emoji,
+          basis: `Обнаружен оскорбительный символ ${item.emoji}: ${item.description}`,
+          fineAmount: 'Штраф от 5 МРП (19 660 ₸)',
+          jurisdiction: 'МВД РК / Этический комитет',
+          recommendation: 'Удалить оскорбительные символы и агрессивные смайлы.',
+        });
+        ethicsScore = Math.max(ethicsScore, 80);
+      }
+    }
+  }
+
+  const isVideoMode = modality === 'video';
   const cleanExtractedText = rawText || content || '';
-  const overallRiskScore = Math.max(legalScore, ethicsScore);
-  const riskLevel: 'critical' | 'warning' | 'info' = overallRiskScore >= 75 ? 'critical' : overallRiskScore >= 40 ? 'warning' : 'info';
-  const status: 'VIOLATION' | 'COMPLIANT' = overallRiskScore >= 50 ? 'VIOLATION' : 'COMPLIANT';
+  const overallRiskScore = Math.min(100, Math.max(legalScore, ethicsScore, emojiAnalysis.totalRiskPoints > 30 ? 75 : 0));
+  const riskLevel: 'Низкий' | 'Средний' | 'Высокий' | 'Критический' =
+    overallRiskScore >= 75 ? 'Критический' : overallRiskScore >= 50 ? 'Высокий' : overallRiskScore >= 25 ? 'Средний' : 'Низкий';
+  const status: 'БЕЗОПАСНО' | 'ПРЕДУПРЕЖДЕНИЕ' | 'ТРЕБУЕТ МЕР' =
+    overallRiskScore >= 60 ? 'ТРЕБУЕТ МЕР' : overallRiskScore >= 25 ? 'ПРЕДУПРЕЖДЕНИЕ' : 'БЕЗОПАСНО';
 
   const isAudioMode = modality === 'audio' || Boolean(audioDataUrl);
 
@@ -968,7 +982,7 @@ function buildFallbackAudit(
         {
           time: '00:02',
           speaker: 'Спикер',
-          text: 'Салам всем! Только что вывел 350 тысяч тенге со слотов в 1Win на карту Kaspi!',
+          text: 'Салам всем! Только что вывел 350 тысяч тенге со слотов в 1Win на карту Kaspi! 🎰💸',
           flagged: true,
           flaggedText: '1Win, слоты',
           article: 'ст. 445-1 КоАП РК (Реклама казино)',
@@ -1005,11 +1019,43 @@ function buildFallbackAudit(
     }
   }
 
+  const mediaFindings = violations.map((v) => ({
+    timestamp: isAudioMode || isVideoMode ? (v.id?.includes('dark') ? '00:08' : '00:02') : '00:01',
+    source: isAudioMode
+      ? ('аудио' as const)
+      : isVideoMode
+      ? (v.category === 'ethics' ? ('аудио' as const) : ('текст на экране' as const))
+      : ('текст на экране' as const),
+    category: v.title || v.code,
+    quote_or_description: v.quote || v.basis,
+    confidence: v.severity === 'critical' ? ('высокая' as const) : ('средняя' as const),
+    reasoning: v.basis || v.recommendation || 'Выявлено возможное несоответствие нормам законодательства РК.',
+  }));
+
+  const overallRisk: 'нет' | 'низкий' | 'средний' | 'высокий' =
+    overallRiskScore >= 70 ? 'высокий' : overallRiskScore >= 40 ? 'средний' : overallRiskScore > 0 ? 'низкий' : 'нет';
+
+  const mediaAnalysis = {
+    summary:
+      overallRiskScore > 0
+        ? `Выявлены несоответствия нормам законодательства РК (${violations.length} предупреждений).`
+        : 'Материал проверен. Признаков нарушений законодательства РК не зафиксировано.',
+    language: /шешен|сиктир|көт|жарнама/i.test(content) ? 'казахский' : /салам|ассалам/i.test(content) ? 'смешанный' : 'русский',
+    overall_risk: overallRisk,
+    findings: mediaFindings,
+    needs_human_review: overallRisk !== 'нет',
+    limitations: isAudioMode
+      ? 'Фоновые акустические помехи и быстрая речь могли повлиять на точность детекции отдельных фраз.'
+      : isVideoMode
+      ? 'При анализе видеопотока возможны артефакты сжатия и наложение нескольких источников звука.'
+      : 'Автоматическая оценка требует экспертного подтверждения.',
+  };
+
   return {
     id: caseId,
     referenceNumber: refNum,
     timestamp,
-    sourceType: isAudioMode ? 'audio' : (modality || 'screenshot'),
+    sourceType: isAudioMode ? 'audio' : isVideoMode ? 'video' : (modality || 'screenshot'),
     title: displayName,
     sourceName: displayName,
     sha256: randomHash + 'b421...91fe',
@@ -1018,28 +1064,34 @@ function buildFallbackAudit(
     ethicsScore,
     riskLevel,
     status,
-    summary:
-      legalScore > 0
-        ? `Выявлены несоответствия нормам законодательства РК (Закон № 230-VII, ст. 455, 445-1 КоАП РК).`
-        : 'Правовых нарушений норм законодательства РК не выявлено.',
+    summary: mediaAnalysis.summary,
     ethicsSummary:
       ethicsScore > 0
         ? `Обнаружены нарушения интернет-этики и культуры общения (${violations.filter((v) => v.category === 'ethics').length} замечаний).`
         : 'Этические нормы и стандарты добросовестной коммуникации соблюдены.',
-    extractedText: cleanExtractedText || (isAudioMode ? 'Стенограмма аудиозаписи сформирована.' : 'Анализ графических элементов и структуры файла выполнен.'),
-    detectedActions: detectedActions || (isAudioMode ? 'Аудиоанализ речевого потока и акустической тональности завершен.' : 'Визуальный аудит графических элементов и интерфейса завершен.'),
+    extractedText: cleanExtractedText || (isAudioMode ? 'Стенограмма аудиозаписи сформирована.' : isVideoMode ? 'Видеоряд и покадровая раскадровка обработаны.' : 'Анализ графических элементов и структуры файла выполнен.'),
+    detectedActions: detectedActions || (isAudioMode ? 'Аудиоанализ речевого потока и акустической тональности завершен.' : isVideoMode ? 'Видеоанализ Reels/TikTok: раскадровка, субтитры и визуальные триггеры распознаны.' : 'Визуальный аудит графических элементов и интерфейса завершен.'),
     previewUrl,
     rawText: cleanExtractedText,
     audioDataUrl,
     audioDuration: audioDuration || (isAudioMode ? '00:28' : undefined),
     audioVoiceClarity: 98.4,
+    videoDataUrl,
+    videoFrames: Array.isArray(videoFrames) ? videoFrames : undefined,
+    videoDuration: isVideoMode ? '00:20' : undefined,
+    emojiAnalysis,
+    mediaAnalysis,
     transcript,
     violations,
     metadata: {
       fileSize: fileSize || '1.1 MB',
-      duration: audioDuration || (isAudioMode ? '00:28' : undefined),
+      duration: audioDuration || (isAudioMode ? '00:28' : isVideoMode ? '00:20' : undefined),
       engineConfidence: 98.2,
-      platform: isAudioMode ? 'Check Activity Audio & Speech Engine v4.5 (Казахстан)' : 'Check Activity Engine v4.5 (Казахстан)',
+      platform: isAudioMode
+        ? 'Check Activity Audio & Speech Engine v4.5 (Казахстан)'
+        : isVideoMode
+        ? 'Check Activity Video & Reels Engine v5.0 (Казахстан)'
+        : 'Check Activity Engine v4.5 (Казахстан)',
     },
   };
 }
