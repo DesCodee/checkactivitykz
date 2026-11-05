@@ -248,19 +248,41 @@ async function callGeminiApi(params: {
     setTimeout(() => reject(new Error('Gemini API timeout')), timeoutMs)
   );
 
+  const modelsToTry = ['gemini-3.8-flash', 'gemini-3-flash-preview', 'gemini-2.0-flash'];
+
   const apiPromise = (async () => {
-    const res = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: params.contents as any,
-      config: {
-        systemInstruction: params.systemInstruction,
-        responseMimeType: params.responseJson ? 'application/json' : undefined,
-      },
-    });
-    if (res.text) {
-      return res.text.trim();
+    let lastErr: any;
+    for (const modelName of modelsToTry) {
+      try {
+        const res = await ai.models.generateContent({
+          model: modelName,
+          contents: params.contents as any,
+          config: {
+            systemInstruction: params.systemInstruction,
+            responseMimeType: params.responseJson ? 'application/json' : undefined,
+            thinkingConfig: modelName.includes('2.0') ? undefined : { thinkingBudget: 0 },
+            safetySettings: [
+              { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+              { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+              { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+              { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+            ],
+          },
+        });
+        if (res.text) {
+          return res.text.trim();
+        }
+        throw new Error('Empty response from Gemini');
+      } catch (err: any) {
+        lastErr = err;
+        const msg = String(err?.message || err || '');
+        if (msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('429') || msg.includes('404')) {
+          continue;
+        }
+        throw err;
+      }
     }
-    throw new Error('Empty response from Gemini');
+    throw lastErr || new Error('All Gemini models unavailable');
   })();
 
   return Promise.race([apiPromise, timeoutPromise]);
