@@ -10,7 +10,11 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { analyzeEmojis } from './src/utils/emojiIntelligence';
+
+const execFileAsync = promisify(execFile);
 
 dotenv.config();
 
@@ -248,7 +252,7 @@ async function callGeminiApi(params: {
     setTimeout(() => reject(new Error('Gemini API timeout')), timeoutMs)
   );
 
-  const modelsToTry = ['gemini-3.8-flash', 'gemini-3-flash-preview', 'gemini-2.0-flash'];
+  const modelsToTry = ['gemini-3.8-flash', 'gemini-3-flash-preview'];
 
   const apiPromise = (async () => {
     let lastErr: any;
@@ -260,7 +264,7 @@ async function callGeminiApi(params: {
           config: {
             systemInstruction: params.systemInstruction,
             responseMimeType: params.responseJson ? 'application/json' : undefined,
-            thinkingConfig: modelName.includes('2.0') ? undefined : { thinkingBudget: 0 },
+            thinkingConfig: { thinkingBudget: 0 },
             safetySettings: [
               { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
               { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -403,6 +407,7 @@ app.post('/api/ocr', async (req: Request, res: Response) => {
 // POST /api/analyze: Full multimodal parsing (Audio STT, Video Keyframes/Sound, OCR, URLs, Law & Ethics)
 app.post('/api/analyze', async (req: Request, res: Response) => {
   let tempFilePath: string | null = null;
+  let tempMp3Path: string | null = null;
   try {
     const {
       modality,
@@ -542,10 +547,51 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
         const buffer = Buffer.from(rawBase64, 'base64');
         const byteLength = buffer.byteLength;
 
-        // If file is larger than 15MB: use Files API
-        if (byteLength > 15 * 1024 * 1024) {
+        // If it's a video, extract lightweight MP3 audio track using ffmpeg so Gemini always analyzes the sound
+        if (isVideo) {
           try {
-            const ext = effectiveMime.includes('webm') ? 'webm' : effectiveMime.includes('audio') ? 'mp3' : 'mp4';
+            const ext = effectiveMime.includes('webm') ? 'webm' : effectiveMime.includes('quicktime') || effectiveMime.includes('mov') ? 'mov' : 'mp4';
+            tempFilePath = path.join(os.tmpdir(), `checkact-vid-${Date.now()}.${ext}`);
+            tempMp3Path = path.join(os.tmpdir(), `checkact-aud-${Date.now()}.mp3`);
+            await fs.promises.writeFile(tempFilePath, buffer);
+            await execFileAsync('ffmpeg', [
+              '-y',
+              '-i',
+              tempFilePath,
+              '-vn',
+              '-acodec',
+              'libmp3lame',
+              '-ab',
+              '64k',
+              '-ar',
+              '16000',
+              '-ac',
+              '1',
+              tempMp3Path,
+            ], { timeout: 12000 });
+            const mp3Stat = await fs.promises.stat(tempMp3Path).catch(() => null);
+            if (mp3Stat && mp3Stat.size > 0) {
+              const mp3Buf = await fs.promises.readFile(tempMp3Path);
+              const mp3Base64 = mp3Buf.toString('base64');
+              parts.push({
+                inlineData: {
+                  mimeType: 'audio/mp3',
+                  data: mp3Base64,
+                },
+              });
+              if (!effectiveAudioUrl) {
+                effectiveAudioUrl = `data:audio/mp3;base64,${mp3Base64}`;
+              }
+            }
+          } catch (ffmpegErr: any) {
+            console.info('ffmpeg audio extraction notice:', ffmpegErr?.message || 'no audio track');
+          }
+        }
+
+        // If file is larger than 15MB: use Files API (skip if we already have extracted MP3 + keyframes for video)
+        if (byteLength > 15 * 1024 * 1024 && !isVideo) {
+          try {
+            const ext = effectiveMime.includes('audio') ? 'mp3' : 'mp4';
             tempFilePath = path.join(os.tmpdir(), `checkact-${Date.now()}.${ext}`);
             await fs.promises.writeFile(tempFilePath, buffer);
 
@@ -565,10 +611,10 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
               });
             }
           } catch (uploadErr) {
-            console.warn('Files API upload failed, falling back to inline frames:', uploadErr);
+            console.info('Files API upload notice:', uploadErr);
           }
-        } else {
-          // Inline data for small files
+        } else if (!isVideo) {
+          // Inline data for small audio/image files (for video we already extracted MP3 + keyframes)
           parts.push({
             inlineData: {
               mimeType: effectiveMime,
@@ -620,7 +666,7 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
 
       let userTextPrompt = `Проведи полный аудит материала по законам РК и нормам этики.\n`;
       if (isVideo) {
-        userTextPrompt += `\n[ОБЪЕКТ: ВИДЕОМАТЕРИАЛ (REELS / TIKTOK / MP4)]:\n1. Оцени изображение (действия людей, надписи на экране, предметы, символику).\n2. Сделай транскрипцию звука с таймкодами (ММ:СС) и определи язык.\n3. Сверь соответствие картинки и звука.\n`;
+        userTextPrompt += `\n[ОБЪЕКТ: ВИДЕОМАТЕРИАЛ (REELS / TIKTOK / MP4) + ИЗВЛЕЧЕННАЯ АУДИОДОРОЖКА MP3]:\n1. Проанализируй приложенную аудиодорожку (MP3):\n   - Если в аудио есть речь: выполни точную транскрипцию с таймкодами (ММ:СС), определи язык (русский, казахский, смешанный) и проверь текст на нарушения (маты по ст. 434 КоАП РК, реклама казино по ст. 445-1, реклама без «Жарнама» по ст. 455, кибербуллинг по ст. 73-4, персональные данные по ст. 79).\n   - Если в аудио нет речи (только звуки, музыка, шумы, выстрелы, крики, сирены, звуки казино/слотов и т.д.): сопоставь звуки и определи, являются ли они опасными или нарушающими закон/этику или безопасными.\n2. Оцени изображение по кадрам (действия людей, надписи на экране, предметы, символику).\n3. Сверь соответствие картинки и звука.\n`;
       } else if (isAudio) {
         userTextPrompt += `\n[ОБЪЕКТ: АУДИОМАТЕРИАЛ]:\n1. Выполни транскрипцию речи с таймкодами (ММ:СС) и укажи язык.\n2. Оцени смысл с учетом контекста и интонации.\n`;
       } else if (effectiveImageUrl) {
@@ -644,16 +690,20 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
           systemInstruction,
           contents: [{ role: 'user', parts }],
           responseJson: true,
-          timeoutMs: 35000,
+          timeoutMs: 60000,
         });
-      } catch (geminiError) {
-        console.warn('Gemini generateContent call failed:', geminiError);
+      } catch (geminiError: any) {
+        console.info('Gemini generateContent notice (using fallback):', geminiError?.message || 'timeout');
       }
     }
 
     if (geminiResponseText) {
       try {
-        const parsed = JSON.parse(geminiResponseText);
+        const cleanJson = geminiResponseText
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/\s*```$/i, '')
+          .trim();
+        const parsed = JSON.parse(cleanJson);
 
         const findings: any[] = Array.isArray(parsed.findings) ? parsed.findings : [];
         const violations: any[] = [];
@@ -792,6 +842,9 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
   } finally {
     if (tempFilePath) {
       fs.promises.unlink(tempFilePath).catch(() => {});
+    }
+    if (tempMp3Path) {
+      fs.promises.unlink(tempMp3Path).catch(() => {});
     }
   }
 });
@@ -1164,7 +1217,9 @@ function buildFallbackAudit(
       overallRiskScore > 0
         ? `Выявлены несоответствия нормам законодательства РК (${violations.length} предупреждений).`
         : 'Материал проверен. Признаков нарушений законодательства РК не зафиксировано.',
-    language: /шешен|сиктир|көт|жарнама/i.test(content) ? 'казахский' : /салам|ассалам/i.test(content) ? 'смешанный' : 'русский',
+    language: /[әғқңөұүһі]/i.test(content) || /шешен|сиктир|көт|жарнама/i.test(content)
+      ? (/салам|ассалам|привет|скидк|казино|промокод/i.test(content) ? 'смешанный' : 'казахский')
+      : 'русский',
     overall_risk: overallRisk,
     findings: mediaFindings,
     needs_human_review: overallRisk !== 'нет',

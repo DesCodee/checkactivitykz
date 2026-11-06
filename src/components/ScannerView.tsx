@@ -390,7 +390,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     setVideoPlayableUrl(playableUrl);
     setVideoDuration(durationLabel);
 
-    if (file.size <= 40 * 1024 * 1024) {
+    if (file.size <= 100 * 1024 * 1024) {
       const b64 = await readFileAsBase64(file);
       setVideoMediaBase64(b64);
     } else {
