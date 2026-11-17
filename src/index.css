@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-surface: #ffffff;
   --color-surface-dim: #f8fafc;
@@ -26,8 +28,8 @@
   --color-background: #f8fafc;
   --color-on-background: #0f172a;
 
-  --font-headline: 'Plus Jakarta Sans', sans-serif;
-  --font-display: 'Plus Jakarta Sans', sans-serif;
+  --font-headline: 'Inter', sans-serif;
+  --font-display: 'Inter', sans-serif;
   --font-body: 'Inter', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 }
@@ -36,11 +38,25 @@
   color-scheme: light;
 }
 
+html.dark {
+  color-scheme: dark;
+}
+
 body {
-  background-color: #f8fafc;
-  color: #0f172a;
+  background-color: #fafafa;
+  color: #18181b;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   overscroll-behavior: none;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+html.dark body {
+  background-color: #09090b;
+  color: #f4f4f5;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Custom Scrollbars */
@@ -64,7 +80,7 @@ body {
 
 /* Exact typography classes from Synthetic Integrity design system */
 .font-display-lg {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   font-size: 40px;
   line-height: 48px;
   letter-spacing: -0.025em;
@@ -72,7 +88,7 @@ body {
 }
 
 .font-headline-xl {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   font-size: 30px;
   line-height: 38px;
   letter-spacing: -0.02em;
@@ -80,7 +96,7 @@ body {
 }
 
 .font-headline-lg {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   font-size: 24px;
   line-height: 32px;
   letter-spacing: -0.015em;
@@ -88,7 +104,7 @@ body {
 }
 
 .font-headline-md {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   font-size: 20px;
   line-height: 28px;
   letter-spacing: -0.01em;
@@ -96,7 +112,7 @@ body {
 }
 
 .font-headline-sm {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Inter', sans-serif;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
@@ -189,3 +205,37 @@ body {
 @media (max-width: 640px) {
   .px-margin-lg { padding-left: 1rem; padding-right: 1rem; }
 }
+
+/* Print Styles for Official Expert Protocol */
+@media print {
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  body * {
+    visibility: hidden;
+  }
+  #printable-protocol,
+  #printable-protocol * {
+    visibility: visible;
+  }
+  #printable-protocol {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 1.2cm !important;
+    background: white !important;
+    color: #09090b !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+  }
+}
+

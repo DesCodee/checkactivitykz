@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { EmojiAnalysis, EmojiItem } from '../types';
+import type { EmojiAnalysis, EmojiItem } from '../types/index.ts';
 
 export const EMOJI_DICTIONARY: Record<
   string,

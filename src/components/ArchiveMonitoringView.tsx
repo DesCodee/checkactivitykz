@@ -4,8 +4,15 @@
  */
 
 import React, { useState } from 'react';
+import { Search, ArrowRight, Check } from 'lucide-react';
 import { AuditCase } from '../types';
 import { MOCK_AUDIT_HISTORY } from '../data/mockData';
+import { useApp } from '../utils/i18n';
+import {
+  getCompliancePenaltyDisplay,
+  isLegalViolation,
+  normalizeAuditCaseCompliance,
+} from '../utils/kzComplianceIntelligence';
 
 interface ArchiveMonitoringViewProps {
   onSelectCase: (auditCase: AuditCase) => void;
@@ -17,13 +24,15 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
   onSelectCase,
   userHistory = [],
 }) => {
+  const { t, language } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
 
-  // If user has audits, prioritize them; else use minimal sample audits for reference
   const allHistory = [
-    ...userHistory,
-    ...MOCK_AUDIT_HISTORY.filter((m) => !userHistory.some((u) => u.id === m.id)),
+    ...userHistory.map(normalizeAuditCaseCompliance),
+    ...MOCK_AUDIT_HISTORY.filter((m) => !userHistory.some((u) => u.id === m.id)).map(
+      normalizeAuditCaseCompliance
+    ),
   ];
 
   const filteredHistory = allHistory.filter((item) => {
@@ -31,9 +40,10 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
       item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       item.referenceNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
       item.sourceName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.violations.some((v) =>
-        v.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        v.title.toLowerCase().includes(searchQuery.toLowerCase())
+      item.violations.some(
+        (v) =>
+          v.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          v.title.toLowerCase().includes(searchQuery.toLowerCase())
       );
 
     const matchesStatus =
@@ -49,29 +59,39 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
   });
 
   return (
-    <div className="w-full max-w-6xl mx-auto px-3 sm:px-6 py-6 sm:py-8 flex flex-col gap-5 sm:gap-6 font-['Inter']">
-      {/* Title */}
-      <div className="border-b border-slate-200 pb-4 sm:pb-5">
-        <h1 className="font-['Plus_Jakarta_Sans'] text-xl sm:text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">
-          Журнал проведенных проверок
-        </h1>
-        <p className="text-xs sm:text-sm text-slate-600 mt-1 max-w-2xl leading-relaxed">
-          Реестр завершенных AI-аудитов по нормам Закона РК об онлайн-платформах и рекламе (№ 230-VII), статьям КоАП РК и правилам интернет-этики.
-        </p>
+    <div className="w-full max-w-[1200px] mx-auto px-4 sm:px-8 py-6 sm:py-8 flex flex-col gap-6 font-['Inter']">
+      {/* Intro Subtitle */}
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+        <div>
+          <h2 className="font-['Plus_Jakarta_Sans'] text-xl sm:text-2xl font-semibold text-zinc-950 dark:text-zinc-50 tracking-tight">
+            {t('archiveTitle')}
+          </h2>
+          <p className="text-xs sm:text-sm text-zinc-500 dark:text-zinc-400 mt-1 max-w-2xl leading-relaxed">
+            {t('archiveSubtitle')}
+          </p>
+        </div>
+        <span className="font-['JetBrains_Mono'] text-xs text-zinc-400 dark:text-zinc-500 tabular-nums">
+          {filteredHistory.length} / {allHistory.length} {language === 'kz' ? 'жазба' : 'записей'}
+        </span>
       </div>
 
       {/* Filter & Search Bar */}
-      <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
+      <div className="bg-white dark:bg-zinc-900 p-3 sm:p-4 rounded-2xl border border-zinc-200/80 dark:border-zinc-800 shadow-[0_1px_2px_rgba(0,0,0,0.03)] flex flex-col sm:flex-row items-center justify-between gap-3">
         <div className="relative flex-1 w-full">
-          <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
-            search
-          </span>
+          <Search
+            className="w-4 h-4 text-zinc-400 absolute left-3.5 top-1/2 -translate-y-1/2"
+            strokeWidth={1.6}
+          />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Поиск по номеру дела (#CHK-KZ...), названию или статье КоАП..."
-            className="w-full bg-slate-50 pl-10 pr-4 py-2 rounded-lg border border-slate-200 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none"
+            placeholder={
+              language === 'kz'
+                ? 'Іс нөмірі (#CHK-KZ...), атауы немесе ӘҚБтК бабы бойынша іздеу...'
+                : 'Поиск по номеру дела (#CHK-KZ...), названию или статье КоАП...'
+            }
+            className="w-full bg-zinc-50 dark:bg-zinc-950 pl-10 pr-4 py-2 rounded-xl border border-zinc-200/80 dark:border-zinc-800 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:bg-white dark:focus:bg-zinc-900 focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none transition-colors"
           />
         </div>
 
@@ -79,84 +99,90 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="w-full sm:w-auto bg-slate-50 border border-slate-200 text-xs sm:text-sm text-slate-700 rounded-lg px-3 py-2 focus:outline-none focus:border-sky-500"
+            className="w-full sm:w-auto bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-xs sm:text-sm text-zinc-700 dark:text-zinc-300 rounded-xl px-3.5 py-2 focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600"
           >
-            <option value="all">Все статусы ({allHistory.length})</option>
-            <option value="critical">Требует мер / Нарушения</option>
-            <option value="warning">Предупреждения</option>
-            <option value="safe">Безопасно</option>
+            <option value="all">
+              {language === 'kz' ? 'Барлық мәртебелер' : 'Все статусы'} ({allHistory.length})
+            </option>
+            <option value="critical">
+              {language === 'kz' ? 'Шаралар қажет / Бұзушылықтар' : 'Требует мер / Нарушения'}
+            </option>
+            <option value="warning">{language === 'kz' ? 'Ескертулер' : 'Предупреждения'}</option>
+            <option value="safe">{language === 'kz' ? 'Қауіпсіз' : 'Безопасно'}</option>
           </select>
         </div>
       </div>
 
-      {/* MOBILE VIEW (< sm): Responsive Cards */}
+      {/* MOBILE VIEW (< sm): Minimalist Cards */}
       <div className="sm:hidden flex flex-col gap-3">
         {filteredHistory.length === 0 ? (
-          <div className="bg-white p-6 rounded-xl border border-slate-200 text-center text-xs text-slate-400">
-            Записей не найдено.
+          <div className="bg-white dark:bg-zinc-900 p-8 rounded-2xl border border-zinc-200/80 dark:border-zinc-800 text-center text-xs text-zinc-400">
+            {language === 'kz' ? 'Жазбалар табылмады.' : 'Записей не найдено.'}
           </div>
         ) : (
           filteredHistory.map((item) => {
             const isClean = item.violations.length === 0;
+            const dotColor =
+              item.riskScore >= 70
+                ? 'bg-rose-500'
+                : item.riskScore >= 30
+                ? 'bg-amber-500'
+                : 'bg-emerald-500';
             return (
               <div
                 key={item.id}
                 onClick={() => onSelectCase(item)}
-                className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col gap-2.5 cursor-pointer hover:border-slate-300 transition-colors"
+                className="bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-zinc-200/80 dark:border-zinc-800 shadow-[0_1px_2px_rgba(0,0,0,0.03)] flex flex-col gap-2.5 cursor-pointer hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex flex-col">
-                    <span className="font-['JetBrains_Mono'] font-bold text-xs text-slate-900">
+                    <span className="font-['JetBrains_Mono'] font-semibold text-xs text-zinc-900 dark:text-zinc-100 tabular-nums">
                       {item.referenceNumber}
                     </span>
-                    <span className="text-[11px] text-slate-500 font-mono mt-0.5">
+                    <span className="text-[11px] text-zinc-400 dark:text-zinc-500 font-['JetBrains_Mono'] mt-0.5 tabular-nums">
                       {item.timestamp}
                     </span>
                   </div>
 
-                  <span
-                    className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold font-['JetBrains_Mono'] border ${
-                      item.riskScore >= 70
-                        ? 'bg-red-50 text-red-700 border-red-200'
-                        : item.riskScore >= 30
-                        ? 'bg-amber-50 text-amber-700 border-amber-200'
-                        : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                    }`}
-                  >
-                    {item.riskScore}/100 • {item.riskLevel}
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-['JetBrains_Mono'] font-medium text-zinc-700 dark:text-zinc-300 tabular-nums">
+                    <span className={`w-2 h-2 rounded-full ${dotColor}`} />
+                    {item.riskScore}/100 · {item.riskLevel}
                   </span>
                 </div>
 
-                <div className="font-medium text-xs text-slate-900 line-clamp-2">
+                <div className="font-medium text-xs text-zinc-900 dark:text-zinc-100 line-clamp-2">
                   {item.title}
                 </div>
 
-                {/* Violations tags */}
-                <div className="flex flex-wrap gap-1 pt-1">
+                <div className="text-[11px] text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono'] flex flex-col gap-1">
                   {isClean ? (
-                    <span className="text-emerald-700 text-[11px] font-medium">✓ Нарушений нет</span>
+                    <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">
+                      <Check className="w-3.5 h-3.5" strokeWidth={1.8} />
+                      {language === 'kz' ? '0 ₸ (Бұзушылықтар анықталмады)' : '0 ₸ (Нарушений не выявлено)'}
+                    </span>
                   ) : (
-                    item.violations.map((v) => (
-                      <span
-                        key={v.id}
-                        className={`px-1.5 py-0.5 rounded border text-[10px] font-mono ${
-                          v.category === 'ethics'
-                            ? 'bg-purple-50 text-purple-700 border-purple-200'
-                            : 'bg-slate-100 text-slate-700 border-slate-200'
-                        }`}
-                      >
-                        {v.category === 'ethics' ? 'Этика' : v.code.split('/')[0]}
+                    <>
+                      <span>
+                        {item.violations
+                          .map((v) =>
+                            !isLegalViolation(v) ? 'Этика' : v.code.split('/')[0]
+                          )
+                          .join(' · ')}
                       </span>
-                    ))
+                      <span className="text-[10.5px] font-semibold text-zinc-700 dark:text-zinc-300">
+                        {getCompliancePenaltyDisplay(item.violations, 'small', language).headline}
+                      </span>
+                    </>
                   )}
                 </div>
 
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                  <span className="text-[10px] text-slate-500 font-mono">
-                    {item.violations.length} замеч.
+                <div className="pt-2.5 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+                  <span className="text-[11px] text-zinc-400 font-['JetBrains_Mono'] tabular-nums">
+                    {item.violations.length} {language === 'kz' ? 'ескерту' : 'замеч.'}
                   </span>
-                  <span className="text-xs font-semibold text-sky-600 flex items-center gap-1">
-                    Открыть отчет <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+                  <span className="text-xs font-medium text-zinc-900 dark:text-zinc-100 flex items-center gap-1">
+                    {language === 'kz' ? 'Есепті ашу' : 'Открыть отчет'}
+                    <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.6} />
                   </span>
                 </div>
               </div>
@@ -165,90 +191,102 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
         )}
       </div>
 
-      {/* TABLE VIEW (sm+): Desktop and Tablet Clean Grid */}
-      <div className="hidden sm:block bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+      {/* DESKTOP TABLE VIEW */}
+      <div className="hidden sm:block bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200/80 dark:border-zinc-800 shadow-[0_1px_2px_rgba(0,0,0,0.03)] overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-slate-700">
-            <thead className="bg-slate-50 text-[11px] font-semibold text-slate-500 uppercase font-['JetBrains_Mono'] border-b border-slate-200">
+          <table className="w-full text-left text-xs text-zinc-700 dark:text-zinc-300">
+            <thead className="bg-zinc-50/70 dark:bg-zinc-950/60 text-[11px] font-medium text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono'] border-b border-zinc-200/80 dark:border-zinc-800">
               <tr>
-                <th className="px-4 py-3">Дело / Референс</th>
-                <th className="px-4 py-3">Дата и время</th>
-                <th className="px-4 py-3">Объект проверки</th>
-                <th className="px-4 py-3">Индекс риска</th>
-                <th className="px-4 py-3">Закон и Этика</th>
-                <th className="px-4 py-3 text-right">Действие</th>
+                <th className="px-5 py-3.5">{language === 'kz' ? 'Іс / Референс' : 'Дело / Референс'}</th>
+                <th className="px-5 py-3.5">{language === 'kz' ? 'Күні мен уақыты' : 'Дата и время'}</th>
+                <th className="px-5 py-3.5">{language === 'kz' ? 'Тексеру нысаны' : 'Объект проверки'}</th>
+                <th className="px-5 py-3.5">{language === 'kz' ? 'Тәуекел индексі' : 'Индекс риска'}</th>
+                <th className="px-5 py-3.5">{language === 'kz' ? 'Заң және Этика' : 'Закон и Этика'}</th>
+                <th className="px-5 py-3.5 text-right">{t('colAction')}</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800/80">
               {filteredHistory.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-slate-400 font-['Inter']">
-                    Записей не найдено.
+                  <td colSpan={6} className="px-5 py-10 text-center text-zinc-400">
+                    {language === 'kz' ? 'Жазбалар табылмады.' : 'Записей не найдено.'}
                   </td>
                 </tr>
               ) : (
-                filteredHistory.map((item) => (
-                  <tr
-                    key={item.id}
-                    onClick={() => onSelectCase(item)}
-                    className="hover:bg-slate-50/80 transition-colors cursor-pointer"
-                  >
-                    <td className="px-4 py-3.5 font-['JetBrains_Mono'] font-bold text-slate-900">
-                      {item.referenceNumber}
-                    </td>
-                    <td className="px-4 py-3.5 text-slate-500 font-['JetBrains_Mono'] whitespace-nowrap">
-                      {item.timestamp}
-                    </td>
-                    <td className="px-4 py-3.5 font-medium text-slate-900 max-w-xs truncate">
-                      {item.title}
-                    </td>
-                    <td className="px-4 py-3.5 whitespace-nowrap">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold font-['JetBrains_Mono'] ${
-                          item.riskScore >= 70
-                            ? 'bg-red-50 text-red-700 border border-red-200'
-                            : item.riskScore >= 30
-                            ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                            : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                        }`}
-                      >
-                        {item.riskScore}/100 • {item.riskLevel}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3.5">
-                      <div className="flex flex-wrap gap-1">
-                        {item.violations.length === 0 ? (
-                          <span className="text-emerald-700 font-medium">✓ Без замечаний</span>
-                        ) : (
-                          item.violations.map((v) => (
-                            <span
-                              key={v.id}
-                              className={`px-1.5 py-0.5 rounded border text-[10px] font-['JetBrains_Mono'] ${
-                                v.category === 'ethics'
-                                  ? 'bg-purple-50 text-purple-700 border-purple-200'
-                                  : 'bg-slate-100 text-slate-700 border-slate-200'
-                              }`}
-                            >
-                              {v.category === 'ethics' ? 'Этика' : v.code.split('/')[0]}
+                filteredHistory.map((item) => {
+                  const dotColor =
+                    item.riskScore >= 70
+                      ? 'bg-rose-500'
+                      : item.riskScore >= 30
+                      ? 'bg-amber-500'
+                      : 'bg-emerald-500';
+                  return (
+                    <tr
+                      key={item.id}
+                      onClick={() => onSelectCase(item)}
+                      className="hover:bg-zinc-50/80 dark:hover:bg-zinc-800/40 transition-colors cursor-pointer"
+                    >
+                      <td className="px-5 py-4 font-['JetBrains_Mono'] font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums whitespace-nowrap">
+                        {item.referenceNumber}
+                      </td>
+                      <td className="px-5 py-4 text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono'] whitespace-nowrap tabular-nums">
+                        {item.timestamp}
+                      </td>
+                      <td className="px-5 py-4 font-medium text-zinc-900 dark:text-zinc-100 max-w-xs truncate">
+                        {item.title}
+                      </td>
+                      <td className="px-5 py-4 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-2 font-['JetBrains_Mono'] text-xs text-zinc-800 dark:text-zinc-200 tabular-nums">
+                          <span className={`w-2 h-2 rounded-full ${dotColor}`} />
+                          <span>{item.riskScore}/100</span>
+                          <span className="text-zinc-400">·</span>
+                          <span className="text-zinc-500 dark:text-zinc-400">{item.riskLevel}</span>
+                        </span>
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-['JetBrains_Mono'] text-zinc-600 dark:text-zinc-400">
+                          {item.violations.length === 0 ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium font-['Inter']">
+                              <Check className="w-3.5 h-3.5" strokeWidth={1.8} />
+                              {language === 'kz' ? '0 ₸ (Бұзушылық жоқ)' : '0 ₸ (Нарушений нет)'}
                             </span>
-                          ))
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5 text-right whitespace-nowrap">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSelectCase(item);
-                        }}
-                        className="px-3 py-1 rounded bg-slate-100 hover:bg-sky-50 hover:text-sky-700 text-slate-700 text-xs font-medium transition-colors"
-                      >
-                        Открыть отчет →
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                          ) : (
+                            item.violations.map((v, idx) => {
+                              const ethicsOnly = !isLegalViolation(v);
+                              return (
+                                <span key={v.id} className="inline-flex items-center gap-1.5">
+                                  {idx > 0 && <span className="text-zinc-300 dark:text-zinc-700">·</span>}
+                                  <span
+                                    className={
+                                      ethicsOnly
+                                        ? 'text-violet-600 dark:text-violet-400'
+                                        : 'text-zinc-700 dark:text-zinc-300 font-medium'
+                                    }
+                                  >
+                                    {ethicsOnly ? 'Этика' : v.code.split('/')[0]}
+                                  </span>
+                                </span>
+                              );
+                            })
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-5 py-4 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectCase(item);
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-900 hover:text-white dark:hover:bg-zinc-100 dark:hover:text-zinc-900 text-zinc-700 dark:text-zinc-200 text-xs font-medium transition-colors"
+                        >
+                          <span>{language === 'kz' ? 'Ашу' : 'Открыть'}</span>
+                          <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.6} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

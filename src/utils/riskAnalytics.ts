@@ -69,7 +69,7 @@ export function calculateRiskDistribution(violations: Violation[] = []): {
       borderColor: '#FDA4AF', // rose-300
       icon: 'sentiment_extremely_dissatisfied',
       description: 'Публичная травля, унижение чести и достоинства, обсценная нецензурная брань и угрозы',
-      fineRange: 'Штраф от 5 до 15 МРП (19 660 — 58 980 ₸) либо арест до 15 суток',
+      fineRange: 'Штраф от 15 до 100 МРП (64 875 — 432 500 ₸); ст. 434 КоАП РК — 20 МРП (86 500 ₸) либо арест до 15 суток',
       jurisdiction: 'МВД РК / Судебные органы',
       matcher: (v) => {
         const text = `${v.code} ${v.title} ${v.basis} ${v.quote || ''}`.toLowerCase();
@@ -82,17 +82,17 @@ export function calculateRiskDistribution(violations: Violation[] = []): {
       id: 'privacy',
       name: 'Нарушение персональных данных (ПДн)',
       shortName: 'Нарушение ПДн',
-      article: 'ст. 79 КоАП РК / Закон № 94-V',
+      article: 'ст. 79 КоАП РК / ст. 147 УК РК',
       color: '#2563EB', // blue-600
       lightColor: '#DBEAFE', // blue-100
       borderColor: '#93C5FD', // blue-300
       icon: 'lock_person',
-      description: 'Незаконная публикация личных сотовых номеров, ИИН, фото удостоверений и геолокации без согласия',
-      fineRange: 'Штраф от 30 до 200 МРП (117 960 — 786 400 ₸)',
-      jurisdiction: 'МЦРИАП РК (Комитет по информбезопасности)',
+      description: 'Незаконная публикация личных сотовых номеров, ИИН, домашних адресов и доксинг без согласия',
+      fineRange: 'Штраф от 30 до 200 МРП (129 750 — 865 000 ₸)',
+      jurisdiction: 'МЦРИАП РК / МВД РК',
       matcher: (v) => {
         const text = `${v.code} ${v.title} ${v.basis} ${v.quote || ''}`.toLowerCase();
-        return /79|94-v|персональн|пдн|номер телефон|сотов|иин|паспорт|удостоверен|утечк|слив|конфиденциальн/i.test(
+        return /79|147|94-v|персональн|пдн|номер телефон|сотов|иин|адрес|доксинг|паспорт|удостоверен|утечк|слив|конфиденциальн/i.test(
           text
         );
       },
@@ -107,7 +107,7 @@ export function calculateRiskDistribution(violations: Violation[] = []): {
       borderColor: '#FCD34D', // amber-300
       icon: 'sell',
       description: 'Отсутствие обязательной маркировки «Жарнама», скрытый промоушен без идентификатора рекламодателя (БИН)',
-      fineRange: 'Штраф от 50 до 350 МРП (196 600 — 1 376 200 ₸)',
+      fineRange: 'Штраф от 50 до 350 МРП (216 250 — 1 513 750 ₸)',
       jurisdiction: 'МКИ РК / Антимонопольный комитет',
       matcher: (v) => {
         const text = `${v.code} ${v.title} ${v.basis} ${v.quote || ''}`.toLowerCase();
@@ -126,7 +126,7 @@ export function calculateRiskDistribution(violations: Violation[] = []): {
       borderColor: '#D8B4FE', // purple-300
       icon: 'casino',
       description: 'Прямая реклама, промокоды, ссылки на интернет-казино, слоты и нелицензированных букмекеров',
-      fineRange: 'до 1 000 МРП (3 932 000 ₸) + блокировка ресурса',
+      fineRange: 'до 1 000 МРП (4 325 000 ₸) + блокировка ресурса',
       jurisdiction: 'АФМ РК / МКИ РК',
       matcher: (v) => {
         const text = `${v.code} ${v.title} ${v.basis} ${v.quote || ''}`.toLowerCase();

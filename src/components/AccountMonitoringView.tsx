@@ -4,9 +4,36 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import {
+  Activity,
+  AlertCircle,
+  AlertTriangle,
+  Bell,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
+  ExternalLink,
+  FileCheck2,
+  FolderOpen,
+  History,
+  Info,
+  Link2,
+  Pause,
+  Play,
+  Plus,
+  Radar,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  ShieldPlus,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { MonitoringChannel, MonitoredPost, AuditCase } from '../types';
 import { MOCK_MONITORING_CHANNELS } from '../data/mockData';
 import { scanAccount } from '../services/geminiService';
+import { computeSha256FromText } from '../utils/cryptoHash';
+import { useApp } from '../utils/i18n';
 
 interface AccountMonitoringViewProps {
   onOpenReportForCase: (auditCase: AuditCase) => void;
@@ -15,8 +42,8 @@ interface AccountMonitoringViewProps {
 
 export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
   onOpenReportForCase,
-  onNavigateToScanner,
 }) => {
+  const { t, language } = useApp();
   const [channels, setChannels] = useState<MonitoringChannel[]>(() => {
     try {
       const saved = localStorage.getItem('checkactivity_monitored_accounts_v3');
@@ -122,8 +149,11 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
       setChannels((prev) => [newChan, ...prev]);
       setQuickUrlInput('');
       setQuickStepActive(null);
-      showToast(`Аккаунт ${newChan.handleOrUrl} успешно включен в круглосуточный 24/7 список мониторинга!`);
-    }, 1700);
+      showToast(`Аккаунт ${newChan.handleOrUrl} добавлен в 24/7 мониторинг — выполняется live-проверка...`);
+      setTimeout(() => {
+        handleScanSingleAccount(newChan);
+      }, 250);
+    }, 900);
   };
 
   // Run instant AI scan on single account
@@ -136,7 +166,9 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
           if (c.id === channel.id) {
             return {
               ...c,
-              lastScan: 'Только что',
+              name: result.channelTitle || c.name,
+              lastScan: result.lastScan || 'Только что',
+              isLiveScraped: result.isLiveScraped,
               violations24h: result.violations24h,
               riskScore: result.riskScore,
               status: result.status,
@@ -153,7 +185,9 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
           prev
             ? {
                 ...prev,
-                lastScan: 'Только что',
+                name: result.channelTitle || prev.name,
+                lastScan: result.lastScan || 'Только что',
+                isLiveScraped: result.isLiveScraped,
                 violations24h: result.violations24h,
                 riskScore: result.riskScore,
                 status: result.status,
@@ -189,7 +223,9 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
               c.id === channel.id
                 ? {
                     ...c,
-                    lastScan: 'Только что',
+                    name: result.channelTitle || c.name,
+                    lastScan: result.lastScan || 'Только что',
+                    isLiveScraped: result.isLiveScraped,
                     violations24h: result.violations24h,
                     riskScore: result.riskScore,
                     status: result.status,
@@ -280,8 +316,11 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
   };
 
   // Convert monitored incident to full audit case for ExpertReportView
-  const handleOpenCaseFromPost = (channel: MonitoringChannel, post: MonitoredPost) => {
+  const handleOpenCaseFromPost = async (channel: MonitoringChannel, post: MonitoredPost) => {
     const isCritical = post.severity === 'critical';
+    const computedSha256 = await computeSha256FromText(
+      `${channel.handleOrUrl}|${post.id}|${post.content}`
+    );
     const auditCase: AuditCase = {
       id: `audit-${Date.now()}`,
       referenceNumber: `#CHK-KZ-${Math.floor(100000 + Math.random() * 900000)}`,
@@ -289,7 +328,7 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
       sourceType: 'url',
       title: `${channel.name} (${post.type.toUpperCase()} от ${post.date})`,
       sourceName: channel.handleOrUrl,
-      sha256: Array.from({ length: 16 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join('') + '...d82a',
+      sha256: computedSha256,
       riskScore: isCritical ? 85 : 55,
       legalScore: isCritical ? 90 : 50,
       ethicsScore: isCritical ? 80 : 45,
@@ -308,7 +347,7 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
           severity: post.severity || 'critical',
           quote: post.content.slice(0, 100),
           basis: `В публикации аккаунта ${channel.handleOrUrl} обнаружены признаки нарушения: ${post.violationTitle}. Согласно законодательству РК требуется устранение нарушения.`,
-          fineAmount: post.fineRisk || 'до 200 МРП (786 400 ₸)',
+          fineAmount: post.fineRisk || 'до 200 МРП (865 000 ₸)',
           jurisdiction: channel.platform === 'telegram' ? 'МКИ РК / АФМ РК' : 'МКИ РК',
           recommendation: 'Устранить публикацию либо нанести обязательную маркировку «Жарнама» и данные рекламодателя БИН.',
         },
@@ -345,31 +384,38 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
       : 100;
 
   return (
-    <div className="w-full max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col gap-6 font-['Inter']">
+    <div className="w-full max-w-[1200px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col gap-6 font-['Inter']">
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed top-20 right-4 z-50 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-xl border border-slate-700 flex items-center gap-3 animate-fade-in text-xs sm:text-sm max-w-md">
-          <span className="material-symbols-outlined text-sky-400 text-[20px]">info</span>
-          <span>{toastMessage}</span>
-          <button onClick={() => setToastMessage(null)} className="ml-auto text-slate-400 hover:text-white">
-            <span className="material-symbols-outlined text-[16px]">close</span>
+        <div className="fixed top-20 right-4 z-50 bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 px-4 py-3 rounded-xl shadow-lg border border-zinc-800 dark:border-zinc-200 flex items-center gap-3 animate-fade-in text-xs sm:text-sm max-w-md">
+          <Info className="w-4 h-4 text-emerald-400 dark:text-emerald-600 shrink-0" strokeWidth={1.6} />
+          <span className="leading-snug">{toastMessage}</span>
+          <button
+            onClick={() => setToastMessage(null)}
+            className="ml-auto text-zinc-400 hover:text-white dark:text-zinc-500 dark:hover:text-zinc-900 transition-colors"
+            aria-label="Закрыть уведомление"
+          >
+            <X className="w-4 h-4" strokeWidth={1.6} />
           </button>
         </div>
       )}
 
       {/* View Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-zinc-200/80 dark:border-zinc-800 pb-5">
         <div>
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-sky-600 text-white flex items-center justify-center shadow-xs">
-              <span className="material-symbols-outlined text-[20px]">hub</span>
-            </div>
-            <h1 className="font-['Plus_Jakarta_Sans'] text-xl sm:text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">
-              Мониторинг аккаунтов и каналов
-            </h1>
+          <div className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400 mb-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+              {language === 'kz' ? '24/7 Тікелей бақылау' : 'Мониторинг 24/7'}
+            </span>
+            <span className="text-zinc-300 dark:text-zinc-700">·</span>
+            <span className="font-['JetBrains_Mono'] text-[11px]">IG · TG · TT · YT</span>
           </div>
-          <p className="text-xs sm:text-sm text-slate-600 mt-1.5 max-w-3xl leading-relaxed">
-            Постоянный автоматизированный надзор за инфлюенсерами, пабликами и коммерческими страницами Казахстана (Закон № 230-VII об онлайн-платформах и рекламе, ст. 455, 445-1, 434 КоАП РК).
+          <h1 className="font-['Plus_Jakarta_Sans'] text-2xl sm:text-3xl font-semibold text-zinc-900 dark:text-zinc-100 tracking-tight">
+            {t('monitoringHeroTitle')}
+          </h1>
+          <p className="text-xs sm:text-sm text-zinc-500 dark:text-zinc-400 mt-1 max-w-2xl leading-relaxed">
+            {t('monitoringHeroDesc')}
           </p>
         </div>
 
@@ -377,271 +423,312 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
           <button
             onClick={handleBatchScanAll}
             disabled={isBatchScanning}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 shadow-xs text-xs sm:text-sm font-medium transition-all disabled:opacity-50"
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-200 border border-zinc-200/80 dark:border-zinc-800 shadow-xs text-xs sm:text-sm font-medium transition-colors disabled:opacity-50"
           >
-            <span className={`material-symbols-outlined text-[18px] text-sky-600 ${isBatchScanning ? 'animate-spin' : ''}`}>
-              refresh
-            </span>
-            <span>{isBatchScanning ? 'Сканирование...' : 'Сканировать все'}</span>
+            <RefreshCw className={`w-4 h-4 text-zinc-500 dark:text-zinc-400 ${isBatchScanning ? 'animate-spin' : ''}`} strokeWidth={1.6} />
+            <span>{isBatchScanning ? (language === 'kz' ? 'Сканерлеуде...' : 'Сканирование...') : t('scanAllBtn')}</span>
           </button>
 
           <button
             onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white shadow-xs text-xs sm:text-sm font-semibold transition-all hover:shadow"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-zinc-900 shadow-xs text-xs sm:text-sm font-medium transition-colors"
           >
-            <span className="material-symbols-outlined text-[18px]">add_circle</span>
-            <span>+ Добавить аккаунт</span>
+            <Plus className="w-4 h-4" strokeWidth={1.75} />
+            <span>{t('addAccountBtn')}</span>
           </button>
         </div>
       </div>
 
-      {/* 24/7 Monitoring Process & Hero Banner from User Reference Screenshot */}
-      <div className="bg-gradient-to-r from-sky-50 via-white to-slate-50 border border-sky-200/80 rounded-2xl p-4 sm:p-6 shadow-xs flex flex-col gap-4 sm:gap-5">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <span className="text-[11px] font-['JetBrains_Mono'] uppercase tracking-wider font-bold text-sky-700 bg-sky-100 px-2.5 py-1 rounded-md border border-sky-200">
-            КЛЮЧЕВАЯ ФУНКЦИЯ
-          </span>
-          <span className="text-xs text-slate-500 font-medium font-['JetBrains_Mono']">
-            Интеграция: Instagram • Telegram • TikTok • YouTube
+      {/* 24/7 Monitoring Process & Quick Enrollment */}
+      <div className="bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-2xl p-5 sm:p-6 shadow-xs flex flex-col gap-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-['JetBrains_Mono'] text-[11px] uppercase tracking-wider font-medium text-zinc-500 dark:text-zinc-400">
+                {language === 'kz' ? 'АВТОМАТТЫ ПАЙПЛАЙН' : 'АВТОМАТИЧЕСКИЙ ПАЙПЛАЙН'}
+              </span>
+            </div>
+            <h2 className="font-['Plus_Jakarta_Sans'] text-lg sm:text-xl font-semibold text-zinc-900 dark:text-zinc-100 tracking-tight mt-0.5">
+              {language === 'kz' ? 'Күдікті аккаунттардың 24/7 мониторингі' : '24/7 Мониторинг подозрительных аккаунтов'}
+            </h2>
+          </div>
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono']">
+            Instagram · Telegram · TikTok · YouTube
           </span>
         </div>
 
-        <div className="flex flex-col gap-1">
-          <h2 className="font-['Plus_Jakarta_Sans'] text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
-            24/7 Мониторинг подозрительных аккаунтов
-          </h2>
-          <p className="text-xs text-slate-600">
-            Система в автоматическом режиме осуществляет постоянный сбор постов, сторис и комментариев с последующим анализом правовых и этических аномалий.
-          </p>
-        </div>
-
-        {/* 5-Step Process Visualizer Bar matching User Screenshot */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 sm:gap-2.5">
+        {/* 5-Step Process Visualizer Bar */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
           {[
-            { step: 'ШАГ 1', title: 'Ввод ссылки', desc: 'Профиль или публикация' },
-            { step: 'ШАГ 2', title: 'Включение в 24/7 список', desc: 'Авто-постановка на учет' },
-            { step: 'ШАГ 3', title: 'Сбор постов и сторис', desc: 'Периодический парсинг' },
-            { step: 'ШАГ 4', title: 'ИИ-анализ аномалий', desc: 'Сверка с КоАП и этикой' },
-            { step: 'ШАГ 5', title: 'Уведомление и статус', desc: 'Протокол комплаенса' },
+            {
+              step: language === 'kz' ? '01' : '01',
+              title: language === 'kz' ? 'Сілтеме енгізу' : 'Ввод ссылки',
+              desc: language === 'kz' ? 'Профиль немесе жарияланым' : 'Профиль или публикация',
+            },
+            {
+              step: '02',
+              title: language === 'kz' ? '24/7 тізімге қосу' : 'Включение в 24/7',
+              desc: language === 'kz' ? 'Автоматты есепке қою' : 'Автопостановка на учет',
+            },
+            {
+              step: '03',
+              title: language === 'kz' ? 'Жазбаларды жинау' : 'Сбор контента',
+              desc: language === 'kz' ? 'Мезгілдік парсинг' : 'Периодический парсинг',
+            },
+            {
+              step: '04',
+              title: language === 'kz' ? 'AI-аномалия талдауы' : 'Анализ аномалий',
+              desc: language === 'kz' ? 'ӘҚБтК және этика' : 'КоАП РК и этика',
+            },
+            {
+              step: '05',
+              title: language === 'kz' ? 'Статус және хаттама' : 'Статус и протокол',
+              desc: language === 'kz' ? 'Комплаенс хаттамасы' : 'Отчет комплаенса',
+            },
           ].map((item, idx) => {
             const isStepActive = quickStepActive === idx + 1;
             return (
               <div
                 key={item.step}
-                className={`bg-white border rounded-xl p-3 shadow-xs flex flex-col relative transition-all ${
+                className={`rounded-xl border p-3 flex flex-col justify-between transition-colors ${
                   isStepActive
-                    ? 'border-sky-500 ring-2 ring-sky-200 bg-sky-50/50'
-                    : 'border-slate-200 hover:border-slate-300'
+                    ? 'border-zinc-900 dark:border-zinc-100 bg-zinc-50 dark:bg-zinc-800/70'
+                    : 'border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between mb-1.5">
                   <span
-                    className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border ${
+                    className={`text-[11px] font-['JetBrains_Mono'] font-medium px-1.5 py-0.5 rounded border tabular-nums ${
                       isStepActive
-                        ? 'bg-sky-600 text-white border-sky-600 animate-pulse'
-                        : 'bg-sky-50 text-sky-700 border-sky-200'
+                        ? 'bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 border-zinc-900 dark:border-zinc-100'
+                        : 'bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 border-zinc-200/80 dark:border-zinc-800'
                     }`}
                   >
                     {item.step}
                   </span>
                   {idx < 4 && (
-                    <span className="hidden sm:inline material-symbols-outlined text-slate-400 text-[14px]">
-                      chevron_right
-                    </span>
+                    <ChevronRight className="hidden sm:inline w-3.5 h-3.5 text-zinc-300 dark:text-zinc-700" strokeWidth={1.6} />
                   )}
                 </div>
-                <span className="text-xs font-bold text-slate-900 mt-0.5">{item.title}</span>
-                <span className="text-[10px] text-slate-500 mt-0.5">{item.desc}</span>
+                <div>
+                  <span className="text-xs font-medium text-zinc-900 dark:text-zinc-100 block">{item.title}</span>
+                  <span className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5 block">{item.desc}</span>
+                </div>
               </div>
             );
           })}
         </div>
 
-        {/* Quick Link Enrollment Bar matching Step 1 & Step 2 */}
-        <div className="flex flex-col sm:flex-row items-center gap-2 bg-white p-2 rounded-xl border border-slate-200 shadow-xs">
+        {/* Quick Link Enrollment Bar */}
+        <div className="flex flex-col sm:flex-row items-center gap-2 bg-zinc-50 dark:bg-zinc-950 p-2 rounded-xl border border-zinc-200/80 dark:border-zinc-800">
           <div className="relative flex-1 w-full">
-            <span className="material-symbols-outlined absolute left-3 top-2.5 text-slate-400 text-[18px]">
-              link
-            </span>
+            <Link2 className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" strokeWidth={1.6} />
             <input
               type="text"
               value={quickUrlInput}
               onChange={(e) => setQuickUrlInput(e.target.value)}
-              placeholder="Вставьте ссылку на аккаунт или публикацию: https://instagram.com/kris_p_almaty или @zheka_fatbelly..."
-              className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-transparent border-0 focus:outline-none text-slate-900 placeholder:text-slate-400 font-['Inter']"
+              placeholder={
+                language === 'kz'
+                  ? 'Аккаунт немесе жазба сілтемесін қойыңыз: https://instagram.com/kris_p_almaty немесе @zheka_fatbelly...'
+                  : 'Вставьте ссылку на аккаунт или публикацию: https://instagram.com/kris_p_almaty или @zheka_fatbelly...'
+              }
+              className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-transparent border-0 focus:outline-none text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
             />
           </div>
           <button
             onClick={handleQuickAddUrl}
             disabled={quickStepActive !== null}
-            className="w-full sm:w-auto px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 shrink-0 shadow-xs disabled:opacity-50"
+            className="w-full sm:w-auto px-4 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-zinc-900 font-medium text-xs transition-colors flex items-center justify-center gap-1.5 shrink-0 disabled:opacity-50"
           >
-            <span className="material-symbols-outlined text-[16px]">
-              {quickStepActive ? 'hourglass_top' : 'add_task'}
+            {quickStepActive ? (
+              <Clock className="w-3.5 h-3.5 animate-spin" strokeWidth={1.6} />
+            ) : (
+              <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
+            )}
+            <span>
+              {quickStepActive
+                ? (language === 'kz' ? `${quickStepActive}-қадам орындалуда...` : `Шаг ${quickStepActive}...`)
+                : (language === 'kz' ? '24/7 тізіміне қосу' : 'Добавить в 24/7')}
             </span>
-            {quickStepActive ? `Выполняется шаг ${quickStepActive}...` : 'Добавить в 24/7 список'}
           </button>
         </div>
 
-        {/* Anomalies Under Control and Statuses from User Screenshot */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-          <div className="bg-white p-3.5 sm:p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between">
-            <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5 mb-2 font-['Plus_Jakarta_Sans']">
-              <span className="material-symbols-outlined text-sky-600 text-[18px]">verified_user</span>
-              Аномалии под контролем:
+        {/* Anomalies & Statuses Summary */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-zinc-50/70 dark:bg-zinc-950/60 p-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800 flex flex-col justify-between">
+            <span className="text-xs font-medium text-zinc-900 dark:text-zinc-100 flex items-center gap-2 mb-3">
+              <ShieldCheck className="w-4 h-4 text-zinc-500 dark:text-zinc-400" strokeWidth={1.6} />
+              {language === 'kz' ? 'Бақылаудағы аномалиялар' : 'Аномалии под контролем'}
             </span>
-            <div className="grid grid-cols-2 gap-2 text-xs text-slate-700">
-              <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-                <span>Всплески активности</span>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-zinc-700 dark:text-zinc-300">
+              <div className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-400" />
+                <span>{language === 'kz' ? 'Белсенділік артуы' : 'Всплески активности'}</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-                <span>Спам и ботофермы</span>
+              <div className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-400" />
+                <span>{language === 'kz' ? 'Спам және боттар' : 'Спам и ботофермы'}</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-rose-600"></span>
-                <span className="font-semibold text-rose-700">Реклама казино</span>
+              <div className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                <span className="font-medium text-zinc-900 dark:text-zinc-100">{language === 'kz' ? 'Казино жарнамасы' : 'Реклама казино'}</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-rose-600"></span>
-                <span>Язык вражды</span>
+              <div className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                <span>{language === 'kz' ? 'Өшпенділік тілі' : 'Язык вражды'}</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
-                <span>Утечки персданных</span>
+              <div className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                <span>{language === 'kz' ? 'Деректер ағуы' : 'Утечки персданных'}</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
-                <span>Скрытые манипуляции</span>
+              <div className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                <span>{language === 'kz' ? 'Жасырын манипуляция' : 'Скрытые манипуляции'}</span>
               </div>
             </div>
           </div>
 
-          <div className="bg-white p-3.5 sm:p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between">
-            <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5 mb-2 font-['Plus_Jakarta_Sans']">
-              <span className="material-symbols-outlined text-emerald-600 text-[18px]">assignment_turned_in</span>
-              Статусы комплаенс-контроля:
+          <div className="bg-zinc-50/70 dark:bg-zinc-950/60 p-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800 flex flex-col justify-between">
+            <span className="text-xs font-medium text-zinc-900 dark:text-zinc-100 flex items-center gap-2 mb-3">
+              <FileCheck2 className="w-4 h-4 text-zinc-500 dark:text-zinc-400" strokeWidth={1.6} />
+              {language === 'kz' ? 'Комплаенс мәртебелері' : 'Статусы комплаенс-контроля'}
             </span>
-            <div className="flex flex-wrap gap-2">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                ✔ Безопасно
-              </span>
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
-                <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                ⚠ Предупреждение
-              </span>
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-rose-50 text-rose-800 border border-rose-200">
-                <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                ! Требует внимания
-              </span>
+            <div className="divide-y divide-zinc-200/70 dark:divide-zinc-800 text-xs">
+              <div className="flex items-center justify-between py-1.5 first:pt-0">
+                <span className="text-zinc-700 dark:text-zinc-300">{language === 'kz' ? 'Заң № 230-VII / Этика' : 'Закон № 230-VII / Этика'}</span>
+                <span className="inline-flex items-center gap-1.5 text-zinc-600 dark:text-zinc-300 font-medium">
+                  {language === 'kz' ? 'Қауіпсіз' : 'Безопасно'}
+                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                </span>
+              </div>
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-zinc-700 dark:text-zinc-300">{language === 'kz' ? 'Жарнама белгісі жоқ' : 'Отсутствие «Жарнама»'}</span>
+                <span className="inline-flex items-center gap-1.5 text-zinc-600 dark:text-zinc-300 font-medium">
+                  {language === 'kz' ? 'Ескерту' : 'Предупреждение'}
+                  <span className="w-2 h-2 rounded-full bg-amber-500" />
+                </span>
+              </div>
+              <div className="flex items-center justify-between py-1.5 last:pb-0">
+                <span className="text-zinc-700 dark:text-zinc-300">{language === 'kz' ? 'Тыйым салынған контент' : 'Запрещенный контент'}</span>
+                <span className="inline-flex items-center gap-1.5 text-zinc-600 dark:text-zinc-300 font-medium">
+                  {language === 'kz' ? 'Назар аудару' : 'Требует внимания'}
+                  <span className="w-2 h-2 rounded-full bg-rose-500" />
+                </span>
+              </div>
             </div>
-            <p className="text-[11px] text-slate-500 mt-2 font-['JetBrains_Mono']">
-              Сверка по нормам КоАП РК, Закона № 230-VII и кодекса цифровой этики.
-            </p>
           </div>
         </div>
       </div>
 
       {/* KPI Stats Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between">
-          <div className="flex items-center justify-between text-slate-500">
-            <span className="text-xs font-medium">Аккаунтов на контроле</span>
-            <span className="material-symbols-outlined text-[18px] text-sky-600">visibility</span>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white dark:bg-zinc-900 p-4 sm:p-5 rounded-xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between text-zinc-500 dark:text-zinc-400">
+            <span className="text-xs font-medium">{t('accountsUnderControl')}</span>
+            <Activity className="w-4 h-4 text-zinc-400" strokeWidth={1.6} />
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-['Plus_Jakarta_Sans'] text-2xl sm:text-3xl font-bold text-slate-900">
+          <div className="mt-3 flex items-baseline gap-2.5">
+            <span className="font-['Plus_Jakarta_Sans'] text-3xl font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums tracking-tight">
               {totalChannels}
             </span>
-            <span className="text-[10px] text-emerald-600 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               LIVE
             </span>
           </div>
-          <span className="text-[11px] text-slate-500 mt-1">Instagram, Telegram, TikTok, YouTube</span>
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1.5">Instagram, Telegram, TikTok, YouTube</span>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between">
-          <div className="flex items-center justify-between text-slate-500">
-            <span className="text-xs font-medium">Инцидентов за 24 ч</span>
-            <span className="material-symbols-outlined text-[18px] text-rose-500">warning</span>
+        <div className="bg-white dark:bg-zinc-900 p-4 sm:p-5 rounded-xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between text-zinc-500 dark:text-zinc-400">
+            <span className="text-xs font-medium">{t('incidents24h')}</span>
+            <AlertTriangle className="w-4 h-4 text-rose-500" strokeWidth={1.6} />
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-['Plus_Jakarta_Sans'] text-2xl sm:text-3xl font-bold text-rose-600">
+          <div className="mt-3 flex items-baseline gap-2.5">
+            <span className="font-['Plus_Jakarta_Sans'] text-3xl font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums tracking-tight">
               {totalViolations24h}
             </span>
-            <span className="text-[10px] text-rose-700 font-semibold bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
-              Зафиксировано
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-rose-600 dark:text-rose-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+              {language === 'kz' ? 'Тіркелді' : 'Зафиксировано'}
             </span>
           </div>
-          <span className="text-[11px] text-slate-500 mt-1">Скрытая реклама, ставки, маты</span>
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1.5">
+            {language === 'kz' ? 'Жасырын жарнама, бәс, балағат' : 'Скрытая реклама, ставки, лексика'}
+          </span>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between">
-          <div className="flex items-center justify-between text-slate-500">
-            <span className="text-xs font-medium">Каналов с ALERT</span>
-            <span className="material-symbols-outlined text-[18px] text-amber-500">notifications_active</span>
+        <div className="bg-white dark:bg-zinc-900 p-4 sm:p-5 rounded-xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between text-zinc-500 dark:text-zinc-400">
+            <span className="text-xs font-medium">{t('alertChannels')}</span>
+            <Bell className="w-4 h-4 text-amber-500" strokeWidth={1.6} />
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-['Plus_Jakarta_Sans'] text-2xl sm:text-3xl font-bold text-amber-600">
+          <div className="mt-3 flex items-baseline gap-2.5">
+            <span className="font-['Plus_Jakarta_Sans'] text-3xl font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums tracking-tight">
               {alertCount}
             </span>
-            <span className="text-[10px] text-slate-500 font-mono">из {totalChannels}</span>
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono'] tabular-nums">
+              / {totalChannels}
+            </span>
           </div>
-          <span className="text-[11px] text-slate-500 mt-1">Требуют правового реагирования</span>
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1.5">
+            {language === 'kz' ? 'Құқықтық әрекет етуді талап етеді' : 'Требуют правового реагирования'}
+          </span>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col justify-between">
-          <div className="flex items-center justify-between text-slate-500">
-            <span className="text-xs font-medium">Индекс соответствия РК</span>
-            <span className="material-symbols-outlined text-[18px] text-emerald-600">verified</span>
+        <div className="bg-white dark:bg-zinc-900 p-4 sm:p-5 rounded-xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs flex flex-col justify-between">
+          <div className="flex items-center justify-between text-zinc-500 dark:text-zinc-400">
+            <span className="text-xs font-medium">{t('rkComplianceNorm')}</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-500" strokeWidth={1.6} />
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-['Plus_Jakarta_Sans'] text-2xl sm:text-3xl font-bold text-emerald-600">
+          <div className="mt-3 flex items-baseline gap-2.5">
+            <span className="font-['Plus_Jakarta_Sans'] text-3xl font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums tracking-tight">
               {avgCompliance}%
             </span>
-            <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-              Норма
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              {language === 'kz' ? 'Қалыпты' : 'Норма'}
             </span>
           </div>
-          <span className="text-[11px] text-slate-500 mt-1">Общий комплаенс-рейтинг</span>
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1.5">
+            {language === 'kz' ? 'Жалпы комплаенс рейтингі' : 'Общий комплаенс-рейтинг'}
+          </span>
         </div>
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
-        {/* Search */}
+      <div className="bg-white dark:bg-zinc-900 p-3 sm:p-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
         <div className="relative flex-1 w-full">
-          <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">
-            search
-          </span>
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" strokeWidth={1.6} />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Поиск по никнейму (@...), названию или категории..."
-            className="w-full bg-slate-50 pl-10 pr-4 py-2 rounded-lg border border-slate-200 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none"
+            placeholder={
+              language === 'kz'
+                ? 'Никнейм (@...), атауы немесе санаты бойынша іздеу...'
+                : 'Поиск по никнейму (@...), названию или категории...'
+            }
+            className="w-full bg-zinc-50 dark:bg-zinc-950 pl-9 pr-4 py-2 rounded-lg border border-zinc-200/80 dark:border-zinc-800 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:bg-white dark:focus:bg-zinc-900 focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none transition-colors"
           />
         </div>
 
-        {/* Platform Filter Tabs */}
-        <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0">
+        <div className="flex items-center gap-1 bg-zinc-100/80 dark:bg-zinc-950 p-1 rounded-lg border border-zinc-200/80 dark:border-zinc-800 overflow-x-auto w-full sm:w-auto">
           {[
-            { id: 'all', label: 'Все' },
+            { id: 'all', label: language === 'kz' ? 'Барлығы' : 'Все' },
             { id: 'instagram', label: 'Instagram' },
             { id: 'telegram', label: 'Telegram' },
             { id: 'tiktok', label: 'TikTok' },
             { id: 'youtube', label: 'YouTube' },
-            { id: 'alert', label: '🚨 ALERT' },
+            { id: 'alert', label: 'ALERT' },
           ].map((tab) => (
             <button
               key={tab.id}
               onClick={() => setPlatformFilter(tab.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
+              className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${
                 platformFilter === tab.id
-                  ? 'bg-sky-600 text-white font-semibold shadow-xs'
-                  : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200'
+                  ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-xs'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'
               }`}
             >
               {tab.label}
@@ -653,8 +740,10 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
       {/* Accounts Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredChannels.length === 0 ? (
-          <div className="col-span-full bg-white p-8 rounded-xl border border-slate-200 text-center text-slate-500 text-sm">
-            Аккаунтов по выбранному фильтру не найдено. Нажмите «+ Добавить аккаунт», чтобы подключить новый канал.
+          <div className="col-span-full bg-white dark:bg-zinc-900 p-8 rounded-xl border border-zinc-200/80 dark:border-zinc-800 text-center text-zinc-500 dark:text-zinc-400 text-sm">
+            {language === 'kz'
+              ? 'Таңдалған сүзгі бойынша аккаунттар табылмады. Жаңа арнаны қосу үшін «+ Аккаунт қосу» батырмасын басыңыз.'
+              : 'Аккаунтов по выбранному фильтру не найдено. Нажмите «Добавить аккаунт», чтобы подключить новый канал.'}
           </div>
         ) : (
           filteredChannels.map((channel) => {
@@ -663,56 +752,49 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
             const isScanning = scanningChannelId === channel.id;
             const risk = channel.riskScore || 10;
 
-            const platformBadgeColors: Record<string, string> = {
-              instagram: 'bg-gradient-to-r from-pink-500 to-rose-500 text-white',
-              telegram: 'bg-sky-500 text-white',
-              tiktok: 'bg-slate-900 text-white',
-              youtube: 'bg-red-600 text-white',
-              web: 'bg-slate-700 text-white',
-            };
-
             return (
               <div
                 key={channel.id}
-                className={`bg-white rounded-xl border transition-all flex flex-col justify-between p-4 shadow-xs hover:shadow-md ${
+                className={`bg-white dark:bg-zinc-900 rounded-2xl border transition-all flex flex-col justify-between p-4 sm:p-5 shadow-xs hover:border-zinc-300 dark:hover:border-zinc-700 ${
                   isAlert
-                    ? 'border-rose-300 ring-1 ring-rose-100'
+                    ? 'border-rose-300/90 dark:border-rose-900/70'
                     : isPaused
-                    ? 'border-slate-200 opacity-75'
-                    : 'border-slate-200'
+                    ? 'border-zinc-200/80 dark:border-zinc-800 opacity-75'
+                    : 'border-zinc-200/80 dark:border-zinc-800'
                 }`}
               >
                 {/* Card Header */}
                 <div>
                   <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2.5">
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${platformBadgeColors[channel.platform] || 'bg-slate-800 text-white'}`}>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 flex items-center justify-center font-['JetBrains_Mono'] font-semibold text-xs shrink-0">
                         {channel.platform === 'instagram' ? 'IG' : channel.platform === 'telegram' ? 'TG' : channel.platform === 'tiktok' ? 'TT' : 'YT'}
                       </div>
-                      <div className="flex flex-col">
-                        <span className="font-['Plus_Jakarta_Sans'] font-bold text-sm text-slate-900 leading-tight">
+                      <div className="flex flex-col min-w-0">
+                        <span className="font-['Plus_Jakarta_Sans'] font-semibold text-sm text-zinc-900 dark:text-zinc-100 leading-tight truncate">
                           {channel.name}
                         </span>
-                        <span className="text-xs text-sky-600 font-mono mt-0.5">
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono'] mt-0.5 truncate">
                           {channel.handleOrUrl}
                         </span>
                       </div>
                     </div>
 
-                    {/* Status Pill */}
+                    {/* Status Indicator */}
                     <div className="flex items-center gap-1.5 shrink-0">
                       {isAlert ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200 animate-pulse">
-                          <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-200/80 dark:border-rose-900 tabular-nums whitespace-nowrap">
+                          <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
                           ALERT ({channel.violations24h})
                         </span>
                       ) : isPaused ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
-                          ПАУЗА
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 border border-zinc-200/80 dark:border-zinc-700 whitespace-nowrap">
+                          <span className="w-1.5 h-1.5 rounded-full bg-zinc-400" />
+                          {language === 'kz' ? 'ҮЗІЛІС' : 'ПАУЗА'}
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-900 whitespace-nowrap">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                           LIVE
                         </span>
                       )}
@@ -720,31 +802,40 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
                   </div>
 
                   {/* Category & Audience */}
-                  <div className="mt-3 flex items-center justify-between text-xs text-slate-500 border-t border-slate-100 pt-2.5">
-                    <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[11px] font-medium">
-                      {channel.category || 'Медиа'}
-                    </span>
-                    <span className="text-[11px] font-mono text-slate-500">
+                  <div className="mt-3.5 flex items-center justify-between gap-2 text-xs text-zinc-500 dark:text-zinc-400 border-t border-zinc-100 dark:border-zinc-800 pt-3">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="px-2 py-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 text-[11px] font-medium truncate">
+                        {channel.category || (language === 'kz' ? 'Медиа' : 'Медиа')}
+                      </span>
+                      {channel.isLiveScraped && (
+                        <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-800 font-['JetBrains_Mono'] text-[9px] font-semibold shrink-0">
+                          LIVE TG
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[11px] font-['JetBrains_Mono'] text-zinc-500 dark:text-zinc-400 tabular-nums shrink-0">
                       {channel.subscribersOrVolume}
                     </span>
                   </div>
 
                   {/* Risk Score Meter */}
-                  <div className="mt-3 bg-slate-50 p-2.5 rounded-lg border border-slate-100">
-                    <div className="flex items-center justify-between text-xs mb-1.5">
-                      <span className="text-slate-600 font-medium">Индекс риска:</span>
+                  <div className="mt-3 bg-zinc-50 dark:bg-zinc-950 p-3 rounded-xl border border-zinc-200/70 dark:border-zinc-800">
+                    <div className="flex items-center justify-between text-xs mb-2">
+                      <span className="text-zinc-500 dark:text-zinc-400 font-medium">
+                        {language === 'kz' ? 'Тәуекел индексі' : 'Индекс риска'}
+                      </span>
                       <span
-                        className={`font-mono font-bold text-xs ${
-                          risk >= 70 ? 'text-rose-600' : risk >= 40 ? 'text-amber-600' : 'text-emerald-600'
+                        className={`font-['JetBrains_Mono'] font-semibold text-xs tabular-nums ${
+                          risk >= 70 ? 'text-rose-600 dark:text-rose-400' : risk >= 40 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'
                         }`}
                       >
-                        {risk}/100 ({risk >= 70 ? 'Критический' : risk >= 40 ? 'Средний' : 'Низкий'})
+                        {risk}/100 ({risk >= 70 ? (language === 'kz' ? 'Сыни' : 'Критический') : risk >= 40 ? (language === 'kz' ? 'Орташа' : 'Средний') : (language === 'kz' ? 'Төмен' : 'Низкий')})
                       </span>
                     </div>
-                    <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                    <div className="w-full bg-zinc-200 dark:bg-zinc-800 h-1.5 rounded-full overflow-hidden">
                       <div
-                        className={`h-full transition-all duration-500 ${
-                          risk >= 70 ? 'bg-rose-500' : risk >= 40 ? 'bg-amber-500' : 'bg-emerald-500'
+                        className={`h-full rounded-full transition-all duration-500 ${
+                          risk >= 70 ? 'bg-rose-500' : risk >= 40 ? 'bg-amber-500' : 'bg-zinc-900 dark:bg-zinc-100'
                         }`}
                         style={{ width: `${risk}%` }}
                       />
@@ -753,56 +844,63 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
 
                   {/* Alert Note or Recent Violation */}
                   {channel.alertNote && (
-                    <div className="mt-2.5 p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] flex items-start gap-1.5 leading-snug">
-                      <span className="material-symbols-outlined text-[14px] text-rose-600 shrink-0 mt-0.5">error</span>
+                    <div className="mt-3 p-2.5 rounded-xl bg-rose-50/70 dark:bg-rose-950/40 border border-rose-200/80 dark:border-rose-900/60 text-rose-800 dark:text-rose-300 text-[11px] flex items-start gap-2 leading-snug">
+                      <AlertCircle className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" strokeWidth={1.6} />
                       <span>{channel.alertNote}</span>
                     </div>
                   )}
 
                   {/* Last Scan & Frequency */}
-                  <div className="mt-2.5 flex items-center justify-between text-[11px] text-slate-500 font-mono">
-                    <span>Интервал: {channel.frequency}</span>
-                    <span>Скан: {channel.lastScan}</span>
+                  <div className="mt-3 flex items-center justify-between gap-2 text-[11px] text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono']">
+                    <span className="truncate">{language === 'kz' ? 'Интервал' : 'Интервал'}: {channel.frequency}</span>
+                    <span className="flex items-center gap-1.5 shrink-0">
+                      {channel.isLiveScraped && (
+                        <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-900 text-[10px]">
+                          LIVE TG
+                        </span>
+                      )}
+                      <span>{channel.lastScan}</span>
+                    </span>
                   </div>
                 </div>
 
                 {/* Card Actions */}
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2">
+                <div className="mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-800 flex items-center gap-2">
                   <button
                     onClick={() => handleScanSingleAccount(channel)}
                     disabled={isScanning}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-700 text-xs font-semibold border border-sky-200 transition-colors disabled:opacity-50"
+                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-zinc-900 text-xs font-medium transition-colors disabled:opacity-50"
                   >
-                    <span className={`material-symbols-outlined text-[16px] ${isScanning ? 'animate-spin' : ''}`}>
-                      {isScanning ? 'refresh' : 'radar'}
-                    </span>
-                    <span>{isScanning ? 'Сканирование...' : 'Скан'}</span>
+                    {isScanning ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" strokeWidth={1.6} />
+                    ) : (
+                      <Radar className="w-3.5 h-3.5" strokeWidth={1.6} />
+                    )}
+                    <span>{isScanning ? (language === 'kz' ? 'Сканерлеу...' : 'Сканирование...') : t('scanBtn')}</span>
                   </button>
 
                   <button
                     onClick={() => setSelectedDossierChannel(channel)}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-medium transition-colors"
+                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 text-xs font-medium transition-colors"
                   >
-                    <span className="material-symbols-outlined text-[16px]">folder_open</span>
-                    <span>Досье</span>
+                    <FolderOpen className="w-3.5 h-3.5" strokeWidth={1.6} />
+                    <span>{t('dossierBtn')}</span>
                   </button>
 
                   <button
                     onClick={() => handleTogglePause(channel.id)}
-                    title={isPaused ? 'Возобновить мониторинг' : 'Поставить на паузу'}
-                    className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                    title={isPaused ? (language === 'kz' ? 'Жалғастыру' : 'Возобновить') : (language === 'kz' ? 'Үзіліске қою' : 'Поставить на паузу')}
+                    className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
                   >
-                    <span className="material-symbols-outlined text-[18px]">
-                      {isPaused ? 'play_arrow' : 'pause'}
-                    </span>
+                    {isPaused ? <Play className="w-4 h-4" strokeWidth={1.6} /> : <Pause className="w-4 h-4" strokeWidth={1.6} />}
                   </button>
 
                   <button
                     onClick={() => handleDeleteChannel(channel.id)}
-                    title="Удалить из мониторинга"
-                    className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                    title={language === 'kz' ? 'Мониторингтен жою' : 'Удалить из мониторинга'}
+                    className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/60 transition-colors"
                   >
-                    <span className="material-symbols-outlined text-[18px]">delete</span>
+                    <Trash2 className="w-4 h-4" strokeWidth={1.6} />
                   </button>
                 </div>
               </div>
@@ -812,15 +910,17 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
       </div>
 
       {/* Live Stream of Monitored Incidents Across All Channels */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-4 sm:p-5 mt-2">
-        <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+      <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs p-5 sm:p-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-zinc-100 dark:border-zinc-800 mb-4">
           <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-rose-600 text-[20px]">notifications_active</span>
-            <h2 className="font-['Plus_Jakarta_Sans'] font-bold text-base sm:text-lg text-slate-900">
-              Лента зафиксированных инцидентов и публикаций
+            <span className="w-2 h-2 rounded-full bg-rose-500" />
+            <h2 className="font-['Plus_Jakarta_Sans'] font-semibold text-base sm:text-lg text-zinc-900 dark:text-zinc-100">
+              {t('liveIncidentFeed')}
             </h2>
           </div>
-          <span className="text-xs text-slate-500 font-mono">Автоматическая фиксация правонарушений РК</span>
+          <span className="text-xs text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono']">
+            {language === 'kz' ? 'ҚР құқық бұзушылықтарын автоматты тіркеу' : 'Автоматическая фиксация правонарушений РК'}
+          </span>
         </div>
 
         <div className="flex flex-col gap-3">
@@ -834,33 +934,50 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
             .map((item) => (
               <div
                 key={item.id}
-                className="p-3 sm:p-4 rounded-xl border border-rose-200 bg-rose-50/50 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:bg-rose-50 transition-colors"
+                className="p-3.5 sm:p-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/60 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors"
               >
-                <div className="flex items-start gap-3 flex-1">
-                  <div className="w-8 h-8 rounded-lg bg-rose-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 flex items-center justify-center font-['JetBrains_Mono'] font-semibold text-xs shrink-0 mt-0.5">
                     {item.channel.platform === 'instagram' ? 'IG' : item.channel.platform === 'telegram' ? 'TG' : 'TT'}
                   </div>
-                  <div className="flex flex-col">
+                  <div className="flex flex-col min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-bold text-xs sm:text-sm text-slate-900">{item.channel.name}</span>
-                      <span className="text-xs text-sky-600 font-mono">{item.channel.handleOrUrl}</span>
-                      <span className="text-[10px] text-slate-400 font-mono">• {item.date}</span>
+                      <span className="font-semibold text-xs sm:text-sm text-zinc-900 dark:text-zinc-100">{item.channel.name}</span>
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono']">{item.channel.handleOrUrl}</span>
+                      <span className="text-[11px] text-zinc-400 font-['JetBrains_Mono']">· {item.date}</span>
+                      {item.views && (
+                        <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono'] tabular-nums">
+                          · {item.views} просм.
+                        </span>
+                      )}
+                      {item.sourceUrl && (
+                        <a
+                          href={item.sourceUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[11px] font-['JetBrains_Mono'] text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white underline"
+                        >
+                          <span>t.me</span>
+                          <ExternalLink className="w-3 h-3" strokeWidth={1.6} />
+                        </a>
+                      )}
                     </div>
-                    <p className="text-xs text-slate-700 mt-1 leading-relaxed bg-white/70 p-2 rounded border border-rose-100 font-mono">
-                      "{item.content}"
+                    <p className="text-xs text-zinc-700 dark:text-zinc-300 mt-1.5 leading-relaxed bg-white dark:bg-zinc-900 p-2.5 rounded-lg border border-zinc-200/80 dark:border-zinc-800 font-['JetBrains_Mono']">
+                      &ldquo;{item.content}&rdquo;
                     </p>
-                    <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
-                      <span className="font-bold text-rose-700 bg-rose-100 px-2 py-0.5 rounded border border-rose-200">
+                    <div className="mt-2 flex items-center gap-2 flex-wrap text-[11px]">
+                      <span className="inline-flex items-center gap-1.5 font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 px-2 py-0.5 rounded-md border border-rose-200/80 dark:border-rose-900">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
                         {item.violationTitle}
                       </span>
                       {item.lawCode && (
-                        <span className="font-mono text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                        <span className="font-['JetBrains_Mono'] text-zinc-600 dark:text-zinc-300 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded-md">
                           {item.lawCode}
                         </span>
                       )}
                       {item.fineRisk && (
-                        <span className="text-rose-600 font-semibold font-mono">
-                          Штраф: {item.fineRisk}
+                        <span className="text-rose-600 dark:text-rose-400 font-medium font-['JetBrains_Mono'] tabular-nums">
+                          {language === 'kz' ? 'Айыппұл:' : 'Штраф:'} {item.fineRisk}
                         </span>
                       )}
                     </div>
@@ -870,10 +987,10 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
                 <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
                   <button
                     onClick={() => handleOpenCaseFromPost(item.channel, item)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold shadow-xs transition-all"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-zinc-900 text-xs font-medium shadow-xs transition-colors whitespace-nowrap"
                   >
-                    <span className="material-symbols-outlined text-[16px]">assessment</span>
-                    <span>Открыть экспертный отчет</span>
+                    <FileCheck2 className="w-3.5 h-3.5" strokeWidth={1.6} />
+                    <span>{language === 'kz' ? 'Сараптамалық есепті ашу' : 'Открыть отчет'}</span>
                   </button>
                 </div>
               </div>
@@ -883,51 +1000,59 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
 
       {/* Account Dossier Modal */}
       {selectedDossierChannel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-zinc-950/60 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white dark:bg-zinc-900 rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-zinc-200/80 dark:border-zinc-800 overflow-hidden">
             {/* Modal Header */}
-            <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center font-bold text-sm">
+            <div className="p-4 sm:p-5 border-b border-zinc-200/80 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 flex items-center justify-between">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 flex items-center justify-center font-['JetBrains_Mono'] font-semibold text-xs shrink-0">
                   {selectedDossierChannel.platform === 'instagram' ? 'IG' : selectedDossierChannel.platform === 'telegram' ? 'TG' : 'TT'}
                 </div>
-                <div>
-                  <h3 className="font-['Plus_Jakarta_Sans'] font-bold text-base sm:text-lg text-slate-900">
-                    Досье: {selectedDossierChannel.name}
+                <div className="min-w-0">
+                  <h3 className="font-['Plus_Jakarta_Sans'] font-semibold text-base sm:text-lg text-zinc-900 dark:text-zinc-100 truncate">
+                    {language === 'kz' ? 'Досье:' : 'Досье:'} {selectedDossierChannel.name}
                   </h3>
-                  <div className="flex items-center gap-2 text-xs text-slate-500 font-mono">
-                    <span className="text-sky-600 font-bold">{selectedDossierChannel.handleOrUrl}</span>
-                    <span>• {selectedDossierChannel.platformLabel}</span>
-                    <span>• {selectedDossierChannel.subscribersOrVolume}</span>
+                  <div className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono'] flex-wrap">
+                    <span className="text-zinc-900 dark:text-zinc-100 font-medium">{selectedDossierChannel.handleOrUrl}</span>
+                    <span>· {selectedDossierChannel.platformLabel}</span>
+                    <span>· {selectedDossierChannel.subscribersOrVolume}</span>
                   </div>
                 </div>
               </div>
               <button
                 onClick={() => setSelectedDossierChannel(null)}
-                className="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 flex items-center justify-center"
+                className="w-8 h-8 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 flex items-center justify-center transition-colors shrink-0"
+                aria-label="Закрыть досье"
               >
-                <span className="material-symbols-outlined text-[20px]">close</span>
+                <X className="w-4 h-4" strokeWidth={1.6} />
               </button>
             </div>
 
             {/* Modal Body */}
-            <div className="p-4 sm:p-6 overflow-y-auto flex flex-col gap-4">
+            <div className="p-4 sm:p-6 overflow-y-auto flex flex-col gap-5">
               {/* Compliance Rating Meter */}
-              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+              <div className="bg-zinc-50 dark:bg-zinc-950 p-4 rounded-xl border border-zinc-200/80 dark:border-zinc-800 flex items-center justify-between gap-4">
                 <div>
-                  <span className="text-xs text-slate-500 uppercase font-medium">Статус комплаенса в РК:</span>
+                  <span className="text-[11px] font-['JetBrains_Mono'] text-zinc-500 dark:text-zinc-400 uppercase font-medium">
+                    {language === 'kz' ? 'ҚР комплаенс мәртебесі' : 'Статус комплаенса в РК'}
+                  </span>
                   <div className="flex items-center gap-2 mt-1">
-                    <span className={`text-xl font-bold font-['Plus_Jakarta_Sans'] ${selectedDossierChannel.status === 'ALERT' ? 'text-rose-600' : 'text-emerald-600'}`}>
-                      {selectedDossierChannel.status === 'ALERT' ? 'ТРЕБУЕТ УСТРАНЕНИЯ' : 'ПОЛНОЕ СООТВЕТСТВИЕ'}
+                    <span className={`w-2 h-2 rounded-full ${selectedDossierChannel.status === 'ALERT' ? 'bg-rose-500' : 'bg-emerald-500'}`} />
+                    <span className={`text-lg sm:text-xl font-semibold font-['Plus_Jakarta_Sans'] ${selectedDossierChannel.status === 'ALERT' ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                      {selectedDossierChannel.status === 'ALERT'
+                        ? (language === 'kz' ? 'ЖОЮДЫ ТАЛАП ЕТЕДІ' : 'ТРЕБУЕТ УСТРАНЕНИЯ')
+                        : (language === 'kz' ? 'ТОЛЫҚ СӘЙКЕСТІК' : 'ПОЛНОЕ СООТВЕТСТВИЕ')}
                     </span>
                   </div>
-                  <span className="text-xs text-slate-600 mt-0.5 block">
-                    Последняя проверка: {selectedDossierChannel.lastScan}
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 block">
+                    {language === 'kz' ? 'Соңғы тексеру' : 'Последняя проверка'}: {selectedDossierChannel.lastScan}
                   </span>
                 </div>
-                <div className="text-right">
-                  <span className="text-xs text-slate-500 uppercase font-medium">Индекс риска</span>
-                  <div className="text-2xl font-bold font-mono text-slate-900 mt-0.5">
+                <div className="text-right shrink-0">
+                  <span className="text-[11px] font-['JetBrains_Mono'] text-zinc-500 dark:text-zinc-400 uppercase font-medium">
+                    {language === 'kz' ? 'Тәуекел индексі' : 'Индекс риска'}
+                  </span>
+                  <div className="text-2xl font-semibold font-['JetBrains_Mono'] text-zinc-900 dark:text-zinc-100 mt-0.5 tabular-nums">
                     {selectedDossierChannel.riskScore || 10}/100
                   </div>
                 </div>
@@ -935,49 +1060,67 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
 
               {/* Monitored Posts Feed */}
               <div>
-                <h4 className="font-bold text-sm text-slate-900 mb-3 flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[18px] text-sky-600">history_edu</span>
-                  <span>Последние публикации и проверки в аккаунте:</span>
+                <h4 className="font-medium text-sm text-zinc-900 dark:text-zinc-100 mb-3 flex items-center gap-2">
+                  <History className="w-4 h-4 text-zinc-500 dark:text-zinc-400" strokeWidth={1.6} />
+                  <span>{language === 'kz' ? 'Аккаунттағы соңғы жарияланымдар мен тексерулер' : 'Последние публикации и проверки в аккаунте'}</span>
                 </h4>
 
                 <div className="flex flex-col gap-3">
                   {(selectedDossierChannel.recentPosts || []).map((post) => (
                     <div
                       key={post.id}
-                      className={`p-3.5 rounded-xl border transition-all ${
-                        post.hasViolation ? 'bg-rose-50/50 border-rose-200' : 'bg-slate-50/60 border-slate-200'
+                      className={`p-3.5 rounded-xl border transition-colors ${
+                        post.hasViolation
+                          ? 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-200/80 dark:border-rose-900/60'
+                          : 'bg-zinc-50/70 dark:bg-zinc-950/60 border-zinc-200/80 dark:border-zinc-800'
                       }`}
                     >
-                      <div className="flex items-center justify-between text-xs mb-1.5">
-                        <span className="font-semibold text-slate-700 capitalize">
-                          {post.type} • {post.date}
-                        </span>
+                      <div className="flex items-center justify-between gap-2 text-xs mb-2 flex-wrap">
+                        <div className="flex items-center gap-2 font-medium text-zinc-700 dark:text-zinc-300 font-['JetBrains_Mono']">
+                          <span className="capitalize">{post.type} · {post.date}</span>
+                          {post.views && <span className="text-zinc-400 tabular-nums">· {post.views} просм.</span>}
+                          {post.sourceUrl && (
+                            <a
+                              href={post.sourceUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-[11px] text-zinc-600 dark:text-zinc-300 hover:underline"
+                            >
+                              <span>Источник</span>
+                              <ExternalLink className="w-3 h-3" strokeWidth={1.6} />
+                            </a>
+                          )}
+                        </div>
                         {post.hasViolation ? (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
-                            НАРУШЕНИЕ
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium bg-rose-50 dark:bg-rose-950/80 text-rose-700 dark:text-rose-300 border border-rose-200/80 dark:border-rose-900">
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                            {language === 'kz' ? 'БҰЗУШЫЛЫҚ' : 'НАРУШЕНИЕ'}
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            В НОРМЕ
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-900">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                            {language === 'kz' ? 'ҚАЛЫПТЫ' : 'В НОРМЕ'}
                           </span>
                         )}
                       </div>
 
-                      <p className="text-xs text-slate-800 leading-relaxed font-mono bg-white p-2.5 rounded border border-slate-200">
+                      <p className="text-xs text-zinc-800 dark:text-zinc-200 leading-relaxed font-['JetBrains_Mono'] bg-white dark:bg-zinc-900 p-2.5 rounded-lg border border-zinc-200/80 dark:border-zinc-800">
                         {post.content}
                       </p>
 
                       {post.hasViolation && (
-                        <div className="mt-2.5 pt-2 border-t border-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                          <div className="text-xs text-rose-700">
-                            <span className="font-bold">{post.violationTitle}</span>
-                            <span className="ml-1 text-slate-500 font-mono">({post.lawCode})</span>
+                        <div className="mt-2.5 pt-2.5 border-t border-rose-200/60 dark:border-rose-900/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div className="text-xs text-rose-700 dark:text-rose-300">
+                            <span className="font-semibold">{post.violationTitle}</span>
+                            {post.lawCode && (
+                              <span className="ml-1.5 text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono']">({post.lawCode})</span>
+                            )}
                           </div>
                           <button
                             onClick={() => handleOpenCaseFromPost(selectedDossierChannel, post)}
-                            className="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-xs transition-colors shrink-0"
+                            className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-zinc-900 text-xs font-medium shadow-xs transition-colors shrink-0"
                           >
-                            Сформировать отчет
+                            {language === 'kz' ? 'Есеп жасау' : 'Сформировать отчет'}
                           </button>
                         </div>
                       )}
@@ -988,23 +1131,28 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
             </div>
 
             {/* Modal Footer */}
-            <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+            <div className="p-4 border-t border-zinc-200/80 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 flex items-center justify-between">
               <button
                 onClick={() => handleScanSingleAccount(selectedDossierChannel)}
                 disabled={scanningChannelId === selectedDossierChannel.id}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold shadow-xs disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-zinc-900 text-xs font-medium shadow-xs transition-colors disabled:opacity-50"
               >
-                <span className={`material-symbols-outlined text-[16px] ${scanningChannelId === selectedDossierChannel.id ? 'animate-spin' : ''}`}>
-                  refresh
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${scanningChannelId === selectedDossierChannel.id ? 'animate-spin' : ''}`}
+                  strokeWidth={1.6}
+                />
+                <span>
+                  {scanningChannelId === selectedDossierChannel.id
+                    ? (language === 'kz' ? 'Сканерлеуде...' : 'Сканирование...')
+                    : (language === 'kz' ? 'Қайта скан жасау' : 'Повторный скан')}
                 </span>
-                <span>{scanningChannelId === selectedDossierChannel.id ? 'Сканирование...' : 'Запустить повторный скан'}</span>
               </button>
 
               <button
                 onClick={() => setSelectedDossierChannel(null)}
-                className="px-4 py-1.5 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-medium"
+                className="px-4 py-2 rounded-lg bg-white dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-800 text-xs font-medium transition-colors"
               >
-                Закрыть
+                {t('closeBtn')}
               </button>
             </div>
           </div>
@@ -1013,28 +1161,29 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
 
       {/* Add Monitored Account Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden">
-            <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-zinc-950/60 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white dark:bg-zinc-900 rounded-2xl max-w-lg w-full shadow-2xl border border-zinc-200/80 dark:border-zinc-800 overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-zinc-200/80 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 flex items-center justify-between">
               <div className="flex items-center gap-2.5">
-                <span className="material-symbols-outlined text-sky-600 text-[22px]">add_moderator</span>
-                <h3 className="font-['Plus_Jakarta_Sans'] font-bold text-base sm:text-lg text-slate-900">
-                  Добавить аккаунт на мониторинг
+                <ShieldPlus className="w-5 h-5 text-zinc-700 dark:text-zinc-300" strokeWidth={1.6} />
+                <h3 className="font-['Plus_Jakarta_Sans'] font-semibold text-base sm:text-lg text-zinc-900 dark:text-zinc-100">
+                  {language === 'kz' ? 'Аккаунтты мониторингке қосу' : 'Добавить аккаунт на мониторинг'}
                 </h3>
               </div>
               <button
                 onClick={() => setShowAddModal(false)}
-                className="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 flex items-center justify-center"
+                className="w-8 h-8 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 flex items-center justify-center transition-colors"
+                aria-label="Закрыть окно"
               >
-                <span className="material-symbols-outlined text-[20px]">close</span>
+                <X className="w-4 h-4" strokeWidth={1.6} />
               </button>
             </div>
 
             <form onSubmit={handleCreateAccount} className="p-4 sm:p-6 flex flex-col gap-4">
               {/* Platform selector */}
               <div>
-                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">
-                  Платформа:
+                <label className="text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1.5 block">
+                  {language === 'kz' ? 'Платформа' : 'Платформа'}
                 </label>
                 <div className="grid grid-cols-4 gap-2">
                   {[
@@ -1046,11 +1195,11 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
                     <button
                       key={p.id}
                       type="button"
-                      onClick={() => setNewPlatform(p.id as any)}
-                      className={`py-2 px-2 rounded-lg text-xs font-semibold border transition-all ${
+                      onClick={() => setNewPlatform(p.id as 'instagram' | 'telegram' | 'tiktok' | 'youtube' | 'web')}
+                      className={`py-2 px-2 rounded-lg text-xs font-medium border transition-colors ${
                         newPlatform === p.id
-                          ? 'bg-sky-50 text-sky-700 border-sky-400 ring-2 ring-sky-200'
-                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                          ? 'bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 border-zinc-900 dark:border-zinc-100'
+                          : 'bg-zinc-50 dark:bg-zinc-950 text-zinc-700 dark:text-zinc-300 border-zinc-200/80 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800'
                       }`}
                     >
                       {p.label}
@@ -1061,8 +1210,8 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
 
               {/* Handle / URL */}
               <div>
-                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">
-                  Никнейм или ссылка (@username / t.me/...):
+                <label className="text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1.5 block">
+                  {language === 'kz' ? 'Никнейм немесе сілтеме (@username / t.me/...)' : 'Никнейм или ссылка (@username / t.me/...)'}
                 </label>
                 <input
                   type="text"
@@ -1070,65 +1219,67 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
                   value={newHandle}
                   onChange={(e) => setNewHandle(e.target.value)}
                   placeholder="@almaty_blogger_kz или t.me/channel"
-                  className="w-full bg-slate-50 px-3.5 py-2.5 rounded-lg border border-slate-200 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none"
+                  className="w-full bg-zinc-50 dark:bg-zinc-950 px-3.5 py-2.5 rounded-lg border border-zinc-200/80 dark:border-zinc-800 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:bg-white dark:focus:bg-zinc-900 focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none transition-colors"
                 />
               </div>
 
               {/* Name */}
               <div>
-                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">
-                  Название страницы / Бренд (необязательно):
+                <label className="text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1.5 block">
+                  {language === 'kz' ? 'Парақша атауы / Бренд (міндетті емес)' : 'Название страницы / Бренд (необязательно)'}
                 </label>
                 <input
                   type="text"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  placeholder="Блогер Аружан / Магазин техники"
-                  className="w-full bg-slate-50 px-3.5 py-2.5 rounded-lg border border-slate-200 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-sky-500 focus:outline-none"
+                  placeholder={language === 'kz' ? 'Блогер Аружан / Техника дүкені' : 'Блогер Аружан / Магазин техники'}
+                  className="w-full bg-zinc-50 dark:bg-zinc-950 px-3.5 py-2.5 rounded-lg border border-zinc-200/80 dark:border-zinc-800 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:bg-white dark:focus:bg-zinc-900 focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none transition-colors"
                 />
               </div>
 
               {/* Category & Frequency */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs font-semibold text-slate-700 mb-1.5 block">
-                    Категория:
+                  <label className="text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1.5 block">
+                    {language === 'kz' ? 'Санаты' : 'Категория'}
                   </label>
                   <select
                     value={newCategory}
                     onChange={(e) => setNewCategory(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 text-xs text-slate-800 rounded-lg px-3 py-2.5 focus:outline-none focus:border-sky-500"
+                    className="w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-xs text-zinc-800 dark:text-zinc-200 rounded-lg px-3 py-2.5 focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600"
                   >
-                    <option value="Инфлюенсер / Блогер">Инфлюенсер / Блогер</option>
-                    <option value="Новостной паблик">Новостной паблик</option>
-                    <option value="Онлайн-магазин">Онлайн-магазин</option>
-                    <option value="Эксперт / Курсы">Эксперт / Курсы</option>
-                    <option value="Развлечения">Развлекательный</option>
+                    <option value="Инфлюенсер / Блогер">{language === 'kz' ? 'Инфлюенсер / Блогер' : 'Инфлюенсер / Блогер'}</option>
+                    <option value="Новостной паблик">{language === 'kz' ? 'Жаңалықтар парақшасы' : 'Новостной паблик'}</option>
+                    <option value="Онлайн-магазин">{language === 'kz' ? 'Онлайн-дүкен' : 'Онлайн-магазин'}</option>
+                    <option value="Эксперт / Курсы">{language === 'kz' ? 'Сарапшы / Курстар' : 'Эксперт / Курсы'}</option>
+                    <option value="Развлечения">{language === 'kz' ? 'Көңіл көтеру' : 'Развлекательный'}</option>
                   </select>
                 </div>
 
                 <div>
-                  <label className="text-xs font-semibold text-slate-700 mb-1.5 block">
-                    Частота аудита:
+                  <label className="text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-1.5 block">
+                    {language === 'kz' ? 'Аудит жиілігі' : 'Частота аудита'}
                   </label>
                   <select
                     value={newFrequency}
                     onChange={(e) => setNewFrequency(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 text-xs text-slate-800 rounded-lg px-3 py-2.5 focus:outline-none focus:border-sky-500"
+                    className="w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-xs text-zinc-800 dark:text-zinc-200 rounded-lg px-3 py-2.5 focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600"
                   >
-                    <option value="Каждые 15 минут">Каждые 15 минут</option>
-                    <option value="Каждый час">Каждый час</option>
-                    <option value="Каждые 6 часов">Каждые 6 часов</option>
-                    <option value="1 раз в сутки">1 раз в сутки</option>
+                    <option value="Каждые 15 минут">{language === 'kz' ? 'Әр 15 минут сайын' : 'Каждые 15 минут'}</option>
+                    <option value="Каждый час">{language === 'kz' ? 'Сағат сайын' : 'Каждый час'}</option>
+                    <option value="Каждые 6 часов">{language === 'kz' ? 'Әр 6 сағат сайын' : 'Каждые 6 часов'}</option>
+                    <option value="1 раз в сутки">{language === 'kz' ? 'Тәулігіне 1 рет' : '1 раз в сутки'}</option>
                   </select>
                 </div>
               </div>
 
               {/* Legal compliance notice */}
-              <div className="p-3 bg-sky-50/60 rounded-xl border border-sky-200 text-[11px] text-sky-900 flex items-start gap-2">
-                <span className="material-symbols-outlined text-[16px] text-sky-600 shrink-0 mt-0.5">verified_user</span>
+              <div className="p-3 bg-zinc-50 dark:bg-zinc-950 rounded-xl border border-zinc-200/80 dark:border-zinc-800 text-[11px] text-zinc-600 dark:text-zinc-400 flex items-start gap-2 leading-relaxed">
+                <ShieldCheck className="w-4 h-4 text-zinc-500 dark:text-zinc-400 shrink-0 mt-0.5" strokeWidth={1.6} />
                 <span>
-                  Система начнет непрерывный аудит по Закону РК «Об онлайн-платформах и онлайн-рекламе» (№ 230-VII), запрету рекламы казино (ст. 445-1 КоАП) и нормам цифровой этики.
+                  {language === 'kz'
+                    ? 'Жүйе ҚР «Онлайн-платформалар және онлайн-жарнама туралы» Заңы (№ 230-VII), казино жарнамасына тыйым (ӘҚБтК 445-1-бабы) және цифрлық этика нормалары бойынша үздіксіз аудитті бастайды.'
+                    : 'Система начнет непрерывный аудит по Закону РК «Об онлайн-платформах и онлайн-рекламе» (№ 230-VII), запрету рекламы казино (ст. 445-1 КоАП) и нормам цифровой этики.'}
                 </span>
               </div>
 
@@ -1137,15 +1288,15 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium"
+                  className="px-4 py-2 rounded-lg bg-white dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-800 text-xs font-medium transition-colors"
                 >
-                  Отмена
+                  {t('cancelBtn')}
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold shadow-xs transition-colors"
+                  className="px-5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-zinc-900 text-xs font-medium shadow-xs transition-colors"
                 >
-                  Подключить мониторинг
+                  {language === 'kz' ? 'Мониторингті қосу' : 'Подключить мониторинг'}
                 </button>
               </div>
             </form>

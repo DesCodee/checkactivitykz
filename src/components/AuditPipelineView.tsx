@@ -6,6 +6,10 @@
 import React, { useState, useRef } from 'react';
 import { AuditCase, ModalityType } from '../types';
 import { analyzeContentWithGemini, ContentPayload } from '../services/geminiService';
+import {
+  getCompliancePenaltyDisplay,
+  normalizeAuditCaseCompliance,
+} from '../utils/kzComplianceIntelligence';
 
 interface AuditPipelineViewProps {
   onOpenPdf: (auditCase: AuditCase) => void;
@@ -143,7 +147,7 @@ export const AuditPipelineView: React.FC<AuditPipelineViewProps> = ({
 
     setTimeout(async () => {
       try {
-        const result = await analyzeContentWithGemini(payload);
+        const result = normalizeAuditCaseCompliance(await analyzeContentWithGemini(payload));
         if (payload.imageDataUrl) {
           result.previewUrl = payload.imageDataUrl;
         }
@@ -450,8 +454,8 @@ export const AuditPipelineView: React.FC<AuditPipelineViewProps> = ({
               </span>
             </div>
 
-            {/* Risk Badge Dial */}
-            <div className="flex items-center gap-4 bg-[#060e20] p-4 rounded-xl border border-[#3d494c]/40 shrink-0">
+            {/* Risk Badge Dial + Penalty Summary */}
+            <div className="flex flex-col sm:flex-row items-center gap-4 bg-[#060e20] p-4 rounded-xl border border-[#3d494c]/40 shrink-0">
               <div className="relative w-16 h-16 flex items-center justify-center">
                 <svg className="w-full h-full -rotate-90 transform" viewBox="0 0 72 72">
                   <circle cx="36" cy="36" r="30" fill="transparent" stroke="#222a3d" strokeWidth="6"></circle>
@@ -461,10 +465,10 @@ export const AuditPipelineView: React.FC<AuditPipelineViewProps> = ({
                     r="30"
                     fill="transparent"
                     stroke={
-                      currentResult.riskScore > 65
+                      currentResult.riskScore >= 70
                         ? '#ff6b6b'
-                        : currentResult.riskScore > 35
-                        ? '#adc6ff'
+                        : currentResult.riskScore >= 25
+                        ? '#f59e0b'
                         : '#4edea3'
                     }
                     strokeWidth="6"
@@ -475,37 +479,37 @@ export const AuditPipelineView: React.FC<AuditPipelineViewProps> = ({
                 </svg>
                 <span
                   className={`font-['JetBrains_Mono'] text-sm font-bold absolute ${
-                    currentResult.riskScore > 65
+                    currentResult.riskScore >= 70
                       ? 'text-[#ff6b6b]'
-                      : currentResult.riskScore > 35
-                      ? 'text-[#adc6ff]'
+                      : currentResult.riskScore >= 25
+                      ? 'text-amber-400'
                       : 'text-[#4edea3]'
                   }`}
                 >
-                  {currentResult.riskScore}%
+                  {currentResult.riskScore}
                 </span>
               </div>
               <div className="flex flex-col">
                 <span className="text-[10px] font-['JetBrains_Mono'] text-[#869397] uppercase">
-                  Уровень риска:
+                  Уровень риска и штраф:
                 </span>
                 <span
                   className={`font-['Plus_Jakarta_Sans'] text-base font-bold ${
-                    currentResult.riskScore > 65
+                    currentResult.riskScore >= 70
                       ? 'text-[#ff6b6b]'
-                      : currentResult.riskScore > 35
-                      ? 'text-[#adc6ff]'
+                      : currentResult.riskScore >= 25
+                      ? 'text-amber-400'
                       : 'text-[#4edea3]'
                   }`}
                 >
-                  {currentResult.riskLevel}
+                  {currentResult.riskLevel} · {getCompliancePenaltyDisplay(currentResult.violations, 'small', 'ru').headline}
                 </span>
                 <span
-                  className={`mt-0.5 px-2 py-0.5 rounded text-[10px] font-['JetBrains_Mono'] font-bold self-start ${
+                  className={`mt-1 px-2 py-0.5 rounded text-[10px] font-['JetBrains_Mono'] font-bold self-start ${
                     currentResult.status === 'ТРЕБУЕТ МЕР'
                       ? 'bg-[#ff6b6b]/20 text-[#ff6b6b]'
                       : currentResult.status === 'ПРЕДУПРЕЖДЕНИЕ'
-                      ? 'bg-[#0566d9]/25 text-[#adc6ff]'
+                      ? 'bg-amber-500/20 text-amber-300'
                       : 'bg-[#1bbd85]/20 text-[#4edea3]'
                   }`}
                 >
@@ -612,21 +616,18 @@ export const AuditPipelineView: React.FC<AuditPipelineViewProps> = ({
               <div className="rounded-xl bg-[#131b2e] border border-[#06b6d4]/40 p-5 flex flex-col gap-2.5 shadow-md">
                 <span className="font-['Plus_Jakarta_Sans'] text-xs sm:text-sm font-bold text-[#4cd7f6] flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-[18px]">checklist</span>
-                  Что нужно исправить автору перед публикацией:
+                  Рекомендации по итогам проверки:
                 </span>
                 <ul className="text-xs text-[#bcc9cd] font-['Inter'] space-y-1.5 list-disc list-inside">
-                  <li>
-                    Добавить четкую отметку <strong className="text-[#dae2fd]">«Жарнама / Реклама»</strong> в начале или на самом изображении (Закон РК № 230-VII).
-                  </li>
-                  <li>
-                    Указать наименование и БИН/ИИН рекламодателя либо ссылку на официальный сайт.
-                  </li>
-                  <li>
-                    Обеспечить дублирование рекламного текста на государственном (казахском) языке (ст. 21 Закона о языках).
-                  </li>
-                  <li>
-                    Исключить прямые ссылки на нелицензированные азартные игры и открытые персональные данные физлиц.
-                  </li>
+                  {currentResult.violations.length === 0 ? (
+                    <li>Материал соответствует нормам законодательства РК и этическим стандартам.</li>
+                  ) : (
+                    currentResult.violations
+                      .map((v) => v.recommendation || v.basis)
+                      .filter(Boolean)
+                      .slice(0, 5)
+                      .map((rec, i) => <li key={i}>{rec}</li>)
+                  )}
                 </ul>
               </div>
 

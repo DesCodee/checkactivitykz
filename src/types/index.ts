@@ -57,6 +57,29 @@ export interface MediaAnalysisResult {
   limitations: string;
 }
 
+export interface RewriteResult {
+  originalText: string;
+  safeTextRu: string;
+  safeTextKz: string;
+  appliedFixes: string[];
+  newRiskScore: number;
+  engineUsed: string;
+}
+
+export interface FraudSignals {
+  isPhishingOrDeepfake: boolean;
+  indicators: string[];
+  riskCategory?: string;
+}
+
+export interface BilingualCheck {
+  hasKazakh: boolean;
+  hasRussian: boolean;
+  hasAdMarkKz: boolean;
+  hasAdMarkRu: boolean;
+  languageParityOk: boolean;
+}
+
 export interface AuditCase {
   id: string;
   referenceNumber: string;
@@ -101,6 +124,11 @@ export interface AuditCase {
   videoDuration?: string;
   emojiAnalysis?: EmojiAnalysis;
   mediaAnalysis?: MediaAnalysisResult;
+  rewriteResult?: RewriteResult;
+  fraudSignals?: FraudSignals;
+  bilingualCheck?: BilingualCheck;
+  accessRestricted?: boolean;
+  accessNotice?: string;
 }
 
 export interface MonitoredPost {
@@ -114,6 +142,8 @@ export interface MonitoredPost {
   fineRisk?: string;
   severity?: ViolationSeverity;
   mediaSnippetUrl?: string;
+  views?: string;
+  sourceUrl?: string;
 }
 
 export interface MonitoringChannel {
@@ -130,6 +160,7 @@ export interface MonitoringChannel {
   alertNote?: string;
   riskScore?: number;
   category?: string;
+  isLiveScraped?: boolean;
   recentPosts?: MonitoredPost[];
 }
 

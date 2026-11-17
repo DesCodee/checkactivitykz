@@ -3,17 +3,44 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import {
+  Layers,
+  ScanSearch,
+  History,
+  Scale,
+  Search,
+  Sun,
+  Moon,
+  X,
+} from 'lucide-react';
+import { useApp } from '../utils/i18n';
+
+export type AppViewType = 'home' | 'scanner' | 'report' | 'archive' | 'sandbox';
 
 interface HeaderProps {
-  currentView: 'home' | 'scanner' | 'report' | 'archive' | 'monitoring' | 'dashboard';
-  onNavigate: (view: 'home' | 'scanner' | 'report' | 'archive' | 'monitoring' | 'dashboard') => void;
+  currentView: AppViewType;
+  onNavigate: (view: AppViewType) => void;
   onSearchSelect?: (query: string) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearchSelect }) => {
+  const { language, setLanguage, theme, toggleTheme, t } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchModal, setShowSearchModal] = useState(false);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setShowSearchModal((prev) => !prev);
+      } else if (e.key === 'Escape') {
+        setShowSearchModal(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,246 +50,298 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
     }
   };
 
+  const navItems: {
+    id: AppViewType;
+    label: string;
+    mobileLabel: string;
+    icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
+    isActive: boolean;
+  }[] = [
+    {
+      id: 'home',
+      label: t('navScanner'),
+      mobileLabel: language === 'kz' ? 'Сканер' : 'Сканер',
+      icon: ScanSearch,
+      isActive: currentView === 'home' || currentView === 'scanner',
+    },
+    {
+      id: 'sandbox',
+      label: t('navSandbox'),
+      mobileLabel: language === 'kz' ? 'Симулятор' : 'Песочница',
+      icon: Scale,
+      isActive: currentView === 'sandbox',
+    },
+    {
+      id: 'archive',
+      label: t('navArchive'),
+      mobileLabel: language === 'kz' ? 'Журнал' : 'Журнал',
+      icon: History,
+      isActive: currentView === 'archive',
+    },
+  ];
+
+  const getPageTitle = () => {
+    if (currentView === 'home' || currentView === 'scanner') {
+      return 'CheckActivity';
+    }
+    if (currentView === 'sandbox') {
+      return language === 'kz' ? 'Симулятор, Пакеттік аудит және НҚА' : 'Песочница, Пакетный аудит и НПА РК';
+    }
+    if (currentView === 'report') {
+      return language === 'kz' ? 'Сараптамалық есеп' : 'Экспертный отчёт';
+    }
+    return language === 'kz' ? 'Тексеру журналы' : 'Журнал проверок';
+  };
+
   return (
     <>
-      {/* Top Header */}
-      <header className="fixed top-0 w-full z-50 bg-white border-b border-slate-200 shadow-xs">
-        <div className="h-16 w-full px-3 sm:px-6 lg:px-8 flex items-center justify-between gap-3">
-          {/* Brand Mark */}
-          <div className="flex items-center gap-3 shrink-0">
+      {/* Desktop Left Sidebar (EthicOS minimal style) */}
+      <aside className="hidden md:flex fixed left-0 top-0 bottom-0 w-60 z-40 flex-col justify-between bg-white dark:bg-zinc-900 border-r border-zinc-200/80 dark:border-zinc-800 transition-colors">
+        <div className="p-5 flex flex-col gap-7">
+          {/* Brand Wordmark */}
+          <button
+            type="button"
+            onClick={() => onNavigate('home')}
+            className="flex items-center gap-2.5 px-2 text-left group focus:outline-none"
+          >
+            <Layers className="w-5 h-5 text-zinc-900 dark:text-zinc-100 shrink-0" strokeWidth={1.6} />
+            <span className="font-['Inter'] font-semibold text-[16px] tracking-tight text-zinc-900 dark:text-zinc-50 whitespace-nowrap">
+              Check Activity
+            </span>
+          </button>
+
+          {/* Vertical Navigation */}
+          <nav className="flex flex-col gap-1" aria-label="Primary Navigation">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onNavigate(item.id)}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-[13.5px] transition-colors whitespace-nowrap ${
+                    item.isActive
+                      ? 'bg-zinc-100/90 dark:bg-zinc-800/80 text-zinc-950 dark:text-zinc-50 font-medium'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-50 dark:hover:bg-zinc-800/40 font-normal'
+                  }`}
+                >
+                  <span className="flex items-center gap-3 min-w-0">
+                    <Icon
+                      className={`w-[17px] h-[17px] shrink-0 ${
+                        item.isActive
+                          ? 'text-zinc-900 dark:text-zinc-100'
+                          : 'text-zinc-400 dark:text-zinc-500'
+                      }`}
+                      strokeWidth={1.5}
+                    />
+                    <span className="truncate">{item.label}</span>
+                  </span>
+                  {item.isActive && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 shrink-0" />
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+
+        {/* Bottom Sidebar Controls: Language + Theme + Quick Law Reference */}
+        <div className="p-4 border-t border-zinc-200/70 dark:border-zinc-800 flex flex-col gap-3">
+          {/* Language & Theme Compact Bar */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="inline-flex items-center p-0.5 rounded-lg bg-zinc-100 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-[11px] font-['JetBrains_Mono']">
+              <button
+                type="button"
+                onClick={() => setLanguage('kz')}
+                className={`px-2 py-1 rounded-md transition-colors whitespace-nowrap ${
+                  language === 'kz'
+                    ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-semibold shadow-2xs'
+                    : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                }`}
+              >
+                ҚАЗ
+              </button>
+              <button
+                type="button"
+                onClick={() => setLanguage('ru')}
+                className={`px-2 py-1 rounded-md transition-colors whitespace-nowrap ${
+                  language === 'ru'
+                    ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-semibold shadow-2xs'
+                    : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                }`}
+              >
+                РУС
+              </button>
+            </div>
+
             <button
-              onClick={() => onNavigate('home')}
-              className="flex items-center gap-2.5 text-left group transition-all"
+              type="button"
+              onClick={toggleTheme}
+              className="p-2 rounded-lg bg-zinc-100 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white transition-colors"
+              title={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
+              aria-label="Переключить тему оформления"
             >
-              <div className="w-9 h-9 rounded-lg bg-sky-600 flex items-center justify-center text-white shadow-xs shrink-0">
-                <span className="material-symbols-outlined text-[20px]">shield</span>
-              </div>
-              <div className="flex flex-col">
-                <div className="flex items-center gap-1.5">
-                  <span className="font-['Plus_Jakarta_Sans'] font-bold text-base sm:text-lg tracking-tight text-slate-900">
-                    Check Activity
-                  </span>
-                  <span className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 font-['JetBrains_Mono'] text-[10px] font-bold border border-sky-200">
-                    KZ
-                  </span>
-                </div>
-                <span className="hidden xs:inline text-[10px] text-slate-500 font-['JetBrains_Mono'] uppercase tracking-wider">
-                  Аудит онлайн-контента и этики
+              {theme === 'dark' ? (
+                <Sun className="w-4 h-4" strokeWidth={1.6} />
+              ) : (
+                <Moon className="w-4 h-4" strokeWidth={1.6} />
+              )}
+            </button>
+          </div>
+
+          <div className="px-1 flex items-center justify-between text-[11px] text-zinc-400 dark:text-zinc-500 font-['JetBrains_Mono']">
+            <span>{language === 'kz' ? 'Қазақстан' : 'Казахстан'}</span>
+            <span>№ 230-VII</span>
+          </div>
+        </div>
+      </aside>
+
+      {/* Top Workspace Header (Inside main column on desktop, full width on mobile) */}
+      <header className="sticky top-0 z-30 bg-zinc-50/90 dark:bg-zinc-950/90 backdrop-blur-md border-b border-zinc-200/70 dark:border-zinc-800/80 transition-colors">
+        <div className="max-w-[1200px] mx-auto px-4 sm:px-8 h-16 md:h-[72px] flex items-center justify-between gap-4">
+          {/* Left: Page Title + Live Subtitle (matches screenshot) */}
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              type="button"
+              onClick={() => onNavigate('home')}
+              className="md:hidden flex items-center gap-2 text-zinc-900 dark:text-zinc-100 shrink-0"
+              aria-label="На главную"
+            >
+              <Layers className="w-5 h-5" strokeWidth={1.6} />
+            </button>
+            <div className="flex flex-col min-w-0">
+              <h1 className="font-['Inter'] font-semibold text-base sm:text-xl tracking-tight text-zinc-950 dark:text-zinc-50 truncate">
+                {getPageTitle()}
+              </h1>
+              <div className="hidden sm:flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                <span className="truncate">
+                  {language === 'kz' ? 'ҚР ӘҚБтК және Цифрлық этика' : 'КоАП РК · Закон № 230-VII · Этика'}
                 </span>
               </div>
-            </button>
-
-            {/* Regulatory Status Badge (Desktop) */}
-            <div className="hidden xl:flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-50 border border-slate-200">
-              <span className="relative flex h-2 w-2">
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="font-['JetBrains_Mono'] text-[10px] font-medium text-slate-700">
-                Закон № 230-VII • КоАП РК • Цифровая этика
-              </span>
             </div>
           </div>
 
-          {/* Quick Search Bar (Desktop / Large Screens) */}
-          <div className="flex-1 max-w-md mx-auto hidden lg:block">
-            <div
+          {/* Right: Clean Search trigger + Mobile quick switches + Profile Avatar */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <button
+              type="button"
               onClick={() => setShowSearchModal(true)}
-              className="relative flex items-center w-full cursor-pointer bg-slate-50 hover:bg-slate-100 pl-9 pr-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 transition-colors"
-            >
-              <span className="material-symbols-outlined absolute left-2.5 text-slate-400 text-[18px]">search</span>
-              <span className="text-xs text-slate-500 font-['Inter'] truncate">
-                Поиск по статьям КоАП РК, этике, ссылкам...
-              </span>
-              <span className="ml-auto px-1.5 py-0.5 rounded bg-white border border-slate-200 font-['JetBrains_Mono'] text-[11px] text-slate-500">
-                ⌘K
-              </span>
-            </div>
-          </div>
-
-          {/* Desktop Navigation Tabs */}
-          <nav className="hidden md:flex items-center gap-1">
-            <button
-              onClick={() => onNavigate('home')}
-              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap ${
-                currentView === 'home' || currentView === 'scanner'
-                  ? 'bg-slate-100 text-sky-700 font-semibold'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-              }`}
-            >
-              Аудит контента
-            </button>
-            <button
-              onClick={() => onNavigate('monitoring')}
-              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap flex items-center gap-1.5 ${
-                currentView === 'monitoring'
-                  ? 'bg-slate-100 text-sky-700 font-semibold'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-              }`}
-            >
-              <span className="material-symbols-outlined text-[16px]">visibility</span>
-              Мониторинг каналов
-            </button>
-            <button
-              onClick={() => onNavigate('report')}
-              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap ${
-                currentView === 'report'
-                  ? 'bg-slate-100 text-sky-700 font-semibold'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-              }`}
-            >
-              Экспертный отчет
-            </button>
-            <button
-              onClick={() => onNavigate('dashboard')}
-              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap flex items-center gap-1.5 ${
-                currentView === 'dashboard'
-                  ? 'bg-slate-100 text-sky-700 font-semibold'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-              }`}
-            >
-              <span className="material-symbols-outlined text-[16px]">monitoring</span>
-              Дашборд
-            </button>
-            <button
-              onClick={() => onNavigate('archive')}
-              className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all whitespace-nowrap ${
-                currentView === 'archive'
-                  ? 'bg-slate-100 text-sky-700 font-semibold'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-              }`}
-            >
-              Журнал проверок
-            </button>
-          </nav>
-
-          {/* Right Action Icons & Mobile Search Button */}
-          <div className="flex items-center gap-2 shrink-0">
-            {/* Mobile Search Button */}
-            <button
-              onClick={() => setShowSearchModal(true)}
-              className="lg:hidden p-2 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-slate-200 transition-colors"
-              title="Поиск"
+              className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200/90 dark:border-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
+              title="Поиск (⌘K)"
               aria-label="Поиск по нормам и этике"
             >
-              <span className="material-symbols-outlined text-[20px]">search</span>
+              <Search className="w-4 h-4" strokeWidth={1.6} />
+              <span className="hidden lg:inline text-xs text-zinc-500 dark:text-zinc-400">
+                {language === 'kz' ? 'Бап немесе норма...' : 'Поиск норм...'}
+              </span>
+              <span className="hidden sm:inline font-['JetBrains_Mono'] text-[10px] text-zinc-400 dark:text-zinc-500 pl-1">
+                ⌘K
+              </span>
             </button>
 
-            {/* User Profile Badge */}
-            <div className="flex items-center gap-2 pl-1">
-              <div className="w-8 h-8 rounded-full bg-slate-100 text-sky-700 flex items-center justify-center font-bold text-xs border border-slate-200">
-                KZ
-              </div>
-              <div className="hidden sm:flex flex-col text-left">
-                <span className="text-xs text-slate-900 font-medium leading-none">Compliance & Ethics</span>
-                <span className="font-['JetBrains_Mono'] text-[9px] text-slate-500 uppercase mt-0.5">
-                  Республика Казахстан
-                </span>
-              </div>
+            {/* Mobile Language & Theme Switch */}
+            <div className="flex md:hidden items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setLanguage(language === 'kz' ? 'ru' : 'kz')}
+                className="px-2 py-1.5 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 font-['JetBrains_Mono'] text-[11px] font-semibold text-zinc-700 dark:text-zinc-200"
+              >
+                {language === 'kz' ? 'ҚАЗ' : 'РУС'}
+              </button>
+              <button
+                type="button"
+                onClick={toggleTheme}
+                className="p-1.5 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-300"
+                aria-label="Переключить тему"
+              >
+                {theme === 'dark' ? (
+                  <Sun className="w-4 h-4" strokeWidth={1.6} />
+                ) : (
+                  <Moon className="w-4 h-4" strokeWidth={1.6} />
+                )}
+              </button>
+            </div>
+
+            {/* Minimal Circular Profile Badge */}
+            <div
+              className="w-8 h-8 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 flex items-center justify-center font-['JetBrains_Mono'] font-semibold text-[11px] shrink-0"
+              title="Compliance & Ethics KZ"
+            >
+              KZ
             </div>
           </div>
         </div>
       </header>
 
-      {/* Mobile Sticky Bottom Navigation Bar (Visible on mobile/tablet < md) */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-slate-200 shadow-lg md:hidden flex items-center justify-around py-1.5 px-2 safe-area-bottom">
-        <button
-          onClick={() => onNavigate('home')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-lg transition-colors ${
-            currentView === 'home' || currentView === 'scanner'
-              ? 'text-sky-600 font-semibold'
-              : 'text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <span className="material-symbols-outlined text-[20px]">policy</span>
-          <span className="text-[10px] mt-0.5 font-['Inter']">Аудит</span>
-        </button>
-
-        <button
-          onClick={() => onNavigate('monitoring')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-lg transition-colors ${
-            currentView === 'monitoring'
-              ? 'text-sky-600 font-semibold'
-              : 'text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <span className="material-symbols-outlined text-[20px]">visibility</span>
-          <span className="text-[10px] mt-0.5 font-['Inter']">Каналы</span>
-        </button>
-
-        <button
-          onClick={() => onNavigate('report')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-lg transition-colors ${
-            currentView === 'report'
-              ? 'text-sky-600 font-semibold'
-              : 'text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <span className="material-symbols-outlined text-[20px]">assessment</span>
-          <span className="text-[10px] mt-0.5 font-['Inter']">Отчет</span>
-        </button>
-
-        <button
-          onClick={() => onNavigate('dashboard')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-lg transition-colors ${
-            currentView === 'dashboard'
-              ? 'text-sky-600 font-semibold'
-              : 'text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <span className="material-symbols-outlined text-[20px]">monitoring</span>
-          <span className="text-[10px] mt-0.5 font-['Inter']">Дашборд</span>
-        </button>
-
-        <button
-          onClick={() => onNavigate('archive')}
-          className={`flex flex-col items-center justify-center flex-1 py-1 px-1 rounded-lg transition-colors ${
-            currentView === 'archive'
-              ? 'text-sky-600 font-semibold'
-              : 'text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <span className="material-symbols-outlined text-[20px]">history</span>
-          <span className="text-[10px] mt-0.5 font-['Inter']">Журнал</span>
-        </button>
+      {/* Mobile Sticky Bottom Navigation Bar */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-zinc-200 dark:border-zinc-800 md:hidden flex items-center justify-around py-1.5 px-1">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onNavigate(item.id)}
+              className={`flex flex-col items-center justify-center flex-1 py-1 rounded-lg transition-colors ${
+                item.isActive
+                  ? 'text-zinc-950 dark:text-white font-semibold'
+                  : 'text-zinc-400 dark:text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
+              }`}
+            >
+              <Icon className="w-[18px] h-[18px]" strokeWidth={1.6} />
+              <span className="text-[10px] mt-0.5 whitespace-nowrap">{item.mobileLabel}</span>
+            </button>
+          );
+        })}
       </nav>
 
-      {/* Global Quick Search Modal */}
+      {/* Global Quick Search Modal (⌘K) */}
       {showSearchModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-start justify-center pt-16 sm:pt-24 px-3 sm:px-4">
-          <div className="w-full max-w-xl rounded-xl bg-white border border-slate-200 p-4 sm:p-5 shadow-2xl flex flex-col gap-3">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <span className="font-['Plus_Jakarta_Sans'] font-semibold text-sm text-slate-900 flex items-center gap-1.5">
-                <span className="material-symbols-outlined text-sky-600 text-lg">search</span>
-                Поиск: Законодательство РК и Интернет-этика
+        <div
+          className="fixed inset-0 z-50 bg-zinc-950/40 backdrop-blur-xs flex items-start justify-center pt-16 sm:pt-24 px-3 sm:px-4"
+          onClick={() => setShowSearchModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xl rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-5 shadow-2xl flex flex-col gap-4"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-100 dark:border-zinc-800">
+              <span className="font-['Plus_Jakarta_Sans'] font-semibold text-sm text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                <Search className="w-4 h-4 text-zinc-500" strokeWidth={1.6} />
+                {language === 'kz' ? 'Іздеу: ҚР заңнамасы және этика' : 'Поиск: Законодательство РК и Этика'}
               </span>
               <button
+                type="button"
                 onClick={() => setShowSearchModal(false)}
-                className="p-1 rounded-md text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
               >
-                <span className="material-symbols-outlined text-sm">close</span>
+                <X className="w-4 h-4" strokeWidth={1.6} />
               </button>
             </div>
+
             <form onSubmit={handleSearchSubmit} className="relative flex items-center">
+              <Search className="w-4 h-4 text-zinc-400 absolute left-3.5" strokeWidth={1.6} />
               <input
                 autoFocus
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Статья КоАП, кибербуллинг, Dark Pattern, ссылка..."
-                className="w-full bg-slate-50 pl-10 pr-20 py-2.5 rounded-lg text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 border border-slate-200 focus:border-sky-500 focus:bg-white focus:outline-none"
+                className="w-full bg-zinc-50 dark:bg-zinc-950 pl-10 pr-24 py-2.5 rounded-xl text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 border border-zinc-200 dark:border-zinc-800 focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none"
               />
               <button
                 type="submit"
-                className="absolute right-2 px-3 py-1 rounded bg-sky-600 text-white font-medium text-xs hover:bg-sky-700"
+                className="absolute right-1.5 px-3.5 py-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 font-medium text-xs hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors"
               >
-                Найти
+                {language === 'kz' ? 'Табу' : 'Найти'}
               </button>
             </form>
-            <div className="flex flex-col gap-2 pt-1">
+
+            <div className="flex flex-col gap-3 pt-1">
               <div>
-                <span className="text-[10px] font-['JetBrains_Mono'] text-slate-400 uppercase font-semibold">
-                  Законы Казахстана:
+                <span className="text-[11px] font-['JetBrains_Mono'] text-zinc-400 dark:text-zinc-500 font-medium">
+                  {language === 'kz' ? 'Қазақстан заңдары' : 'Законы Казахстана'}
                 </span>
-                <div className="flex flex-wrap gap-1.5 mt-1">
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
                   {[
                     'ст. 455 КоАП (Маркировка «Жарнама»)',
                     'ст. 445-1 КоАП (Онлайн-казино)',
@@ -272,12 +351,13 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
                   ].map((tag) => (
                     <button
                       key={tag}
+                      type="button"
                       onClick={() => {
                         setSearchQuery(tag);
                         if (onSearchSelect) onSearchSelect(tag);
                         setShowSearchModal(false);
                       }}
-                      className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-[11px] text-slate-700 border border-slate-200 font-['JetBrains_Mono'] transition-colors text-left"
+                      className="px-2.5 py-1 rounded-lg bg-zinc-50 dark:bg-zinc-950 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-[11px] text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-800 font-['JetBrains_Mono'] transition-colors text-left"
                     >
                       {tag}
                     </button>
@@ -286,10 +366,10 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
               </div>
 
               <div>
-                <span className="text-[10px] font-['JetBrains_Mono'] text-slate-400 uppercase font-semibold">
-                  Интернет-этика и культура:
+                <span className="text-[11px] font-['JetBrains_Mono'] text-zinc-400 dark:text-zinc-500 font-medium">
+                  {language === 'kz' ? 'Интернет-этика және мәдениет' : 'Интернет-этика и культура'}
                 </span>
-                <div className="flex flex-wrap gap-1.5 mt-1">
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
                   {[
                     'Кибербуллинг и оскорбления',
                     'Манипулятивный маркетинг (Dark Pattern / FOMO)',
@@ -299,12 +379,13 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
                   ].map((tag) => (
                     <button
                       key={tag}
+                      type="button"
                       onClick={() => {
                         setSearchQuery(tag);
                         if (onSearchSelect) onSearchSelect(tag);
                         setShowSearchModal(false);
                       }}
-                      className="px-2.5 py-1 rounded bg-sky-50 hover:bg-sky-100 text-[11px] text-sky-800 border border-sky-200 font-['Inter'] transition-colors text-left"
+                      className="px-2.5 py-1 rounded-lg bg-zinc-50 dark:bg-zinc-950 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-[11px] text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-800 transition-colors text-left"
                     >
                       {tag}
                     </button>

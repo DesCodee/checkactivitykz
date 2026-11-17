@@ -6,22 +6,48 @@
 import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { HomeView } from './components/HomeView';
+import { WelcomeView } from './components/WelcomeView';
 import { ScannerView } from './components/ScannerView';
 import { ExpertReportView } from './components/ExpertReportView';
 import { ArchiveMonitoringView } from './components/ArchiveMonitoringView';
-import { AccountMonitoringView } from './components/AccountMonitoringView';
-import { DashboardView } from './components/DashboardView';
+import { SandboxAndLawsView } from './components/SandboxAndLawsView';
 import { PdfExportModal } from './components/PdfExportModal';
 import { Footer } from './components/Footer';
 import { AuditCase, ModalityType } from './types';
 import { PRIMARY_AUDIT_CASE } from './data/mockData';
+import { analyzeContentWithGemini } from './services/geminiService';
+import {
+  type BusinessEntityType,
+  normalizeAuditCaseCompliance,
+} from './utils/kzComplianceIntelligence';
 
-type ViewType = 'home' | 'scanner' | 'report' | 'archive' | 'monitoring' | 'dashboard';
+type ViewType = 'home' | 'scanner' | 'report' | 'archive' | 'sandbox';
+
+function stripHeavyMediaForStorage(auditCase: AuditCase): AuditCase {
+  const {
+    previewUrl: _previewUrl,
+    audioDataUrl: _audioDataUrl,
+    videoFrames: _videoFrames,
+    videoDataUrl,
+    ...rest
+  } = auditCase as AuditCase & { mediaBase64?: unknown };
+  delete (rest as Record<string, unknown>).mediaBase64;
+  return {
+    ...rest,
+    ...(videoDataUrl && !videoDataUrl.startsWith('data:') && !videoDataUrl.startsWith('blob:')
+      ? { videoDataUrl }
+      : {}),
+  };
+}
 
 export default function App() {
+  const [showWelcome, setShowWelcome] = useState(true);
   const [currentView, setCurrentView] = useState<ViewType>('home');
-  const [currentAuditCase, setCurrentAuditCase] = useState<AuditCase>(PRIMARY_AUDIT_CASE);
+  const [currentAuditCase, setCurrentAuditCase] = useState<AuditCase>(() =>
+    normalizeAuditCaseCompliance(PRIMARY_AUDIT_CASE)
+  );
   const [selectedPdfCase, setSelectedPdfCase] = useState<AuditCase | null>(null);
+  const [selectedPdfEntityTier, setSelectedPdfEntityTier] = useState<BusinessEntityType>('small');
   const [userHistory, setUserHistory] = useState<AuditCase[]>([]);
   const [scannerPreset, setScannerPreset] = useState<{ modality: ModalityType; urlOrText: string } | undefined>(undefined);
 
@@ -32,7 +58,28 @@ export default function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setUserHistory(parsed);
+          const hadHeavyMedia = parsed.some(
+            (item) =>
+              item &&
+              typeof item === 'object' &&
+              ('previewUrl' in item ||
+                'audioDataUrl' in item ||
+                'videoFrames' in item ||
+                'mediaBase64' in item ||
+                (typeof item.videoDataUrl === 'string' &&
+                  (item.videoDataUrl.startsWith('data:') || item.videoDataUrl.startsWith('blob:'))))
+          );
+          const sanitized = parsed
+            .slice(0, 25)
+            .map((item) => stripHeavyMediaForStorage(normalizeAuditCaseCompliance(item)));
+          setUserHistory(sanitized);
+          if (hadHeavyMedia) {
+            try {
+              localStorage.setItem('checkactivity_user_audits', JSON.stringify(sanitized));
+            } catch {
+              // ignore
+            }
+          }
         }
       }
     } catch {
@@ -41,25 +88,41 @@ export default function App() {
   }, []);
 
   const handleSaveToHistory = (newCase: AuditCase) => {
+    const sanitizedCase = stripHeavyMediaForStorage(newCase);
     setUserHistory((prev) => {
-      const updated = [newCase, ...prev.filter((c) => c.id !== newCase.id)].slice(0, 25);
-      try {
-        localStorage.setItem('checkactivity_user_audits', JSON.stringify(updated));
-      } catch {
-        // ignore
+      const updated = [sanitizedCase, ...prev.filter((c) => c.id !== sanitizedCase.id)]
+        .slice(0, 25)
+        .map(stripHeavyMediaForStorage);
+      for (let limit = updated.length; limit >= 1; limit--) {
+        try {
+          localStorage.setItem('checkactivity_user_audits', JSON.stringify(updated.slice(0, limit)));
+          break;
+        } catch {
+          // Retry with fewer entries if storage quota is tight
+        }
       }
       return updated;
     });
   };
 
   const handleRunAudit = (newCase: AuditCase) => {
-    setCurrentAuditCase(newCase);
-    handleSaveToHistory(newCase);
+    const normalized = normalizeAuditCaseCompliance(newCase);
+    setCurrentAuditCase(normalized);
+    handleSaveToHistory(normalized);
     setCurrentView('report');
   };
 
+  const handleReauditFixedText = async (fixedText: string) => {
+    const newCase = await analyzeContentWithGemini({
+      modality: 'text',
+      text: fixedText,
+      fileName: 'safe_rewrite_verified.txt',
+    });
+    handleRunAudit(newCase);
+  };
+
   const handleSelectCase = (selectedCase: AuditCase) => {
-    setCurrentAuditCase(selectedCase);
+    setCurrentAuditCase(normalizeAuditCaseCompliance(selectedCase));
     setCurrentView('report');
   };
 
@@ -69,79 +132,90 @@ export default function App() {
   };
 
   const handleSearchSelect = (query: string) => {
-    // If it's a known preset or law article, route to scanner with query
-    setScannerPreset({ modality: 'url', urlOrText: query });
+    // Route quick search queries into the Text scanner
+    setScannerPreset({ modality: 'text', urlOrText: query });
     setCurrentView('scanner');
   };
 
-  return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-['Inter'] selection:bg-sky-100 selection:text-sky-900">
-      {/* Tactical HUD Header */}
-      <Header
-        currentView={currentView}
-        onNavigate={(view) => setCurrentView(view)}
-        onSearchSelect={handleSearchSelect}
+  if (showWelcome) {
+    return (
+      <WelcomeView
+        onEnter={(targetView = 'home') => {
+          setCurrentView(targetView);
+          setShowWelcome(false);
+        }}
       />
+    );
+  }
 
-      {/* Main Content Area */}
-      <main className="flex-1 w-full pt-16 pb-16 md:pb-0">
-        {currentView === 'home' && (
-          <HomeView
-            onStartScanner={handleStartScannerWithPreset}
-            onOpenReport={() => setCurrentView('report')}
-            onRunAudit={handleRunAudit}
-          />
-        )}
+  return (
+    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex font-['Inter'] selection:bg-zinc-200 selection:text-zinc-950 dark:selection:bg-zinc-800 dark:selection:text-zinc-100 transition-colors duration-200">
+      {/* Main Content Wrapper shifted right on desktop for the 240px sidebar */}
+      <div className="flex-1 flex flex-col min-w-0 md:pl-60 pb-16 md:pb-0">
+        {/* Sidebar + Workspace Top Header + Mobile Bottom Nav */}
+        <Header
+          currentView={currentView}
+          onNavigate={(view) => setCurrentView(view)}
+          onSearchSelect={handleSearchSelect}
+        />
 
-        {currentView === 'scanner' && (
-          <ScannerView
-            onRunAudit={handleRunAudit}
-            presetData={scannerPreset}
-          />
-        )}
+        {/* Main Content Area */}
+        <main className="flex-1 w-full">
+          {currentView === 'home' && (
+            <HomeView
+              onStartScanner={handleStartScannerWithPreset}
+              onOpenReport={() => setCurrentView('report')}
+              onRunAudit={handleRunAudit}
+            />
+          )}
 
-        {currentView === 'report' && (
-          <ExpertReportView
-            auditCase={currentAuditCase}
-            onOpenPdfModal={() => setSelectedPdfCase(currentAuditCase)}
-            onRetest={() => {
-              setScannerPreset(undefined);
-              setCurrentView('scanner');
-            }}
-          />
-        )}
+          {currentView === 'scanner' && (
+            <ScannerView
+              onRunAudit={handleRunAudit}
+              presetData={scannerPreset}
+            />
+          )}
 
-        {currentView === 'monitoring' && (
-          <AccountMonitoringView
-            onOpenReportForCase={handleRunAudit}
-            onNavigateToScanner={() => setCurrentView('scanner')}
-          />
-        )}
+          {currentView === 'report' && (
+            <ExpertReportView
+              auditCase={currentAuditCase}
+              onOpenPdfModal={(tier) => {
+                setSelectedPdfEntityTier(tier || 'small');
+                setSelectedPdfCase(currentAuditCase);
+              }}
+              onRetest={() => {
+                setScannerPreset(undefined);
+                setCurrentView('scanner');
+              }}
+              onReauditFixedText={handleReauditFixedText}
+            />
+          )}
 
-        {currentView === 'archive' && (
-          <ArchiveMonitoringView
-            onSelectCase={handleSelectCase}
-            onOpenPdfModal={() => setSelectedPdfCase(currentAuditCase)}
-            userHistory={userHistory}
-          />
-        )}
+          {currentView === 'sandbox' && (
+            <SandboxAndLawsView onOpenReportForCase={handleRunAudit} />
+          )}
 
-        {currentView === 'dashboard' && (
-          <DashboardView
-            userHistory={userHistory}
-            onOpenReport={handleSelectCase}
-            onNavigateToScanner={handleStartScannerWithPreset}
-          />
-        )}
-      </main>
+          {currentView === 'archive' && (
+            <ArchiveMonitoringView
+              onSelectCase={handleSelectCase}
+              onOpenPdfModal={() => {
+                setSelectedPdfEntityTier('small');
+                setSelectedPdfCase(currentAuditCase);
+              }}
+              userHistory={userHistory}
+            />
+          )}
+        </main>
 
-      {/* Footer */}
-      <Footer />
+        {/* Minimalist Footer */}
+        <Footer />
+      </div>
 
-      {/* Clean Commercial PDF Export Modal (Without State Seals/Court Stamps) */}
+      {/* Clean Commercial PDF Export Modal */}
       {selectedPdfCase && (
         <PdfExportModal
           auditCase={selectedPdfCase}
+          initialEntityTier={selectedPdfEntityTier}
           onClose={() => setSelectedPdfCase(null)}
         />
       )}
