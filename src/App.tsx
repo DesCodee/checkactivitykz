@@ -12,6 +12,7 @@ import { ExpertReportView } from './components/ExpertReportView';
 import { ArchiveMonitoringView } from './components/ArchiveMonitoringView';
 import { SandboxAndLawsView } from './components/SandboxAndLawsView';
 import { PdfExportModal } from './components/PdfExportModal';
+import { ShareModal, ShareData } from './components/ShareModal';
 import { Footer } from './components/Footer';
 import { AuditCase, ModalityType } from './types';
 import { PRIMARY_AUDIT_CASE } from './data/mockData';
@@ -51,6 +52,13 @@ export default function App() {
   const [entityTier, setEntityTier] = useState<BusinessEntityType>('small');
   const [userHistory, setUserHistory] = useState<AuditCase[]>([]);
   const [scannerPreset, setScannerPreset] = useState<{ modality: ModalityType; urlOrText: string } | undefined>(undefined);
+  const [shareData, setShareData] = useState<ShareData | undefined>(undefined);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+
+  const handleOpenShare = (data?: ShareData) => {
+    setShareData(data);
+    setIsShareModalOpen(true);
+  };
 
   // Load actual user history from localStorage if available
   useEffect(() => {
@@ -159,6 +167,7 @@ export default function App() {
           currentView={currentView}
           onNavigate={(view) => setCurrentView(view)}
           onSearchSelect={handleSearchSelect}
+          onOpenShare={() => handleOpenShare()}
         />
 
         {/* Main Content Area */}
@@ -193,6 +202,7 @@ export default function App() {
                 setCurrentView('scanner');
               }}
               onReauditFixedText={handleReauditFixedText}
+              onOpenShare={handleOpenShare}
             />
           )}
 
@@ -230,6 +240,13 @@ export default function App() {
           onClose={() => setSelectedPdfCase(null)}
         />
       )}
+
+      {/* Share Modal */}
+      <ShareModal
+        isOpen={isShareModalOpen}
+        onClose={() => setIsShareModalOpen(false)}
+        data={shareData}
+      />
     </div>
   );
 }

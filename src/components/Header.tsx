@@ -13,6 +13,7 @@ import {
   Sun,
   Moon,
   X,
+  Share2,
 } from 'lucide-react';
 import { useApp } from '../utils/i18n';
 
@@ -22,9 +23,10 @@ interface HeaderProps {
   currentView: AppViewType;
   onNavigate: (view: AppViewType) => void;
   onSearchSelect?: (query: string) => void;
+  onOpenShare?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearchSelect }) => {
+export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearchSelect, onOpenShare }) => {
   const { language, setLanguage, theme, toggleTheme, t } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchModal, setShowSearchModal] = useState(false);
@@ -147,6 +149,20 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
 
         {/* Bottom Sidebar Controls: Language + Theme + Quick Law Reference */}
         <div className="p-4 border-t border-zinc-200/70 dark:border-zinc-800 flex flex-col gap-3">
+          {/* Share Action in Sidebar */}
+          {onOpenShare && (
+            <button
+              type="button"
+              onClick={onOpenShare}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-[13px] text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-50 dark:hover:bg-zinc-800/40 border border-zinc-200/60 dark:border-zinc-800/60 transition-colors"
+            >
+              <span className="flex items-center gap-2.5">
+                <Share2 className="w-4 h-4 text-zinc-500" strokeWidth={1.6} />
+                <span>{language === 'kz' ? 'Сервиспен бөлісу' : 'Поделиться'}</span>
+              </span>
+            </button>
+          )}
+
           {/* Language & Theme Compact Bar */}
           <div className="flex items-center justify-between gap-2">
             <div className="inline-flex items-center p-0.5 rounded-lg bg-zinc-100 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-[11px] font-['JetBrains_Mono']">
@@ -238,6 +254,21 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
                 ⌘K
               </span>
             </button>
+
+            {onOpenShare && (
+              <button
+                type="button"
+                onClick={onOpenShare}
+                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200/90 dark:border-zinc-800 text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-zinc-100 hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
+                title={language === 'kz' ? 'Бөлісу' : 'Поделиться'}
+                aria-label="Поделиться сервисом"
+              >
+                <Share2 className="w-4 h-4 text-zinc-500 dark:text-zinc-400 shrink-0" strokeWidth={1.6} />
+                <span className="hidden sm:inline text-xs font-medium">
+                  {language === 'kz' ? 'Бөлісу' : 'Поделиться'}
+                </span>
+              </button>
+            )}
 
             {/* Mobile Language & Theme Switch */}
             <div className="flex md:hidden items-center gap-1.5">

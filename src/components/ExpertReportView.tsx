@@ -78,6 +78,7 @@ interface ExpertReportViewProps {
   onOpenPdfModal: (entityTier?: BusinessEntityType) => void;
   onRetest: () => void;
   onReauditFixedText?: (fixedText: string) => Promise<void> | void;
+  onOpenShare?: (data: { title?: string; text?: string; isReport?: boolean }) => void;
 }
 
 type EntityTier = BusinessEntityType;
@@ -215,6 +216,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
   onOpenPdfModal,
   onRetest,
   onReauditFixedText,
+  onOpenShare,
 }) => {
   const { t, language } = useApp();
   const auditCase = React.useMemo(
@@ -470,6 +472,15 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             `Выявленные статьи: ${articlesList}`,
             `SHA-256: ${safeSha}`,
           ].join('\n');
+
+    if (onOpenShare) {
+      onOpenShare({
+        title: `${language === 'kz' ? 'Сараптамалық есеп' : 'Экспертный отчёт'}: ${auditCase.title} (${auditCase.referenceNumber})`,
+        text: summaryText,
+        isReport: true,
+      });
+      return;
+    }
 
     void copyTextToClipboard(summaryText).then((ok) => {
       if (ok && isMountedRef.current) {
