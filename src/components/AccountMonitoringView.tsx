@@ -125,9 +125,9 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
         violations24h: isCasino ? 2 : isPromo ? 1 : 0,
         status: isCasino || isPromo ? 'ALERT' : 'LIVE',
         alertNote: isCasino
-          ? 'Обнаружены признаки рекламы нелицензированных онлайн-казино (ст. 445-1 КоАП РК)'
+          ? 'Обнаружены признаки рекламы онлайн-казино (ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона «О рекламе»)'
           : isPromo
-          ? 'Публикация без обязательной маркировки рекламы (Закон № 230-VII)'
+          ? 'Скрытая реклама без обязательной маркировки (ч. 2 ст. 455 КоАП РК / Приказ МКИ № 59-НҚ)'
           : undefined,
         riskScore: isCasino ? 88 : isPromo ? 62 : 12,
         category: isCasino ? 'Подозрительный / Гемблинг' : 'Инфлюенсер / Блогер',
@@ -138,10 +138,18 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
             type: 'story',
             content: `Мониторинг зафиксировал свежую публикацию профиля ${handleClean}.`,
             hasViolation: isCasino || isPromo,
-            violationTitle: isCasino ? 'Реклама азартных игр (ст. 445-1 КоАП РК)' : isPromo ? 'Скрытая реклама без «Жарнама»' : undefined,
-            lawCode: isCasino ? 'ст. 445-1 КоАП РК' : isPromo ? 'ст. 455 КоАП РК' : undefined,
-            fineRisk: isCasino ? 'до 1 000 МРП' : isPromo ? 'до 60 МРП' : undefined,
-            severity: isCasino ? 'critical' : isPromo ? 'warning' : 'info',
+            violationTitle: isCasino
+              ? 'Реклама онлайн-казино и азартных игр (ч. 1 ст. 455 КоАП РК)'
+              : isPromo
+              ? 'Скрытая реклама без «Жарнама» (ч. 2 ст. 455 КоАП РК)'
+              : undefined,
+            lawCode: isCasino
+              ? 'ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»'
+              : isPromo
+              ? 'ч. 2 ст. 455 КоАП РК / Закон № 230-VII / Приказ МКИ № 59-НҚ'
+              : undefined,
+            fineRisk: isCasino ? '60–450 МРП' : isPromo ? '35–400 МРП' : undefined,
+            severity: isCasino || isPromo ? 'critical' : 'info',
           },
         ],
       };
@@ -297,7 +305,7 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
           id: `post-${Date.now()}`,
           date: 'Только что подключен',
           type: 'post',
-          content: `Аккаунт ${cleanHandle} успешно добавлен в систему мониторинга законодательства РК (Закон № 230-VII, ст. 455, 445-1 КоАП).`,
+          content: `Аккаунт ${cleanHandle} успешно добавлен в систему мониторинга законодательства РК (ч. 1–3 ст. 455 КоАП РК, Закон № 230-VII, Приказ МКИ № 59-НҚ).`,
           hasViolation: false,
         },
       ],
@@ -342,12 +350,12 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
         {
           id: 'v-mon-1',
           category: 'legal',
-          code: post.lawCode || 'ст. 455 КоАП РК / Закон № 230-VII',
+          code: post.lawCode || 'ч. 2 ст. 455 КоАП РК / Закон № 230-VII / Приказ МКИ № 59-НҚ',
           title: post.violationTitle || 'Правонарушение в онлайн-платформе',
           severity: post.severity || 'critical',
           quote: post.content.slice(0, 100),
           basis: `В публикации аккаунта ${channel.handleOrUrl} обнаружены признаки нарушения: ${post.violationTitle}. Согласно законодательству РК требуется устранение нарушения.`,
-          fineAmount: post.fineRisk || 'до 200 МРП (865 000 ₸)',
+          fineAmount: post.fineRisk || '100 МРП (432 500 ₸) — до 400 МРП (1 730 000 ₸)',
           jurisdiction: channel.platform === 'telegram' ? 'МКИ РК / АФМ РК' : 'МКИ РК',
           recommendation: 'Устранить публикацию либо нанести обязательную маркировку «Жарнама» и данные рекламодателя БИН.',
         },
@@ -1278,8 +1286,8 @@ export const AccountMonitoringView: React.FC<AccountMonitoringViewProps> = ({
                 <ShieldCheck className="w-4 h-4 text-zinc-500 dark:text-zinc-400 shrink-0 mt-0.5" strokeWidth={1.6} />
                 <span>
                   {language === 'kz'
-                    ? 'Жүйе ҚР «Онлайн-платформалар және онлайн-жарнама туралы» Заңы (№ 230-VII), казино жарнамасына тыйым (ӘҚБтК 445-1-бабы) және цифрлық этика нормалары бойынша үздіксіз аудитті бастайды.'
-                    : 'Система начнет непрерывный аудит по Закону РК «Об онлайн-платформах и онлайн-рекламе» (№ 230-VII), запрету рекламы казино (ст. 445-1 КоАП) и нормам цифровой этики.'}
+                    ? 'Жүйе ҚР «Онлайн-платформалар және онлайн-жарнама туралы» Заңы (№ 230-VII, ҚР ӘҚБтК 455-б. 2-б.), казино жарнамасына тыйым (ӘҚБтК 455-б. 1-б.) және цифрлық этика нормалары бойынша үздіксіз аудитті бастайды.'
+                    : 'Система начнет непрерывный аудит по Закону РК «Об онлайн-платформах и онлайн-рекламе» (ч. 2 ст. 455 КоАП РК / Приказ № 59-НҚ), запрету рекламы казино (ч. 1 ст. 455 КоАП РК) и нормам цифровой этики.'}
                 </span>
               </div>
 

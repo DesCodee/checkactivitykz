@@ -27,11 +27,11 @@ export const EMOJI_DICTIONARY: Record<
     riskPoints: number;
   }
 > = {
-  // Gambling & Casino (ст. 445-1 КоАП РК)
+  // Gambling & Casino (ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»)
   '🎰': {
     category: 'gambling',
     label: 'Игровые автоматы / Слоты',
-    description: 'Прямой визуальный маркер слотов и онлайн-казино (ст. 445-1 КоАП РК)',
+    description: 'Прямой визуальный маркер слотов и онлайн-казино (ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»)',
     riskLevel: 'critical',
     riskPoints: 35,
   },
@@ -266,7 +266,7 @@ export function analyzeEmojis(text: string): EmojiAnalysis {
           emoji,
           category: 'gambling',
           label: 'Денежный маркер в контексте азартных игр',
-          description: 'Используется совместно с упоминанием казино, слотов или ставок (ст. 445-1 КоАП РК)',
+          description: 'Используется совместно с упоминанием казино, слотов или ставок (ч. 1 ст. 455 КоАП РК)',
           riskLevel: 'warning',
         });
         totalRiskPoints += 15;
@@ -324,7 +324,7 @@ export function analyzeEmojis(text: string): EmojiAnalysis {
     const hasSpam = flaggedEmojis.some((e) => e.category === 'spam');
 
     const issues: string[] = [];
-    if (hasGambling) issues.push('маркеры азартных игр и слотов (ст. 445-1 КоАП РК)');
+    if (hasGambling) issues.push('маркеры азартных игр и слотов (ч. 1 ст. 455 КоАП РК)');
     if (hasBullying) issues.push('оскорбительные символы и кибербуллинг (ст. 434, 73-4 КоАП РК)');
     if (hasDarkPattern) issues.push('манипулятивные паттерны срочности и FOMO');
     if (hasSexual) issues.push('сексуализированный контекст (18+)');

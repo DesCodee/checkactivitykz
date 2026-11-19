@@ -892,16 +892,16 @@ export async function parseUploadedFileUniversal(
   // Check known demo presets only for explicit sample test buttons
   if (lowerName.includes('political_doxing') || lowerName.includes('doxing_slide')) {
     ocrRecognizedText = `СРОЧНЫЙ СЛИВ! Депутат/кандидат №3 тайно переписал бюджет района на офшоры и забирает откаты!\nЭтот мошенник, продажная тварь и предатель города должен ответить.\nЛичный телефон: +7 701 777-45-90, ИИН 840512300194, адрес: г. Алматы, ул. Тимирязева, д. 42, кв. 18.\nПриходите на выборы 15 марта и голосуйте по совести!`;
-    warningNotice = 'Внимание: выявлен политический вброс, оскорбления и доксинг (ст. 274, 131, 147 УК РК).';
+    warningNotice = 'Внимание: выявлен политический вброс, оскорбления и доксинг (ст. 274, 131, ч. 5 ст. 147 УК РК / ст. 79 КоАП РК).';
   } else if (lowerName.startsWith('sample_profanity') || lowerName === 'profanity_chat.png') {
     ocrRecognizedText = `Чат «Алматы Базар / Авторазбор» (1 420 участников • 14:32)\n@kanat_almaty (14:30): Ты че бля совсем тупой? Пошел нахуй отсюда, урод конченый, еще раз напишешь — найдем!\nВы (14:31): Сам заткнись, пидор, я тебя не боюсь! За базар ответишь, шешеңді сиктир!\n@kanat_almaty (14:32): Скинь свой номер телефона, сука.`;
     warningNotice = 'Внимание: зафиксирована ненормативная лексика и обсценная брань (ст. 434 КоАП РК).';
   } else if (lowerName.startsWith('sample_casino') || lowerName === 'casino_promo.png') {
     ocrRecognizedText = `★ 1WIN LUXURY SLOTS ★ 🎰\n500% БОНУС + 150 ФРИСПИНОВ!\nКрути барабаны и рулетку — JACKPOT $5 000 USD / €4 600\nМгновенный вывод в USDT, $ и на карты 💸\nПРОМОКОД: ALMATY_SPIN · 🔞 21+\nКРУТИТЬ БАРАБАНЫ ➔`;
-    warningNotice = 'Внимание: выявлены слоты / рулетка / $ USD / USDT (ст. 445-1 КоАП РК).';
+    warningNotice = 'Внимание: выявлены слоты / рулетка / $ USD / USDT (ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»).';
   } else if (lowerName.startsWith('sample_unmarked') || lowerName === 'unmarked_ad.png') {
     ocrRecognizedText = `🔥 ГРАНДИОЗНАЯ РАСПРОДАЖА В АСТАНЕ!\nСКИДКИ ДО 50% НА ВСЕ СМАРТФОНЫ И НОУТБУКИ\nТолько до конца недели! Оплата в рассрочку 0-0-12.\nЗаказывай онлайн с бесплатной доставкой по РК:\nhttps://astana-store-sale.kz/promo\nТелефон отдела продаж: +7 7172 90-80-70\nУспей оформить заказ по акции уже сегодня!`;
-    warningNotice = 'Внимание: коммерческий контент без обязательной маркировки «Жарнама» (Закон № 230-VII).';
+    warningNotice = 'Внимание: коммерческий контент без обязательной маркировки «Жарнама» (ч. 2 ст. 455 КоАП РК / Приказ МКИ № 59-НҚ).';
   }
 
   // Trigger server OCR if provided and not pre-filled

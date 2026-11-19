@@ -71,7 +71,7 @@ export interface CompliancePenaltyDisplay {
 }
 
 const LEGAL_CODE_OR_LAW_REGEX =
-  /human-in-the-loop|коап|ук\s*рк|әқбтк|қк\b|230-vii|94-v|закон|заң|ст\.\s*\d+|\d+-бап|445-1|455\b|434\b|456-2|73-4|131\b|115\b|147\b|79\b|190\b|274\b|174\b|133-1|301-1|ст\.\s*21/i;
+  /human-in-the-loop|коап|ук\s*рк|әқбтк|қк\b|230-vii|59-нқ|94-v|п\.\s*5-1|закон|заң|ст\.\s*\d+|\d+-бап|445-1|455\b|434\b|456-2|73-4|131\b|115\b|147\b|79\b|190\b|274\b|174\b|133-1|301-1|ст\.\s*21/i;
 
 const PURE_ETHICS_ONLY_REGEX =
   /dark\s*pattern|fomo|манипулят|таймер|дефицит|вовлечение\s+в\s+азарт|иллюзи|этика\s+реклам|этика\s+коммуникац|сетев[а-яё]+\s+этикет/i;
@@ -105,7 +105,7 @@ export function isLegalViolation(v: Pick<Violation, 'category' | 'code' | 'title
 export function isEthicsViolation(v: Pick<Violation, 'category' | 'code' | 'title'>): boolean {
   if (v.category === 'ethics') return true;
   const combined = `${v.code || ''} ${v.title || ''}`.toLowerCase();
-  return /434|73-4|131|115|445-1|190|274|этик|мат|буллинг|оскорб|травл|dark|fomo|манипул|скам|казино/i.test(
+  return /434|73-4|131|115|445-1|ч\.\s*1\s*ст\.\s*455|5-1\s*ст\.\s*6|190|274|этик|мат|буллинг|оскорб|травл|dark|fomo|манипул|скам|казино/i.test(
     combined
   );
 }
@@ -118,10 +118,14 @@ export function isCriticalLegalViolation(v: Pick<Violation, 'severity' | 'code' 
     return false;
   }
   const combined = `${v.code || ''} ${v.title || ''}`.toLowerCase();
-  if (/445-1|190|274|456-2|147|79|434|131|115|73-4|301-1|133-1/.test(combined)) {
+  // ч. 3 ст. 455 КоАП РК / ст. 21 Закона РК «О языках» is always a warning unless explicitly combined with a critical article
+  if (/ч\.\s*3\s*ст\.\s*455|ст\.\s*21|21-бап|о\s+языках/.test(combined) && !/ч\.\s*[12]\s*ст\.\s*455|190|274|434|445-1/.test(combined)) {
+    return false;
+  }
+  if (/ч\.\s*1\s*ст\.\s*455|п\.\s*5-1|5-1\s*ст\.\s*6|445-1|190|274|456-2|147|79|434|131|115|73-4|301-1|133-1/.test(combined)) {
     return true;
   }
-  if ((/455|230-vii/.test(combined)) && v.severity === 'critical') {
+  if ((/ч\.\s*2\s*ст\.\s*455|455|230-vii|59-нқ/.test(combined)) && v.severity === 'critical') {
     return true;
   }
   return v.severity === 'critical';
@@ -396,11 +400,11 @@ export function normalizeAuditCaseCompliance(auditCase: AuditCase): AuditCase {
     .filter((v): v is Violation => Boolean(v && typeof v === 'object'))
     .map(normalizeViolation)
     .filter((v) => {
-      // Guard: drop false-positive 190/445-1 violations triggered solely by 1–2 neutral money emojis without textual evidence
+      // Guard: drop false-positive 190/445-1/ч.1 455 gambling/fraud violations triggered solely by 1–2 neutral money emojis without textual evidence
       const isMoneyTriggered =
         MONEY_EMOJI_CHARS_REGEX.test(`${v.quote || ''} ${v.title || ''} ${v.basis || ''}`) ||
         /эмодзи\s+денег|смайл\S*\s+денег/i.test(`${v.title || ''} ${v.basis || ''}`);
-      const isFraudOrGamblingCode = /190|274|445-1/.test((v.code || '').toLowerCase());
+      const isFraudOrGamblingCode = /190|274|445-1|ч\.\s*1\s*ст\.\s*455|5-1\s*ст\.\s*6/.test((v.code || '').toLowerCase());
       if (isFraudOrGamblingCode && isMoneyTriggered && !hasMoneyScamTextEvidence && !hasMoneySpamCluster) {
         return false;
       }
@@ -411,7 +415,7 @@ export function normalizeAuditCaseCompliance(auditCase: AuditCase): AuditCase {
     });
 
   // Guard: if ALL remaining violations are emoji-only triggers (no statutory КоАП/УК evidence in text/media),
-  // demote them to soft ethics warnings (0 MRP) instead of elevating to ст. 190/445-1 critical fines.
+  // demote them to soft ethics warnings (0 MRP) instead of elevating to ст. 190/ч. 1 ст. 455 critical fines.
   const onlyEmojiTriggersPresent =
     normalizedViolations.length > 0 && normalizedViolations.every((v) => isEmojiOnlyViolation(v));
 
@@ -446,7 +450,7 @@ export function normalizeAuditCaseCompliance(auditCase: AuditCase): AuditCase {
     const hasCriticalLegal = legalList.some((v) => isCriticalLegalViolation(v));
     if (hasCriticalLegal) {
       // Rule 1a: Critical statutory violations -> strictly 70..100, status ТРЕБУЕТ МЕР
-      const baseFloor = legalList.some((v) => /445-1|190|274/.test((v.code || '').toLowerCase())) ? 88 : 76;
+      const baseFloor = legalList.some((v) => /ч\.\s*1\s*ст\.\s*455|5-1\s*ст\.\s*6|445-1|190|274/.test((v.code || '').toLowerCase())) ? 88 : 76;
       riskScore = Math.max(70, Math.min(100, Math.max(riskScore, baseFloor)));
       status = 'ТРЕБУЕТ МЕР';
       riskLevel = riskScore >= 75 ? 'Критический' : 'Высокий';
@@ -656,7 +660,7 @@ export function runLivePreCheck(
       labelRu: 'Нелегальный гэмблинг / слоты',
       labelKz: 'Заңсыз казино / слоттар',
       severity: 'critical',
-      article: 'ст. 445-1 КоАП РК',
+      article: 'ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»',
     });
   }
 
@@ -678,7 +682,7 @@ export function runLivePreCheck(
       labelRu: 'Утечка ПДн / Доксинг',
       labelKz: 'Дербес деректерді тарату',
       severity: 'critical',
-      article: 'ст. 147 УК РК / ст. 79 КоАП РК',
+      article: 'ст. 79 КоАП РК / ч. 5 ст. 147 УК РК',
     });
   }
 
@@ -700,7 +704,7 @@ export function runLivePreCheck(
       labelRu: 'Нет маркировки «Жарнама»',
       labelKz: '«Жарнама» белгісі жоқ',
       severity: 'critical',
-      article: 'ст. 455 КоАП РК',
+      article: 'ч. 2 ст. 455 КоАП РК / Закон № 230-VII / Приказ МКИ № 59-НҚ',
     });
   }
 
@@ -745,7 +749,7 @@ export function runLivePreCheck(
       labelRu: 'Нет версии на казахском языке',
       labelKz: 'Қазақша нұсқасы жоқ',
       severity: 'warning',
-      article: 'ст. 21 Закона о языках',
+      article: 'ч. 3 ст. 455 КоАП РК / ст. 21 Закона РК «О языках»',
     });
   }
 

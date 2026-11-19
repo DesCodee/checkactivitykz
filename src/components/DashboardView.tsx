@@ -86,13 +86,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }
 
       c.violations.forEach((v) => {
-        if (v.code.includes('445-1')) {
-          totalFineTenge += 1000 * CURRENT_MRP_TENGE;
-        } else if (v.code.includes('455')) {
+        const c = (v.code || '').toLowerCase();
+        if (/ч\.\s*1\s*ст\.\s*455|5-1/.test(c)) {
+          totalFineTenge += 120 * CURRENT_MRP_TENGE;
+        } else if (c.includes('445-1')) {
+          totalFineTenge += 300 * CURRENT_MRP_TENGE;
+        } else if (/ч\.\s*3\s*ст\.\s*455|ст\.\s*21/.test(c)) {
           totalFineTenge += 100 * CURRENT_MRP_TENGE;
-        } else if (v.code.includes('434')) {
-          totalFineTenge += 5 * CURRENT_MRP_TENGE;
-        } else if (v.code.includes('79')) {
+        } else if (/ч\.\s*2\s*ст\.\s*455|59-нқ|455/.test(c)) {
+          totalFineTenge += 100 * CURRENT_MRP_TENGE;
+        } else if (c.includes('434')) {
+          totalFineTenge += 20 * CURRENT_MRP_TENGE;
+        } else if (c.includes('79') || c.includes('147')) {
           totalFineTenge += 50 * CURRENT_MRP_TENGE;
         } else {
           totalFineTenge += 20 * CURRENT_MRP_TENGE;
@@ -146,18 +151,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const categoryByContentTypeData = useMemo(() => {
     return [
-      { category: 'Реклама (№230-VII)', video: 18, audio: 4, screenshot: 24, url: 12 },
-      { category: 'Казино (ст. 445-1)', video: 14, audio: 2, screenshot: 28, url: 16 },
+      { category: 'Реклама (ч. 2 ст. 455 / №59-НҚ)', video: 18, audio: 4, screenshot: 24, url: 12 },
+      { category: 'Казино (ч. 1 ст. 455 / п. 5-1)', video: 14, audio: 2, screenshot: 28, url: 16 },
       { category: 'Мат / Буллинг (ст. 434)', video: 9, audio: 15, screenshot: 18, url: 8 },
       { category: 'Dark Patterns & Этика', video: 11, audio: 6, screenshot: 14, url: 10 },
-      { category: 'Перс. данные (ст. 79)', video: 3, audio: 1, screenshot: 12, url: 4 },
+      { category: 'Перс. данные (ст. 79 / ч. 5 ст. 147)', video: 3, audio: 1, screenshot: 12, url: 4 },
     ];
   }, []);
 
   const riskDistributionData = useMemo(() => {
     return [
-      { name: 'Критический (ст. 445-1, казино)', value: 38, color: '#f43f5e' },
-      { name: 'Высокий (Закон № 230-VII)', value: 32, color: '#f59e0b' },
+      { name: 'Критический (ч. 1 ст. 455, казино)', value: 38, color: '#f43f5e' },
+      { name: 'Высокий (ч. 2 ст. 455 / №59-НҚ)', value: 32, color: '#f59e0b' },
       { name: 'Предупреждение (этика)', value: 20, color: '#7c3aed' },
       { name: 'Безопасно (соответствует)', value: 10, color: '#10b981' },
     ];

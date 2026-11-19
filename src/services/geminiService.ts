@@ -204,13 +204,13 @@ export async function extractTextWithOcr(
     hasProfanity,
     hasGambling,
     warningNotice: disinfoCheck.detected && doxingCheck.detected
-      ? 'Внимание: выявлен политический вброс, оскорбления и слив персональных данных (ст. 274, 131, 147 УК РК).'
+      ? 'Внимание: выявлен политический вброс, оскорбления и слив персональных данных (ст. 274, 131, ч. 5 ст. 147 УК РК).'
       : hasProfanity
       ? 'Внимание: зафиксирована ненормативная лексика и обсценная брань (ст. 434 КоАП РК).'
       : hasGambling
-      ? 'Внимание: обнаружены признаки рекламы азартных игр / слотов (ст. 445-1 КоАП РК).'
+      ? 'Внимание: обнаружены признаки рекламы онлайн-казино / азартных игр (ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»).'
       : doxingCheck.detected
-      ? 'Внимание: зафиксировано распространение персональных данных без согласия (ст. 147 УК РК / ст. 79 КоАП РК).'
+      ? 'Внимание: зафиксировано распространение персональных данных без согласия (ст. 79 КоАП РК / ч. 5 ст. 147 УК РК).'
       : undefined,
   };
 }
@@ -405,7 +405,7 @@ export async function rewriteContentSafe(params: {
   } else if (/выборы\s+15\s+марта/i.test(cleanRu)) {
     safeTextKz = `Ресми дереккөздер арқылы растауды қажет ететін ақпарат. Дербес деректер жасырылды.\n15 наурыздағы сайлауға келіп, ар-ожданыңызбен дауыс беріңіз!`;
   } else if (isGamblingText) {
-    safeTextKz = `ҚР ӘҚБтК 445-1-бабына сәйкес құмар ойындар мен слоттарды жарнамалау толығымен алынып тасталды.`;
+    safeTextKz = `ҚР ӘҚБтК 455-бабы 1-бөлігіне және «Жарнама туралы» Заңның 6-бабы 5-1-тармағына сәйкес онлайн-казино мен құмар ойындарды жарнамалау толығымен алынып тасталды.`;
   } else {
     safeTextKz = `ҚР заңнамасына сәйкес бейімделген нұсқа:\n${cleanRu}`;
   }
@@ -476,7 +476,7 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     detectedActions += 'Выявлен политический вброс без доказательств (мирный призыв к выборам оставлен в белом списке). ';
   }
 
-  // 0b. Personal data leak / doxing (ст. 147 УК РК / ст. 79 КоАП РК)
+  // 0b. Personal data leak / doxing (ст. 79 КоАП РК / ч. 5 ст. 147 УК РК)
   const doxingCheck: { detected: boolean; matches: string[] } = !isContextWarning
     ? detectPersonalDataDoxing(rawFull)
     : { detected: false, matches: [] };
@@ -485,12 +485,12 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     violations.push({
       id: 'v-client-doxing',
       category: 'legal',
-      code: 'ст. 147 УК РК / ст. 79 КоАП РК',
+      code: 'ст. 79 КоАП РК / ч. 5 ст. 147 УК РК',
       title: 'Незаконное распространение персональных данных (доксинг)',
       severity: 'critical',
       quote: doxingCheck.matches.join(', '),
-      basis: `В публикации без согласия субъекта раскрыты персональные данные (${doxingCheck.matches.join(', ')}), что нарушает ст. 147 УК РК (неприкосновенность частной жизни) и ст. 79 КоАП РК / Закон № 94-V.`,
-      fineAmount: 'от 30 до 200 МРП (ст. 79 КоАП РК) / уголовная ответственность по ст. 147 УК РК',
+      basis: `В публикации без согласия субъекта через онлайн-платформу раскрыты сведения о частной жизни и персональные данные (${doxingCheck.matches.join(', ')}), что нарушает ст. 79 КоАП РК и ч. 5 ст. 147 УК РК / Закон № 94-V.`,
+      fineAmount: 'от 30 до 200 МРП (ст. 79 КоАП РК) / уголовная ответственность по ч. 5 ст. 147 УК РК',
       jurisdiction: 'МЦРИАП РК (КИБ) / МВД РК',
       recommendation: 'Немедленно скрыть личный номер телефона, ИИН и домашний адрес.',
       ...(hasImage ? { bbox: { x: 6, y: 56, width: 88, height: 22 } } : {}),
@@ -521,7 +521,7 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     detectedActions += `Обнаружено употребление матерной лексики (${foundProfanities.slice(0, 3).join(', ')}). `;
   }
 
-  // 2. Casino / Betting / Slots (ст. 445-1 КоАП РК) — skip when journalistic/official warning
+  // 2. Casino / Betting / Slots (ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе») — skip when journalistic/official warning
   const isGamblingMatch =
     !isContextWarning &&
     /казино|casino|1win|1xbet|pin-up|mostbet|слот|рулетк|фриспин|букмекер|jackpot|жекпот|крути\s+барабан|выводи?\s+выигрыш|luxury\s+slots/i.test(content);
@@ -533,14 +533,14 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     violations.push({
       id: 'v-client-casino',
       category: 'legal',
-      code: 'ст. 445-1 КоАП РК',
-      title: 'Реклама нелицензированных азартных игр, слотов и интернет-казино',
+      code: 'ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»',
+      title: 'Реклама нелицензированных онлайн-казино, слотов и азартных игр',
       severity: 'critical',
       quote: casinoMatch ? casinoMatch[0] : '1WIN LUXURY SLOTS / Фриспины',
-      basis: 'Прямая и завуалированная реклама онлайн-казино, слотов, рулетки, бонусов/фриспинов и ставок в USD/EUR/USDT запрещена на территории Республики Казахстан даже при отсутствии слова «казино».',
-      fineAmount: 'до 1 000 МРП (4 325 000 ₸) + блокировка ресурса',
-      jurisdiction: 'АФМ РК / МКИ РК',
-      recommendation: 'Удалить упоминания слотов, рулетки, бонусов и промокодов азартных платформ.',
+      basis: 'Прямая и завуалированная реклама онлайн-казино, слотов, рулетки, бонусов/фриспинов и ставок в USD/EUR/USDT запрещена на территории Республики Казахстан (ч. 1 ст. 455 КоАП РК, п. 5-1 ст. 6 Закона РК «О рекламе»).',
+      fineAmount: '120 МРП (519 000 ₸) для малого бизнеса / от 60 до 450 МРП по КоАП РК',
+      jurisdiction: 'МКИ РК / АФМ РК / МТС РК',
+      recommendation: 'Удалить упоминания онлайн-казино, слотов, рулетки, бонусов и промокодов азартных платформ.',
       ...(hasImage ? { bbox: { x: 8, y: 20, width: 84, height: 42 } } : {}),
     });
     legalScore = Math.max(legalScore, 95);
@@ -548,7 +548,7 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     detectedActions += 'Баннер или текст с продвижением нелицензированных слотов/рулетки. ';
   }
 
-  // 3. Commercial ad without "Жарнама" marking (Закон № 230-VII, ст. 455 КоАП)
+  // 3. Commercial ad without "Жарнама" marking (ч. 2 ст. 455 КоАП РК / Закон № 230-VII / Приказ МКИ № 59-НҚ)
   const hasCommercial = !isGamblingMatch && /скидк|купить|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|цена|инвестиц|заказать|распродаж|курс/i.test(content);
   const contentForAdMark = content.replace(/маркировка\s*[«"]?(?:жарнама|реклама)[»"]?\s*(?:и\s+[^\n)]*\s*)?отсутств\S*/gi, '').replace(/рекламодател[яюе]?\S*/gi, '');
   const hasAdMark = /(?:^|[\s#«"(])(?:жарнама|реклама|жарнамалық|спонсорский\s+материал)(?=$|[\s»"),.:!])/i.test(contentForAdMark);
@@ -558,14 +558,14 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     violations.push({
       id: 'v-client-ad-missing',
       category: 'legal',
-      code: 'ст. 455 КоАП РК / Закон № 230-VII',
-      title: 'Отсутствие обязательной маркировки рекламы («Жарнама»)',
+      code: 'ч. 2 ст. 455 КоАП РК / Закон № 230-VII / Приказ МКИ № 59-НҚ',
+      title: 'Скрытая реклама и отсутствие маркировки («Жарнама / Реклама»)',
       severity: 'critical',
       quote: adMatch ? adMatch[0] : 'Коммерческое предложение без плашки',
-      basis: 'В контенте содержится призыв к покупке товаров или услуг, однако отсутствует обязательная маркировка словом «Жарнама / Реклама» и идентификатор рекламодателя (ИИН/БИН).',
-      fineAmount: 'от 50 до 200 МРП (216 250 — 865 000 ₸)',
+      basis: 'В контенте содержится призыв к покупке товаров или услуг, однако отсутствует обязательная маркировка словом «Жарнама / Реклама» и идентификатор рекламодателя (ИИН/БИН) согласно ч. 2 ст. 455 КоАП РК, Закону № 230-VII и Приказу МКИ № 59-НҚ.',
+      fineAmount: '100 МРП (432 500 ₸) для малого бизнеса / 35–400 МРП по КоАП РК',
       jurisdiction: 'МКИ РК (Контроль онлайн-рекламы)',
-      recommendation: 'Добавить на баннере или в начале текста четкую надпись «Жарнамалық материал / Реклама» и указать БИН/ИИН.',
+      recommendation: 'Добавить на баннере или в начале текста четкую надпись «Жарнама / Реклама» и указать БИН/ИИН.',
       ...(hasImage ? { bbox: { x: 10, y: 18, width: 80, height: 24 } } : {}),
     });
     legalScore = Math.max(legalScore, 75);
@@ -613,19 +613,19 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     detectedActions += 'Использование манипулятивных паттернов срочности (Dark Pattern). ';
   }
 
-  // 6. Language Parity (ст. 21 Закона о языках в РК)
+  // 6. Language Parity (ч. 3 ст. 455 КоАП РК / ст. 21 Закона РК «О языках»)
   const kzIntel = analyzeKzFraudAndLanguage(`${payload.text || ''} ${payload.url || ''}`, payload.url);
   if (kzIntel.needsKzParityWarning && !isGamblingMatch) {
     violations.push({
       id: 'v-client-lang-parity',
       category: 'legal',
-      code: 'ст. 21 Закона РК «О языках в РК»',
+      code: 'ч. 3 ст. 455 КоАП РК / ст. 21 Закона РК «О языках»',
       title: 'Отсутствие версии рекламного объявления на казахском языке',
       severity: 'warning',
       quote: 'Коммерческий материал опубликован только на одном языке',
-      basis: 'Согласно ст. 21 Закона РК «О языках в Республике Казахстан», реклама подлежит обязательному размещению на государственном (казахском) и русском языках.',
-      fineAmount: '10–25 МРП (43 250 – 108 125 ₸)',
-      jurisdiction: 'МКИ РК / Языковой контроль',
+      basis: 'Согласно ч. 3 ст. 455 КоАП РК и ст. 21 Закона РК «О языках в Республике Казахстан», реклама подлежит обязательному размещению на государственном (казахском) и русском языках.',
+      fineAmount: '100 МРП (432 500 ₸) для малого бизнеса / 20–400 МРП по КоАП РК',
+      jurisdiction: 'МКИ РК / Местные исполнительные органы',
       recommendation: 'Воспользуйтесь кнопкой «Авто-исправление (KZ+RU)» для создания двуязычной версии.',
       ...(hasImage ? { bbox: { x: 10, y: 74, width: 80, height: 16 } } : {}),
     });
@@ -685,17 +685,17 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
   const emojiAnalysis = analyzeEmojis(content + ' ' + (payload.text || ''));
   if (emojiAnalysis.flaggedEmojis.length > 0) {
     for (const item of emojiAnalysis.flaggedEmojis) {
-      if (!isContextWarning && item.category === 'gambling' && !violations.some((v) => v.code?.includes('445-1'))) {
+      if (!isContextWarning && item.category === 'gambling' && !violations.some((v) => /ч\.\s*1\s*ст\.\s*455|5-1\s*ст\.\s*6|445-1/i.test(v.code || ''))) {
         violations.unshift({
           id: `v-emoji-${item.emoji}`,
           category: 'legal',
-          code: 'ст. 445-1 КоАП РК / Эмодзи-триггер',
+          code: 'ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»',
           title: `Гэмблинг-эмодзи ${item.emoji} (${item.label})`,
           severity: item.riskLevel,
           quote: item.emoji,
           basis: `Обнаружен графический символ азартных игр ${item.emoji}: ${item.description}`,
-          fineAmount: 'до 1 000 МРП (4 325 000 ₸)',
-          jurisdiction: 'АФМ РК / Контроль онлайн-казино',
+          fineAmount: '120 МРП (519 000 ₸) для малого бизнеса / 60–450 МРП по КоАП РК',
+          jurisdiction: 'МКИ РК / АФМ РК / МТС РК',
           recommendation: 'Исключить символы азартных игр и призывы к ставкам.',
         });
         legalScore = Math.max(legalScore, item.emoji === '🎰' ? 85 : 55);
@@ -966,9 +966,9 @@ export async function scanAccount(channel: {
     riskScore: isRisky ? 84 : isInfluencer ? 62 : 10,
     status: isRisky || isInfluencer ? 'ALERT' : 'LIVE',
     alertNote: isRisky
-      ? 'Зафиксирована публикация с рекламой азартных игр (ст. 445-1 КоАП РК)'
+      ? 'Зафиксирована публикация с рекламой азартных игр (ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона «О рекламе»)'
       : isInfluencer
-      ? 'Скрытая реклама без маркировки «Жарнама» (Закон № 230-VII)'
+      ? 'Скрытая реклама без маркировки «Жарнама» (ч. 2 ст. 455 КоАП РК / Закон № 230-VII / Приказ МКИ № 59-НҚ)'
       : undefined,
     recentPosts: [
       {
@@ -982,12 +982,16 @@ export async function scanAccount(channel: {
           : 'Свежий дайджест городских событий и дорожной обстановки в Алматы.',
         hasViolation: isRisky || isInfluencer,
         violationTitle: isRisky
-          ? 'Реклама нелицензированных азартных игр'
+          ? 'Реклама нелицензированных онлайн-казино и азартных игр'
           : isInfluencer
           ? 'Скрытая реклама без маркировки «Жарнама»'
           : undefined,
-        lawCode: isRisky ? 'ст. 445-1 КоАП РК' : isInfluencer ? 'ст. 455 КоАП РК' : undefined,
-        fineRisk: isRisky ? 'до 1 000 МРП (4 325 000 ₸)' : isInfluencer ? 'до 60 МРП (259 500 ₸)' : undefined,
+        lawCode: isRisky
+          ? 'ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»'
+          : isInfluencer
+          ? 'ч. 2 ст. 455 КоАП РК / Закон № 230-VII / Приказ МКИ № 59-НҚ'
+          : undefined,
+        fineRisk: isRisky ? '120 МРП (519 000 ₸)' : isInfluencer ? '100 МРП (432 500 ₸)' : undefined,
         severity: isRisky ? 'critical' : isInfluencer ? 'warning' : 'info',
       },
       {

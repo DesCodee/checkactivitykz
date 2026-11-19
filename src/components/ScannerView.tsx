@@ -910,8 +910,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     if (type === 'political_doxing') {
       setOcrWarning(
         language === 'kz'
-          ? 'Назар аударыңыз: саяси жалған ақпарат, жария қорлау және ЖСН/телефон доксингі тіркелді (ҚР ҚК 274, 131, 147-баптары).'
-          : 'Внимание: зафиксирован политический вброс, публичное оскорбление и доксинг ИИН/телефона (ст. 274, 131, 147 УК РК).'
+          ? 'Назар аударыңыз: саяси жалған ақпарат, жария қорлау және ЖСН/телефон доксингі тіркелді (ҚР ҚК 274, 131, 147-бап 5-б.).'
+          : 'Внимание: зафиксирован политический вброс, публичное оскорбление и доксинг ИИН/телефона (ст. 274, 131, ч. 5 ст. 147 УК РК).'
       );
     } else if (type === 'profanity_chat') {
       setOcrWarning(
@@ -922,8 +922,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     } else if (type === 'casino_banner') {
       setOcrWarning(
         language === 'kz'
-          ? 'Назар аударыңыз: слоттар / рулетка / $ USD / USDT анықталды (ҚР ӘҚБтК 445-1-бабы).'
-          : 'Внимание: выявлены слоты / рулетка / $ USD / USDT (ст. 445-1 КоАП РК — даже без слова «казино»).'
+          ? 'Назар аударыңыз: слоттар / рулетка / $ USD / USDT анықталды (ҚР ӘҚБтК 455-б. 1-б. / «Жарнама туралы» Заң 6-б. 5-1-т.).'
+          : 'Внимание: выявлены слоты / рулетка / $ USD / USDT (ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе» — даже без слова «казино»).'
       );
     } else if (type === 'scam_phishing') {
       setOcrWarning(
@@ -936,8 +936,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     } else {
       setOcrWarning(
         language === 'kz'
-          ? 'Назар аударыңыз: міндетті «Жарнама» белгісі және жарнама берушінің деректері жоқ (№ 230-VII Заңы).'
-          : 'Внимание: отсутствуют обязательная маркировка «Жарнама» и данные рекламодателя (Закон № 230-VII).'
+          ? 'Назар аударыңыз: міндетті «Жарнама» белгісі және жарнама берушінің деректері жоқ (ҚР ӘҚБтК 455-б. 2-б. / № 230-VII / № 59-НҚ).'
+          : 'Внимание: отсутствуют обязательная маркировка «Жарнама» и данные рекламодателя (ч. 2 ст. 455 КоАП РК / Приказ МКИ № 59-НҚ).'
       );
     }
     triggerOcr(sample.dataUrl, sample.fileName);
@@ -1341,8 +1341,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                         </div>
                         <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-1">
                           {language === 'kz'
-                            ? '1-слайд · ҚК 274, 131, 147-баптары · 84/100'
-                            : '1-й слайд · ст. 274, 131, 147 УК РК · 84/100'}
+                            ? '1-слайд · ҚК 274, 131, 147-б. 5-б. · 84/100'
+                            : '1-й слайд · ст. 274, 131, ч. 5 ст. 147 УК РК · 84/100'}
                         </div>
                       </button>
 
@@ -1359,8 +1359,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                         </div>
                         <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-1">
                           {language === 'kz'
-                            ? 'Слоттар / $ USD / USDT · 445-1-б. ҚР ӘҚБтК'
-                            : 'Слоты / рулетка / $ USD · ст. 445-1 КоАП'}
+                            ? 'Слоттар / $ USD · 455-б. 1-б. ҚР ӘҚБтК / 6-б. 5-1-т.'
+                            : 'Слоты / $ USD · ч. 1 ст. 455 КоАП / п. 5-1 ст. 6'}
                         </div>
                       </button>
 
@@ -1377,8 +1377,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                         </div>
                         <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 line-clamp-1">
                           {language === 'kz'
-                            ? '№ 230-VII · 455-б. ҚР ӘҚБтК · Тілдер заңы 21-б.'
-                            : '№ 230-VII · ст. 455 КоАП · ст. 21 о языках'}
+                            ? 'ч. 2–3 ст. 455 ҚР ӘҚБтК · № 59-НҚ · 21-б.'
+                            : 'ч. 2–3 ст. 455 КоАП · № 59-НҚ · ст. 21 о языках'}
                         </div>
                       </button>
 

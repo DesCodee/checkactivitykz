@@ -488,10 +488,13 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
           return /79|94-v|персональн|пдн|номер телефон|сотов|иин|паспорт|удостоверен|утечк|слив|конфиденциальн/i.test(text);
         }
         if (activeRiskFilter === 'hidden_ad') {
-          return /230-vii|230|455|маркировк|жарнама|реклам|скрытая реклама|спонсор|бин|инфлюенс|двуязычи|ст\. 21/i.test(text);
+          return (
+            !/ч\.\s*1\s*ст\.\s*455|п\.\s*5-1|5-1\s*ст\.\s*6|казино|слот/i.test(text) &&
+            /230-vii|230|59-нқ|ч\.\s*[23]\s*ст\.\s*455|маркировк|жарнама|реклам|скрытая реклама|спонсор|бин|инфлюенс|двуязычи|ст\.\s*21/i.test(text)
+          );
         }
         if (activeRiskFilter === 'casino') {
-          return /445-1|казино|casino|1win|1xbet|слот|букмекер|ставк|рулетк|фриспин|азартн/i.test(text);
+          return /ч\.\s*1\s*ст\.\s*455|п\.\s*5-1|5-1\s*ст\.\s*6|445-1|казино|casino|1win|1xbet|слот|букмекер|ставк|рулетк|фриспин|азартн|лотере/i.test(text);
         }
         if (activeRiskFilter === 'dark_pattern') {
           return /dark pattern|манипуляц|fomo|дефицит|таймер|гарантир|обман|ложный|давлен/i.test(text);
@@ -1024,7 +1027,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                     {language === 'kz' ? 'Қазақ тіліндегі нұсқасы жоқ' : 'Отсутствует казахская версия / маркировка'}
                   </span>
                   <span className="font-['JetBrains_Mono'] text-[10px] px-1.5 py-0.5 rounded bg-white dark:bg-zinc-900 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300">
-                    ст. 21 Закона о языках РК
+                    ч. 3 ст. 455 КоАП РК / ст. 21 Закона о языках РК
                   </span>
                 </div>
                 <p className="text-xs text-amber-800 dark:text-amber-300 mt-1 leading-relaxed">
@@ -1920,8 +1923,8 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                               <span className="px-2 py-0.5 rounded-md text-[10px] font-['JetBrains_Mono'] font-medium bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-800">
                                 {item.category === 'gambling'
                                   ? language === 'kz'
-                                    ? 'Казино (445-1-бап)'
-                                    : 'Казино (ст. 445-1)'
+                                    ? 'Казино (455-б. 1-б.)'
+                                    : 'Казино (ч. 1 ст. 455)'
                                   : item.category === 'profanity_insult'
                                   ? language === 'kz'
                                     ? 'Бейәдеп сөз (434-бап)'
