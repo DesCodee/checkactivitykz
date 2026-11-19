@@ -4,7 +4,7 @@
  */
 
 import React, { useRef, useState } from 'react';
-import { FileText, X, Printer, Copy, Check } from 'lucide-react';
+import { FileText, X, Printer, Copy, Check, Download } from 'lucide-react';
 import { AuditCase } from '../types';
 import { calculateRiskDistribution } from '../utils/riskAnalytics';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -18,6 +18,7 @@ import {
   normalizeAuditCaseCompliance,
   type BusinessEntityType,
 } from '../utils/kzComplianceIntelligence';
+import { downloadPdfBlob, generateStyledAuditPdf } from '../utils/pdfReportGenerator';
 import { useApp } from '../utils/i18n';
 
 interface PdfExportModalProps {
@@ -57,6 +58,18 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
     () => normalizeAuditCaseCompliance(rawAuditCase),
     [rawAuditCase]
   );
+
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+
+  const handleDownloadStyledPdf = async () => {
+    setIsDownloadingPdf(true);
+    try {
+      const res = await generateStyledAuditPdf(auditCase, { entityTier, language });
+      downloadPdfBlob(res.blob, res.fileName);
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
 
   const handlePrint = () => {
     if (printTimerRef.current) {
@@ -490,7 +503,7 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
               type="button"
               onClick={handlePrint}
               disabled={isExporting}
-              className="px-4 sm:px-5 py-2 rounded-xl bg-zinc-900 dark:bg-zinc-100 hover:bg-zinc-800 dark:hover:bg-zinc-200 text-white dark:text-zinc-900 font-['Plus_Jakarta_Sans'] text-xs font-semibold flex items-center gap-2 transition-colors"
+              className="px-3.5 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-200 text-xs font-medium flex items-center gap-1.5 transition-colors"
             >
               <Printer className="w-4 h-4" strokeWidth={1.6} />
               <span>
@@ -499,6 +512,23 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
                     ? 'Дайындалуда...'
                     : 'Подготовка...'
                   : t('pdfPrintBtn')}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadStyledPdf}
+              disabled={isDownloadingPdf}
+              className="px-4 sm:px-5 py-2 rounded-xl bg-zinc-900 dark:bg-zinc-100 hover:bg-zinc-800 dark:hover:bg-zinc-200 text-white dark:text-zinc-900 font-['Plus_Jakarta_Sans'] text-xs font-semibold flex items-center gap-2 transition-colors disabled:opacity-60"
+            >
+              <Download className="w-4 h-4" strokeWidth={1.7} />
+              <span>
+                {isDownloadingPdf
+                  ? language === 'kz'
+                    ? 'PDF жасалуда...'
+                    : 'Сборка PDF...'
+                  : language === 'kz'
+                  ? 'PDF жүктеу'
+                  : 'Скачать PDF'}
               </span>
             </button>
           </div>

@@ -25,6 +25,7 @@ import {
 import {
   analyzeKzFraudAndLanguage,
   type BusinessEntityType,
+  detectExplicitAssemblyViolation,
   detectPeacefulAssemblyCall,
   detectPersonalDataDoxing,
   detectPoliticalDisinfo,
@@ -38,6 +39,8 @@ import {
   normalizeAuditCaseCompliance,
   normalizeViolation,
   runLivePreCheck,
+  SAFE_GAMBLING_REGEX,
+  STRICT_SHOPPING_REGEX,
 } from './src/utils/kzComplianceIntelligence.ts';
 
 function computeRewriteResidualRisk(
@@ -1840,6 +1843,22 @@ function isLlmRefusalText(text: string): boolean {
     /(?:не могу помочь с этой просьбой|не могу распознать или обработать этот запрос|i cannot assist with that|i can't help with that)/i.test(t);
 }
 
+// Per-model quota cooldown cache so exhausted Free Tier models (429 RESOURCE_EXHAUSTED) are skipped cleanly
+const geminiModelCooldownUntil = new Map<string, number>();
+
+function isGeminiQuotaError(err: any): { isQuota: boolean; retryMs: number } {
+  const msg = String(err?.message || err || '');
+  const isQuota =
+    err?.status === 429 ||
+    /\b429\b|RESOURCE_EXHAUSTED|quota\s+exceeded|rate[- ]limit/i.test(msg);
+  if (!isQuota) return { isQuota: false, retryMs: 0 };
+  const delayMatch = msg.match(/"retryDelay"\s*:\s*"(\d+)s"/i) || msg.match(/retry\s+in\s+(\d+)s/i);
+  const parsedSec = delayMatch ? parseInt(delayMatch[1], 10) : 1200;
+  // Cap in-memory cooldown to 30 minutes so recovery happens promptly if quota resets
+  const retryMs = Math.max(60_000, Math.min(30 * 60_000, (Number.isFinite(parsedSec) ? parsedSec : 1200) * 1000));
+  return { isQuota: true, retryMs };
+}
+
 // Dedicated high-speed and accurate Gemini API caller using @google/genai SDK
 async function callGeminiApi(params: {
   systemInstruction?: string;
@@ -1860,9 +1879,15 @@ async function callGeminiApi(params: {
 
   const totalTimeoutMs = params.timeoutMs || 30000;
   const deadline = Date.now() + totalTimeoutMs;
-  const modelsToTry = params.disableThinking
+  const baseModels = params.disableThinking
     ? ['gemini-3.1-flash-lite', 'gemini-4-hydrogen']
     : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+  const now = Date.now();
+  const modelsToTry = baseModels.filter((m) => (geminiModelCooldownUntil.get(m) || 0) <= now);
+
+  if (modelsToTry.length === 0) {
+    throw new Error('Gemini models in quota cooldown; using backup AI engine');
+  }
 
   let lastErr: any;
   for (let i = 0; i < modelsToTry.length; i++) {
@@ -1913,7 +1938,13 @@ async function callGeminiApi(params: {
       }
       throw new Error(txt ? `Model refusal on ${modelName}` : `Empty response from ${modelName}`);
     } catch (err: any) {
-      lastErr = err;
+      const quotaInfo = isGeminiQuotaError(err);
+      if (quotaInfo.isQuota) {
+        geminiModelCooldownUntil.set(modelName, Date.now() + quotaInfo.retryMs);
+        lastErr = new Error(`Gemini quota cooldown active for ${modelName} (${Math.round(quotaInfo.retryMs / 1000)}s)`);
+      } else {
+        lastErr = err;
+      }
       continue;
     } finally {
       if (timer) clearTimeout(timer);
@@ -1989,6 +2020,42 @@ async function callOpenAiApi(params: {
     const text = data.choices?.[0]?.message?.content?.trim();
     if (!text) throw new Error('Empty response from OpenAI');
     return text;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// OpenAI Whisper fallback transcription so video/audio speech is still parsed cleanly when Gemini is cooling down
+async function transcribeAudioWithOpenAi(
+  audioBuffer: Buffer,
+  fileName = 'audio.mp3',
+  mimeType = 'audio/mp3',
+  timeoutMs = 15000
+): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY || process.env.GPT_API_KEY;
+  if (!apiKey || !audioBuffer || audioBuffer.length < 256) return '';
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const formData = new FormData();
+    const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType });
+    formData.append('file', audioBlob, fileName);
+    formData.append('model', 'whisper-1');
+
+    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: formData,
+    });
+    if (!res.ok) return '';
+    const data: any = await res.json().catch(() => null);
+    return typeof data?.text === 'string' ? data.text.trim() : '';
+  } catch {
+    return '';
   } finally {
     clearTimeout(timeoutId);
   }
@@ -2162,8 +2229,8 @@ Output ONLY the recognized text with no intro phrases and no code fences.`;
     // Keyword, doxing & profanity detection on extracted text with full Kazakh & Russian lexicon
     const textToCheck = `${ocrExtractedText} ${fileName || ''}`.toLowerCase();
     const isContextWarning = isJournalisticWarningContext(ocrExtractedText);
-    const gamblingRegex = /казино|casino|1xbet|1win|pin-up|mostbet|слот|рулетк|фриспин|jackpot|жекпот|барабан|luxury\s+slots|ставк|букмекер/i;
-    const adRegex = /жарнама|реклама|скидк|купить|акция|промокод|цена|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк/i;
+    const gamblingRegex = SAFE_GAMBLING_REGEX;
+    const adRegex = /жарнама|реклама|скидк|купить|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|цена|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк/i;
 
     const hasProfanity = findProfanityMatches(textToCheck).length > 0;
     const hasGambling = !isContextWarning && gamblingRegex.test(textToCheck);
@@ -2376,17 +2443,20 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
 6. ст. 79 КоАП РК / ч. 5 ст. 147 УК РК: Незаконное распространение сведений о частной жизни и персональных данных через телекоммуникационные сети и онлайн-платформы (телефоны, ИИН, домашние адреса, документы).
 7. ст. 133-1 КоАП РК: Возрастное ограничение 18+ (откровенный контент без маркировки).
 8. Нормы интернет-этики: Dark Patterns и манипулятивный маркетинг (ложные таймеры дефицита FOMO, гарантии «100% дохода без риска»).
-9. Human-in-the-loop / ст. 174, 274 УК РК (проверка контекста): Общественно-политический протест, политические плакаты, требования отставки, митинги/пикеты/шествия или резонансные обвинения в адрес госорганов (без прямого мата, доксинга и призывов к насилию).
+9. ст. 488 КоАП РК / Закон РК «О порядке организации и проведения мирных собраний»: Откровенные прямые призывы к участию или проведению несанкционированных митингов, шествий, пикетов без согласования, а также призывы к перекрытию дорог («выходите на митинг», «призываем всех выйти на площадь», «перекрывайте дороги», «алаңға шығыңдар»).
+10. Human-in-the-loop / ст. 174, 274 УК РК (проверка контекста): Косвенный общественно-политический / протестный контекст, политические плакаты, требования отставки или критика госорганов БЕЗ прямого призыва выходить на незаконный митинг и БЕЗ мата/доксинга/насилия.
 
-ВАЖНЫЕ ПРАВИЛА (включая КОНТЕКСТНЫЙ ФИЛЬТР И HUMAN-IN-THE-LOOP):
+ВАЖНЫЕ ПРАВИЛА (включая КОНТЕКСТНЫЙ ФИЛЬТР, СТ. 488 КоАП РК И HUMAN-IN-THE-LOOP):
 - Если материал не содержит признаков нарушения, так и напиши ('overall_risk': 'нет', 'findings': []). Не ищи нарушение любой ценой!
 - КРИТИЧЕСКИ ВАЖНО (Контекстный фильтр): Если материал является официальным предупреждением полиции/МВД/АФМ РК, новостным постом СМИ или профилактическим сообщением о мошенниках, фейковых выплатах или нелегальных казино (например, «Осторожно, мошенники! МВД РК предупреждает о фейках Kaspi / 1Win / 42 500»), это НЕ реклама и НЕ нарушение — обязательно верни 'overall_risk': 'нет' и 'findings': []!
-- ПРАВИЛО HUMAN-IN-THE-LOOP (общественно-политический / протестный контекст): Если текст или изображение содержат общественно-политический протест, политические плакаты, требования отставки или резонансные обвинения в адрес госорганов (без прямого мата по ст. 434, доксинга по ст. 79 / ч. 5 ст. 147 и прямых призывов к насилию), НЕ блокируй материал и НЕ ставь критический риск. Верни ровно ОДНО предупреждение в массиве "findings" со статусом «ПРЕДУПРЕЖДЕНИЕ», "overall_risk": "средний", "riskScore" в диапазоне 46–55 и штрафом 0 МРП:
+- ПРЯМОЙ ПРИЗЫВ К МИТИНГУ (ст. 488 КоАП РК): Если в речи или тексте звучит ОТКРОВЕННЫЙ ПРЯМОЙ призыв выходить на несанкционированный митинг/акцию/площадь или перекрывать дороги («выходите на митинг», «все на площадь», «призываю выйти», «алаңға шығыңдар»), НЕ помечай его только как Human-in-the-loop! Зафиксируй нарушение по CODE="ст. 488 КоАП РК / Закон РК «О порядке организации и проведения мирных собраний»" с "overall_risk": "высокий" и "riskScore": 82.
+- ПРАВИЛО HUMAN-IN-THE-LOOP (косвенный общественно-политический / протестный контекст): Если материал содержит лишь косвенную критику, требования отставки, политический плакат или обсуждение темы без прямого призыва выходить на незаконный митинг (и без мата/доксинга/насилия), НЕ блокируй материал и верни ровно ОДНО предупреждение в массиве "findings" со статусом «ПРЕДУПРЕЖДЕНИЕ», "overall_risk": "средний", "riskScore" в диапазоне 46–55 и штрафом 0 МРП:
   * "article": "${HITL_PROTEST_ARTICLE}"
   * "category": "${HITL_PROTEST_ARTICLE}"
   * "description": "${HITL_PROTEST_DESCRIPTION}"
   * "confidence": "средняя"
   * "reasoning": "${HITL_PROTEST_DESCRIPTION}"
+- СТРОГИЙ ЗАПРЕТ НА ЛОЖНОЕ СРАБАТЫВАНИЕ ПО КАЗИНО: Никогда НЕ классифицируй политические митинги, слова «отставка», «выставка», «доставка» или денежные эмодзи без слотов/ставок/букмекеров как рекламу онлайн-казино (ч. 1 ст. 455 КоАП РК)!
 - Не квалифицируй обычный текст как мошенничество (ст. 190 УК РК) или нелегальный гемблинг (ч. 1 ст. 455 КоАП РК) только из-за наличия одного-двух эмодзи денег или карт (💰, 💵, 💸, 🤑 и т.п.), если в самом тексте или на изображении нет призывов к переводу средств, обещаний лёгкого заработка или рекламы азартных игр.
 - Не делай выводов о личности людей на видео и не называй их по внешности.
 
@@ -2422,7 +2492,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
     const retrievalInputText = [effectiveText, liveUrlExtracted, effectiveUrl, fileName]
       .filter((s) => typeof s === 'string' && s.trim().length > 0)
       .join('\n');
-    const retrievalResult = retrieveRelevantKzLaws(retrievalInputText, {
+    let retrievalResult = retrieveRelevantKzLaws(retrievalInputText, {
       modality: isVideo ? 'video' : isAudio ? 'audio' : modality,
       hasMedia: Boolean(
         effectiveImageUrl ||
@@ -2432,10 +2502,10 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           mediaBase64
       ),
     });
-    const ragContext = formatKzLawsRagContext(retrievalResult.candidateLaws, entityTier);
-    const retrievalMs = Math.max(1, Math.round(performance.now() - retrievalStartPerf));
+    let ragContext = formatKzLawsRagContext(retrievalResult.candidateLaws, entityTier);
+    let retrievalMs = Math.max(1, Math.round(performance.now() - retrievalStartPerf));
 
-    const ragSystemInstruction = ragContext
+    let ragSystemInstruction = ragContext
       ? `${systemInstruction}\n\n[БАЗА НПА РК — РЕЛЕВАНТНЫЕ НОРМЫ (RAG CONTEXT, субъект: ${entityTier})]:\nИспользуй ТОЛЬКО реальные нормы из этой структурированной базы (цитируй точное значение CODE), не придумывай несуществующие номера статей:\n${ragContext}`
       : systemInstruction;
 
@@ -2445,6 +2515,10 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
       ? undefined
       : 'GEMINI_API_KEY не настроен на сервере';
     let aiAuditMs = 0;
+    let fallbackAudioBuffer: Buffer | null = null;
+    let fallbackAudioMime = 'audio/mp3';
+    let fallbackAudioName = 'audio.mp3';
+    let safeWhisperTranscript = '';
 
     if (process.env.GEMINI_API_KEY) {
       const parts: Array<any> = [];
@@ -2527,6 +2601,9 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
             const mp3Stat = await fs.promises.stat(tempMp3Path).catch(() => null);
             if (mp3Stat && mp3Stat.size > 200) {
               const mp3Buf = await fs.promises.readFile(tempMp3Path);
+              fallbackAudioBuffer = mp3Buf;
+              fallbackAudioMime = 'audio/mp3';
+              fallbackAudioName = 'audio.mp3';
               const mp3Base64 = mp3Buf.toString('base64');
               parts.push({
                 inlineData: {
@@ -2593,6 +2670,9 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           });
           if (effectiveMime.startsWith('audio/')) {
             audioAddedToParts = true;
+            fallbackAudioBuffer = buffer;
+            fallbackAudioMime = effectiveMime;
+            fallbackAudioName = effectiveMime.includes('wav') ? 'audio.wav' : effectiveMime.includes('ogg') ? 'audio.ogg' : 'audio.mp3';
           }
         }
       } else if (effectiveImageUrl && typeof effectiveImageUrl === 'string') {
@@ -2615,6 +2695,11 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
         const effectiveAudioMime = mimeMatch ? mimeMatch[1] : 'audio/wav';
         const base64AudioData = mimeMatch ? mimeMatch[2] : effectiveAudioUrl.split(',')[1] || '';
         if (base64AudioData) {
+          if (!fallbackAudioBuffer) {
+            fallbackAudioBuffer = Buffer.from(base64AudioData, 'base64');
+            fallbackAudioMime = effectiveAudioMime;
+            fallbackAudioName = effectiveAudioMime.includes('wav') ? 'audio.wav' : 'audio.mp3';
+          }
           parts.push({
             inlineData: {
               mimeType: effectiveAudioMime,
@@ -2752,7 +2837,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
       }
     }
 
-    // Secondary analyze attempt with OpenAI GPT-4o-mini if geminiResponseText is empty and route budget permits
+    // Secondary analyze attempt with OpenAI Whisper + GPT-4o-mini if geminiResponseText is empty and route budget permits
     const hasRichFallbackMedia =
       Boolean(mediaBase64 && isVideo) ||
       Boolean(effectiveVideoUrl?.startsWith('data:video')) ||
@@ -2763,17 +2848,52 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
     if (!analyzeAbort.signal.aborted && !geminiResponseText && remainingForOpenAi > 5000 && (process.env.OPENAI_API_KEY || process.env.GPT_API_KEY)) {
       const openAiPerfStart = performance.now();
       try {
+        if (!fallbackAudioBuffer && effectiveAudioUrl && typeof effectiveAudioUrl === 'string' && effectiveAudioUrl.startsWith('data:audio')) {
+          const mimeMatch = effectiveAudioUrl.match(/^data:([a-zA-Z0-9\/+.-]+)(?:;[^,]*)?;base64,(.+)$/);
+          const effectiveAudioMime = mimeMatch ? mimeMatch[1] : 'audio/wav';
+          const base64AudioData = mimeMatch ? mimeMatch[2] : effectiveAudioUrl.split(',')[1] || '';
+          if (base64AudioData) {
+            fallbackAudioBuffer = Buffer.from(base64AudioData, 'base64');
+            fallbackAudioMime = effectiveAudioMime;
+            fallbackAudioName = effectiveAudioMime.includes('wav') ? 'audio.wav' : 'audio.mp3';
+          }
+        }
+
+        if (fallbackAudioBuffer && (isAudio || isVideo) && remainingForOpenAi > 9000) {
+          const whisperText = await transcribeAudioWithOpenAi(
+            fallbackAudioBuffer,
+            fallbackAudioName,
+            fallbackAudioMime,
+            Math.min(12000, remainingForOpenAi - 4500)
+          );
+          if (whisperText) {
+            safeWhisperTranscript = whisperText;
+            const enrichedRetrievalInput = [retrievalInputText, safeWhisperTranscript].filter(Boolean).join('\n');
+            retrievalResult = retrieveRelevantKzLaws(enrichedRetrievalInput, {
+              modality: isVideo ? 'video' : isAudio ? 'audio' : modality,
+              hasMedia: true,
+            });
+            ragContext = formatKzLawsRagContext(retrievalResult.candidateLaws, entityTier);
+            ragSystemInstruction = ragContext
+              ? `${systemInstruction}\n\n[БАЗА НПА РК — РЕЛЕВАНТНЫЕ НОРМЫ (RAG CONTEXT, субъект: ${entityTier})]:\nИспользуй ТОЛЬКО реальные нормы из этой структурированной базы (цитируй точное значение CODE), не придумывай несуществующие номера статей:\n${ragContext}`
+              : systemInstruction;
+          }
+        }
+
         const hasUploadedVideoForOpenAi =
           Boolean(mediaBase64 && isVideo) ||
           Boolean(effectiveVideoUrl?.startsWith('data:video')) ||
           (Array.isArray(videoFrames) && videoFrames.length > 1);
-        let combinedUserPrompt = `Проведи полный комплаенс-аудит материала по законам РК (ст. 434, ч. 1–3 ст. 455, 445-1, 73-4, 79 КоАП РК, ч. 5 ст. 147 УК РК, Закон № 230-VII, Приказ МКИ № 59-НҚ) и нормам интернет-этики. Ответ строго в формате JSON, описанном в системной инструкции.`;
+        let combinedUserPrompt = `Проведи полный комплаенс-аудит материала по законам РК (ст. 434, ч. 1–3 ст. 455, 445-1, 488, 73-4, 79 КоАП РК, ч. 5 ст. 147 УК РК, Закон № 230-VII, Приказ МКИ № 59-НҚ, либо Human-in-the-loop для косвенного политического контекста) и нормам интернет-этики. Ответ строго в формате JSON, описанном в системной инструкции.`;
         if (isVideo && !(effectiveUrl && liveUrlExtracted && !hasUploadedVideoForOpenAi)) {
           combinedUserPrompt += `\n[ОБЪЕКТ: РЕАЛЬНЫЙ ВИДЕОМАТЕРИАЛ (REELS / TIKTOK / MP4)]:
 1. Внимательно прочитай ВСЕ надписи, титры, субтитры, рекламные слоганы и баннеры на ВСЕХ приложенных кадрах видео и выпиши их в 'extractedText'.
 2. Опиши визуальные действия, обстановку и людей на кадрах в 'detectedActions'.
 3. Дай точное краткое описание содержания видео в 'summary'.
-4. Зафиксируй любые нарушения законов РК (маты, казино/слоты, немаркированная реклама, буллинг/оскорбления) в 'findings'.`;
+4. Зафиксируй реальные нарушения законов РК (маты, ст. 488 КоАП РК за прямой призыв к несанкционированному митингу/перекрытию дорог, немаркированная реклама, буллинг/оскорбления, казино/слоты — НЕ путай протесты и слово «отставка» с казино!).`;
+        }
+        if (safeWhisperTranscript) {
+          combinedUserPrompt += `\n[Расшифровка устной речи из аудиодорожки (Whisper)]:\n${safeWhisperTranscript}`;
         }
         if (effectiveText && effectiveText !== effectiveUrl) {
           combinedUserPrompt += `\n[Текст материала]:\n${effectiveText}`;
@@ -2787,13 +2907,14 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           .filter((f) => typeof f === 'string' && f.startsWith('data:image/'))
           .slice(0, 6);
 
+        const openAiBudgetLeft = Math.max(4000, analyzeOpenAiDeadline - Date.now());
         geminiResponseText = await callOpenAiApi({
           systemInstruction: ragSystemInstruction,
           userPrompt: combinedUserPrompt,
           imageDataUrl: effectiveImageUrl || keyframeUrls[0],
           imageUrls: keyframeUrls.length > 1 ? keyframeUrls.slice(1) : undefined,
           responseJson: true,
-          timeoutMs: Math.min(remainingForOpenAi, 22000),
+          timeoutMs: Math.min(openAiBudgetLeft, 22000),
         });
         if (geminiResponseText) {
           usedAiModel = 'gpt-4o-mini';
@@ -2825,8 +2946,9 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           : [];
         const findings = rawFindings.filter((f) => Boolean(f && typeof f === 'object'));
         let violations: any[] = [];
-        const combinedFullText = `${safeParsedExtracted} ${effectiveText || ''} ${liveUrlExtracted || ''} ${effectiveUrl || ''}`;
+        const combinedFullText = `${safeParsedExtracted} ${safeWhisperTranscript} ${effectiveText || ''} ${liveUrlExtracted || ''} ${effectiveUrl || ''}`;
         const isContextWarning = isJournalisticWarningContext(combinedFullText);
+        const explicitAssemblySignal = detectExplicitAssemblyViolation(combinedFullText);
 
         // Build violations from findings or parsed.violations
         if (findings.length > 0) {
@@ -2837,14 +2959,31 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
             if (isContextWarning && (/445-1|казино|455|59-нқ|5-1|230|реклам|жарнама|190|274|скам|фишинг|мошен/i.test(cat) || /мошенник|полиц|мвд|афм|предупрежд/i.test(quoteText))) {
               return;
             }
-            const hasHardStatutoryCode = /445-1|434|455|5-1|59-нқ|230|73-4|131|115|79|147|133-1|301-1|фишинг|скам|казино/i.test(cat);
+            const isCasinoFinding = /ч\.\s*1\s*ст\.\s*455|5-1\s*ст\.\s*6|казино|слот|букмекер|азарт/i.test(cat);
+            // Suppress hallucinated casino/gambling flags when real text/quote has no concrete gambling markers
+            if (isCasinoFinding && !SAFE_GAMBLING_REGEX.test(combinedFullText) && !SAFE_GAMBLING_REGEX.test(quoteText) && !/🎰/.test(combinedFullText)) {
+              return;
+            }
+            const literalQuote = String(f.quote_or_description || f.quote || '');
+            const isNonAssemblyHardCode = /445-1|434|455|5-1|59-нқ|230|73-4|131|115|79|147|133-1|301-1|фишинг|скам|казино/i.test(cat);
+            const hasExplicitCallInFinding =
+              explicitAssemblySignal.detected || detectExplicitAssemblyViolation(literalQuote).detected;
+            const isDirectAssemblyCat =
+              !isNonAssemblyHardCode &&
+              hasExplicitCallInFinding &&
+              /488|несанкционированн|несогласованн|перекрыт[а-яё]*\s+дорог|митинг|шеств|пикет|алаң|шеру|мирн[а-яё]*\s+собран/i.test(
+                `${cat} ${quoteText}`
+              );
             const isAssemblyCategoryOrReason =
-              !hasHardStatutoryCode &&
-              /human-in-the-loop|проверк[аи]\s+контекста|174\s*ук|общественно-политическ|протест|политическ[а-яё]+\s+плакат|требован[а-яё]+\s+отставк|отставк|обвинен[а-яё]+\s+в\s+адрес\s+госорган|мирн[а-яё]*\s+собран|поряд[а-яё]*\s+проведен[а-яё]*\s+(?:мирн|публичн)|публичн[а-яё]*\s+мероприяти|несанкционированн[а-яё]*\s+(?:собран|митинг|акц|шеств)|488\s*коап|митинг|шеств|пикет|перекрыт[а-яё]*\s+дорог|уличн[а-яё]*\s+акц|наразылық|шеру|бейбіт\s+жиналыс/i.test(
+              !isNonAssemblyHardCode &&
+              !hasExplicitCallInFinding &&
+              /488|human-in-the-loop|проверк[аи]\s+контекста|174\s*ук|общественно-политическ|протест|политическ[а-яё]+\s+плакат|требован[а-яё]+\s+отставк|отставк|обвинен[а-яё]+\s+в\s+адрес\s+госорган|мирн[а-яё]*\s+собран|поряд[а-яё]*\s+проведен[а-яё]*\s+(?:мирн|публичн)|публичн[а-яё]*\s+мероприяти|митинг|шеств|пикет|уличн[а-яё]*\s+акц|наразылық|шеру|бейбіт\s+жиналыс/i.test(
                 `${cat} ${quoteText}`
               );
             const mappedCode = isAssemblyCategoryOrReason
               ? HITL_PROTEST_ARTICLE
+              : isDirectAssemblyCat
+              ? 'ст. 488 КоАП РК / Закон РК «О порядке организации и проведения мирных собраний»'
               : /ч\.\s*1\s*ст\.\s*455|п\.\s*5-1|5-1\s*ст\.\s*6|казино|слот|букмекер|азарт/i.test(cat)
               ? 'ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»'
               : /445-1|лотере|розыгрыш/i.test(cat)
@@ -2880,7 +3019,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
               !isAssemblyWarning &&
               (f.confidence === 'высокая' ||
                 f.severity === 'critical' ||
-                /казино|1win|слот|хулиган|мат|буллинг|скам|фишинг|ч\.\s*[12]\s*ст\.\s*455|5-1\s*ст\.\s*6|59-нқ|230-vii|445-1|434|190|274|147|79/i.test(cat));
+                /казино|1win|слот|хулиган|мат|буллинг|скам|фишинг|488|ч\.\s*[12]\s*ст\.\s*455|5-1\s*ст\.\s*6|59-нқ|230-vii|445-1|434|190|274|147|79/i.test(`${cat} ${mappedCode}`));
             violations.push({
               id: `v-finding-${idx + 1}`,
               category: legalFlag ? 'legal' : 'ethics',
@@ -2907,7 +3046,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
         }
 
         // Second-pass rule verification: Ensure violations are NEVER missed if extractedText or effectiveText contains violations
-        const auditRaw = `${safeParsedExtracted} ${effectiveText || ''} ${liveUrlExtracted || ''}`;
+        const auditRaw = `${safeParsedExtracted} ${safeWhisperTranscript} ${effectiveText || ''} ${liveUrlExtracted || ''}`;
         const auditText = auditRaw.toLowerCase();
 
         // 0a. Check for Political Disinfo Leak (ст. 274 УК РК / ст. 456-2 КоАП РК)
@@ -2963,11 +3102,10 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           });
         }
 
-        // 2. Check for Casino / Betting / Slots (skip on journalistic/police warnings)
-        const casinoCheck = /казино|casino|1win|1xbet|pin-up|mostbet|слот|рулетк|фриспин|jackpot|жекпот|барабан|luxury\s+slots|букмекер/i;
-        const isGamblingContent = !isContextWarning && casinoCheck.test(auditText);
+        // 2. Check for Casino / Betting / Slots (word-boundary safe; skip on journalistic/police warnings)
+        const isGamblingContent = !isContextWarning && SAFE_GAMBLING_REGEX.test(auditText);
         if (isGamblingContent && !violations.some((v) => /ч\.\s*1\s*ст\.\s*455|5-1\s*ст\.\s*6|445-1/i.test(v.code || ''))) {
-          const match = auditText.match(casinoCheck);
+          const match = auditText.match(SAFE_GAMBLING_REGEX);
           violations.push({
             id: `v-auto-casino-${Date.now()}`,
             category: 'legal',
@@ -3001,8 +3139,12 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           });
         }
 
-        // 4. Check for Unmarked Commercial Offer (suppressed when gambling is primary offense)
-        const isCommercial = /скидк|распродаж|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|купить|заказать|цена|тариф|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй|услуг/i.test(auditText);
+        // 4. Check for Unmarked Commercial Offer (suppressed when gambling is primary offense or speech is protest without strict shopping cues)
+        const explicitAssemblyCheck = detectExplicitAssemblyViolation(auditRaw);
+        const assemblyCheck = detectPeacefulAssemblyCall(auditRaw);
+        const hasAssemblyContext = explicitAssemblyCheck.detected || assemblyCheck.detected;
+        const isCommercialRaw = /скидк|распродаж|(?<!наразылық\s)(?<!уличн[а-яё]*\s)(?<!протестн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|купить|заказать|цена|тариф|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй|услуг/i.test(auditText);
+        const isCommercial = isCommercialRaw && (!hasAssemblyContext || STRICT_SHOPPING_REGEX.test(auditText));
         const hasAdLabel = /жарнама|реклама/i.test(auditText);
         if (!isContextWarning && !isGamblingContent && isCommercial && !hasAdLabel && !violations.some((v) => /ч\.\s*2\s*ст\.\s*455|59-нқ|230-vii/i.test(v.code || ''))) {
           const adSnippet = auditText.match(/открывайте\s+счет[а-я\s,]*|скидк[а-я]*|распродаж[а-я]*|акция|промокод|купить|заказать|кредит|депозит|рассрочк[а-я]*/i)?.[0];
@@ -3037,10 +3179,25 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           });
         }
 
-        const assemblyCheck = detectPeacefulAssemblyCall(auditRaw);
-        if (
+        if (explicitAssemblyCheck.detected) {
+          violations = violations.filter((v) => !isHitlContextViolation(v));
+          if (!violations.some((v) => /488/i.test(v.code || ''))) {
+            violations.push({
+              id: `v-auto-488-${Date.now()}`,
+              category: 'legal',
+              code: 'ст. 488 КоАП РК / Закон РК «О порядке организации и проведения мирных собраний»',
+              title: 'Призыв к организации или участию в несанкционированном митинге',
+              severity: 'critical',
+              quote: explicitAssemblyCheck.quote || 'Прямой призыв выйти на несанкционированный митинг / перекрыть дороги',
+              basis: 'Зафиксирован прямой призыв к выходу на несогласованное публичное мероприятие либо перекрытию дорог. Ответственность предусмотрена ст. 488 КоАП РК и Законом РК «О порядке организации и проведения мирных собраний».',
+              fineAmount: '',
+              jurisdiction: 'МВД РК / Прокуратура / Акимат',
+              recommendation: 'Удалить прямые призывы к участию в несогласованных митингах, шествиях или перекрытию транспортных путей.',
+            });
+          }
+        } else if (
           assemblyCheck.detected &&
-          !violations.some((v) => isHitlContextViolation(v))
+          !violations.some((v) => isHitlContextViolation(v) || /488/i.test(v.code || ''))
         ) {
           violations.push({
             id: `v-auto-hitl-${Date.now()}`,
@@ -3102,9 +3259,19 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
         }
 
         const safeSummaryStr = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
-        const safeTranscriptArr = Array.isArray(parsed.transcript)
+        let safeTranscriptArr = Array.isArray(parsed.transcript)
           ? parsed.transcript.filter((t: any) => Boolean(t && typeof t === 'object'))
           : undefined;
+        if ((!safeTranscriptArr || safeTranscriptArr.length === 0) && safeWhisperTranscript) {
+          safeTranscriptArr = [
+            {
+              time: '00:01',
+              speaker: 'Аудиодорожка (Whisper)',
+              text: safeWhisperTranscript,
+              flagged: violations.some((v) => v.severity === 'critical'),
+            },
+          ];
+        }
 
         const mediaAnalysis = {
           summary:
@@ -3124,7 +3291,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           limitations: typeof parsed.limitations === 'string' && parsed.limitations ? parsed.limitations : (isVideo ? 'Анализ ограничен качеством видео и раскадровкой.' : isAudio ? 'Шумы могут повлиять на точность распознавания.' : 'Анализ статического материала.'),
         };
 
-        const emojiAnalysis = analyzeEmojis(`${safeParsedExtracted} ${effectiveText} ${liveUrlExtracted}`);
+        const emojiAnalysis = analyzeEmojis(`${safeParsedExtracted} ${safeWhisperTranscript} ${effectiveText} ${liveUrlExtracted}`);
 
         const totalMs = Math.max(1, Math.round(performance.now() - routePerfStart));
         const matchedLawCodes = Array.from(
@@ -3153,11 +3320,11 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
             let resText = safeParsedExtracted.trim();
             const transcriptText = safeTranscriptArr
               ? safeTranscriptArr.map((t: any) => String(t.text || '')).filter(Boolean).join('\n')
-              : '';
+              : safeWhisperTranscript;
             const isBareUrl = Boolean(resText && /^https?:\/\/\S+$/i.test(resText));
 
             if (!resText || isBareUrl || resText.toLowerCase() === 'нет' || resText.toLowerCase() === 'отсутствует') {
-              resText = liveUrlExtracted || transcriptText || effectiveText || (isVideo ? 'Текст на экране и устная речь отсутствуют' : '');
+              resText = liveUrlExtracted || transcriptText || safeWhisperTranscript || effectiveText || (isVideo ? 'Текст на экране и устная речь отсутствуют' : '');
             } else {
               if (
                 liveUrlExtracted &&
@@ -3167,6 +3334,9 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
               }
               if (transcriptText && transcriptText.length > 10 && !resText.includes(transcriptText.slice(0, 30))) {
                 resText = `${resText}\n\n[Расшифровка устной речи]:\n${transcriptText}`;
+              }
+              if (safeWhisperTranscript && safeWhisperTranscript.length > 5 && !resText.includes(safeWhisperTranscript.slice(0, 25))) {
+                resText = `${resText}\n\n[Аудиодорожка (Whisper)]:\n${safeWhisperTranscript}`;
               }
             }
             return resText;
@@ -3179,7 +3349,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
                 ? activeVideoFrames[0]
                 : (activeVideoFrames[0] as any)?.dataUrl || (activeVideoFrames[0] as any)?.frameDataUrl
               : undefined),
-          rawText: liveUrlExtracted || effectiveText || effectiveUrl,
+          rawText: liveUrlExtracted || safeWhisperTranscript || effectiveText || effectiveUrl,
           audioDataUrl: effectiveAudioUrl,
           audioDuration: audioDuration || (isAudio ? '00:28' : undefined),
           audioVoiceClarity: 98.4,
@@ -3223,7 +3393,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
     }
 
     // Server-side fallback parsing when API key is not present or offline
-    const combinedContent = `${effectiveText || ''} ${liveUrlExtracted || ''} ${fileName || ''} ${effectiveUrl || ''}`.toLowerCase();
+    const combinedContent = `${effectiveText || ''} ${liveUrlExtracted || ''} ${safeWhisperTranscript || ''} ${fileName || ''} ${effectiveUrl || ''}`.toLowerCase();
     const fallbackResult = buildFallbackAudit(
       combinedContent,
       isVideo ? 'video' : isAudio ? 'audio' : modality,
@@ -3233,7 +3403,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
       caseId,
       refNum,
       effectiveImageUrl,
-      liveUrlExtracted || effectiveText || effectiveUrl,
+      [liveUrlExtracted, safeWhisperTranscript, effectiveText, effectiveUrl].filter(Boolean).join('\n'),
       fileSize,
       effectiveAudioUrl,
       audioDuration,
@@ -3293,7 +3463,20 @@ function evaluatePostCompliance(
 } {
   const lower = text.toLowerCase();
   const isContextWarning = isJournalisticWarningContext(text);
-  if (!isContextWarning && /казино|casino|1win|1xbet|pin-up|mostbet|слот|рулетк|фриспин|jackpot|жекпот|барабан|luxury\s+slots|букмекер/i.test(lower)) {
+  const explicitAssemblyCheck = detectExplicitAssemblyViolation(text);
+  const assemblyCheck = detectPeacefulAssemblyCall(text);
+  if (explicitAssemblyCheck.detected) {
+    const title = 'Призыв к организации или участию в несанкционированном митинге (ст. 488 КоАП РК)';
+    const code = 'ст. 488 КоАП РК / Закон РК «О порядке организации и проведения мирных собраний»';
+    return {
+      hasViolation: true,
+      violationTitle: title,
+      lawCode: code,
+      fineRisk: computeViolationFineText({ id: 'post-488', category: 'legal', code, title, severity: 'critical', basis: '' }, entityTier),
+      severity: 'critical',
+    };
+  }
+  if (!isContextWarning && SAFE_GAMBLING_REGEX.test(lower)) {
     const title = 'Реклама онлайн-казино и незаконных азартных игр (ч. 1 ст. 455 КоАП РК)';
     const code = 'ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»';
     return {
@@ -3338,7 +3521,9 @@ function evaluatePostCompliance(
       severity: 'critical',
     };
   }
-  const isCommercial = /скидк|распродаж|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|купить|заказать|цена|артикул|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк/i.test(lower);
+  const hasAssemblyContext = explicitAssemblyCheck.detected || assemblyCheck.detected;
+  const isCommercialRaw = /скидк|распродаж|(?<!наразылық\s)(?<!уличн[а-яё]*\s)(?<!протестн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|купить|заказать|цена|артикул|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк/i.test(lower);
+  const isCommercial = isCommercialRaw && (!hasAssemblyContext || STRICT_SHOPPING_REGEX.test(lower));
   const hasAdMark = /жарнама|реклама|спонсор|серіктестік/i.test(lower);
   if (!isContextWarning && isCommercial && !hasAdMark) {
     const title = 'Скрытая реклама без маркировки «Жарнама» (ч. 2 ст. 455 КоАП РК / Закон № 230-VII)';
@@ -3765,7 +3950,9 @@ function applyFraudAndBilingualChecks(
   const hasRussian = /[а-яё]/i.test(fullText);
   const hasAdMarkKz = /жарнама/i.test(lower);
   const hasAdMarkRu = /реклама/i.test(lower);
-  const isCommercial = /скидк|распродаж|акция|промокод|купить|заказать|цена|жеңілдік|арзан/i.test(lower);
+  const hasAssemblyContextForLang = detectExplicitAssemblyViolation(fullText).detected || detectPeacefulAssemblyCall(fullText).detected;
+  const isCommercialRaw = /скидк|распродаж|(?<!наразылық\s)(?<!уличн[а-яё]*\s)(?<!протестн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|купить|заказать|цена|жеңілдік|арзан/i.test(lower);
+  const isCommercial = isCommercialRaw && (!hasAssemblyContextForLang || STRICT_SHOPPING_REGEX.test(lower));
   const languageParityOk = isContextWarning ? true : isCommercial ? hasAdMarkKz : true;
 
   return {
@@ -3874,10 +4061,9 @@ function buildFallbackAudit(
   }
 
   // Casino, gambling, slots & foreign currency promos (ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе»)
-  const casinoRegex = /казино|casino|1xbet|1win|pin-up|mostbet|слот|рулетк|фриспин|jackpot|жекпот|барабан|luxury\s+slots|ставка|букмекер/i;
-  const isGamblingContent = !isContextWarning && casinoRegex.test(content);
+  const isGamblingContent = !isContextWarning && SAFE_GAMBLING_REGEX.test(content);
   if (isGamblingContent) {
-    const casinoMatch = content.match(/казино|casino|1xbet|1win|pin-up|mostbet|слот[ыа-я]*|рулетк[а-я]*|фриспин[а-я]*|jackpot|жекпот|барабан[ыа-я]*|luxury\s+slots|ставка/i);
+    const casinoMatch = content.match(SAFE_GAMBLING_REGEX);
     violations.push({
       id: 'v-casino-1',
       category: 'legal',
@@ -3896,13 +4082,17 @@ function buildFallbackAudit(
     detectedActions += 'Обнаружена замаскированная реклама азартных игр / слотов в инвалюте. ';
   }
 
-  // Commercial offer without "Жарнама" marking (suppressed if illegal gambling banner is detected)
-  const isCommercial = /скидк|купить|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|цена|инвестиц|заказать|распродаж|тариф|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй/i.test(content);
+  // Commercial offer without "Жарнама" marking (suppressed if illegal gambling banner or protest without strict shopping cues is detected)
+  const explicitAssemblyCheck = detectExplicitAssemblyViolation(`${rawMaterial} ${content}`);
+  const assemblyCheck = detectPeacefulAssemblyCall(`${rawMaterial} ${content}`);
+  const hasAssemblyContext = explicitAssemblyCheck.detected || assemblyCheck.detected;
+  const isCommercialRaw = /скидк|купить|(?<!наразылық\s)(?<!уличн[а-яё]*\s)(?<!протестн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|цена|инвестиц|заказать|распродаж|тариф|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй/i.test(content);
+  const isCommercial = isCommercialRaw && (!hasAssemblyContext || STRICT_SHOPPING_REGEX.test(content));
   const contentForAdMark = content.replace(/маркировка\s*[«"]?(?:жарнама|реклама)[»"]?\s*(?:и\s+[^\n)]*\s*)?отсутств\S*/gi, '').replace(/рекламодател[яюе]?\S*/gi, '');
   const hasAdLabel = /(?:^|[\s#«"(])(?:жарнама|жарнамалық|реклама|на\s+правах\s+рекламы|спонсорский\s+материал)(?=$|[\s»"),.:!])/i.test(contentForAdMark);
 
   if (!isContextWarning && !isGamblingContent && isCommercial && !hasAdLabel) {
-    const commMatch = content.match(/скидк[а-я]*|купить|акция|промокод|цена|распродаж[а-я]*/i);
+    const commMatch = content.match(/скидк[а-я]*|купить|(?<!наразылық\s)(?<!уличн[а-яё]*\s)(?<!протестн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)|промокод|цена|распродаж[а-я]*/i);
     violations.push({
       id: 'v-ad-label-1',
       category: 'legal',
@@ -4054,9 +4244,23 @@ function buildFallbackAudit(
     }
   }
 
-  // Deterministic Human-in-the-loop fallback: general protest/resignation/rally/picket/march marker categories only
-  const assemblyCheck = detectPeacefulAssemblyCall(`${rawMaterial} ${content}`);
-  if (assemblyCheck.detected) {
+  // Explicit direct call to unauthorized rally/protest/road blockade (ст. 488 КоАП РК) vs indirect HITL context
+  if (explicitAssemblyCheck.detected) {
+    violations.push({
+      id: 'v-unlawful-assembly-488',
+      category: 'legal',
+      code: 'ст. 488 КоАП РК / Закон РК «О порядке организации и проведения мирных собраний»',
+      title: 'Призыв к организации или участию в несанкционированном митинге',
+      severity: 'critical',
+      quote: explicitAssemblyCheck.quote || 'Прямой призыв выйти на несанкционированный митинг / перекрыть дороги',
+      basis: 'Зафиксирован прямой призыв к выходу на несогласованное публичное мероприятие либо перекрытию дорог. Ответственность предусмотрена ст. 488 КоАП РК и Законом РК «О порядке организации и проведения мирных собраний».',
+      fineAmount: '',
+      jurisdiction: 'МВД РК / Прокуратура / Акимат',
+      recommendation: 'Удалить прямые призывы к участию в несогласованных митингах, шествиях или перекрытию транспортных путей.',
+    });
+    legalScore = Math.max(legalScore, 82);
+    detectedActions += 'Зафиксирован прямой призыв к выходу на несанкционированный митинг (ст. 488 КоАП РК). ';
+  } else if (assemblyCheck.detected) {
     violations.push({
       id: 'v-peaceful-assembly-hitl',
       category: 'legal',

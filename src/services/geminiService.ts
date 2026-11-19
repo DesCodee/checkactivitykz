@@ -7,6 +7,7 @@ import { AuditCase, BilingualCheck, FraudSignals, ModalityType, RewriteResult, V
 import { analyzeEmojis } from '../utils/emojiIntelligence';
 import {
   analyzeKzFraudAndLanguage,
+  detectExplicitAssemblyViolation,
   detectPeacefulAssemblyCall,
   detectPersonalDataDoxing,
   detectPoliticalDisinfo,
@@ -19,6 +20,7 @@ import {
   normalizeAuditCaseCompliance,
   normalizeViolation,
   runLivePreCheck,
+  SAFE_GAMBLING_REGEX,
   type BusinessEntityType,
 } from '../utils/kzComplianceIntelligence';
 import { computeContentPayloadSha256 } from '../utils/cryptoHash';
@@ -522,14 +524,10 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
   }
 
   // 2. Casino / Betting / Slots (ч. 1 ст. 455 КоАП РК / п. 5-1 ст. 6 Закона РК «О рекламе») — skip when journalistic/official warning
-  const isGamblingMatch =
-    !isContextWarning &&
-    /казино|casino|1win|1xbet|pin-up|mostbet|слот|рулетк|фриспин|букмекер|jackpot|жекпот|крути\s+барабан|выводи?\s+выигрыш|luxury\s+slots/i.test(content);
+  const isGamblingMatch = !isContextWarning && SAFE_GAMBLING_REGEX.test(content);
 
   if (isGamblingMatch) {
-    const casinoMatch = content.match(
-      /казино|casino|1win|1xbet|pin-up|mostbet|слот[ыа-я]*|рулетк[а-я]*|фриспин[а-я]*|букмекер|jackpot|жекпот|крути\s+барабан[ыа-я]*|luxury\s+slots/i
-    );
+    const casinoMatch = content.match(SAFE_GAMBLING_REGEX);
     violations.push({
       id: 'v-client-casino',
       category: 'legal',
@@ -549,7 +547,14 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
   }
 
   // 3. Commercial ad without "Жарнама" marking (ч. 2 ст. 455 КоАП РК / Закон № 230-VII / Приказ МКИ № 59-НҚ)
-  const hasCommercial = !isGamblingMatch && /скидк|купить|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|цена|инвестиц|заказать|распродаж|курс/i.test(content);
+  const explicitAssemblyCheck = detectExplicitAssemblyViolation(rawFull);
+  const assemblyCheck = detectPeacefulAssemblyCall(rawFull);
+  const hasAnyAssemblyContext = explicitAssemblyCheck.detected || assemblyCheck.detected;
+  const hasStrictShopOffer = /промокод|скидк|распродаж|заказывай(?:те)?|оставьте\s+заявку|оплата\s+в\s+рассрочк/i.test(content);
+  const hasCommercial =
+    !isGamblingMatch &&
+    (!hasAnyAssemblyContext || hasStrictShopOffer) &&
+    /скидк|купить|(?<!наразылық\s)(?<!уличн[а-яё]*\s)(?<!протестн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|цена|инвестиц|заказать|распродаж|курс/i.test(content);
   const contentForAdMark = content.replace(/маркировка\s*[«"]?(?:жарнама|реклама)[»"]?\s*(?:и\s+[^\n)]*\s*)?отсутств\S*/gi, '').replace(/рекламодател[яюе]?\S*/gi, '');
   const hasAdMark = /(?:^|[\s#«"(])(?:жарнама|реклама|жарнамалық|спонсорский\s+материал)(?=$|[\s»"),.:!])/i.test(contentForAdMark);
 
@@ -632,9 +637,23 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     legalScore = Math.max(legalScore, 45);
   }
 
-  // 7. Universal Human-in-the-loop fallback: general protest/resignation/rally/picket/march marker categories only
-  const assemblyCheck = detectPeacefulAssemblyCall(rawFull);
-  if (assemblyCheck.detected) {
+  // 7. Explicit ст. 488 КоАП РК direct rally calls vs Human-in-the-loop general political context
+  if (explicitAssemblyCheck.detected) {
+    violations.push({
+      id: 'v-client-unlawful-assembly',
+      category: 'legal',
+      code: 'ст. 488 КоАП РК / Закон РК «О порядке организации и проведения мирных собраний»',
+      title: 'Прямой призыв к несанкционированному митингу / собранию',
+      severity: 'critical',
+      quote: explicitAssemblyCheck.quote || 'Призыв к выходу на несанкционированный митинг',
+      basis: 'Зафиксирован прямой призыв к выходу на несогласованный митинг, акцию или перекрытию дорог, что образует состав нарушения порядка организации и проведения мирных собраний по ст. 488 КоАП РК (Закон РК № 333-VI).',
+      fineAmount: '50 МРП (216 250 ₸) / 30–200 МРП или арест до 15 сут. по ст. 488 КоАП РК',
+      jurisdiction: 'МВД РК / Прокуратура РК / Специализированный суд',
+      recommendation: 'Удалить прямые призывы к участию в несанкционированных митингах и перекрытию дорог.',
+    });
+    legalScore = Math.max(legalScore, 82);
+    detectedActions += 'Зафиксирован прямой призыв к несанкционированному митингу (ст. 488 КоАП РК). ';
+  } else if (assemblyCheck.detected) {
     violations.push({
       id: 'v-client-peaceful-assembly',
       category: 'legal',

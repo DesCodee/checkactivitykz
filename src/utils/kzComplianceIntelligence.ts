@@ -71,13 +71,16 @@ export interface CompliancePenaltyDisplay {
 }
 
 const LEGAL_CODE_OR_LAW_REGEX =
-  /human-in-the-loop|коап|ук\s*рк|әқбтк|қк\b|230-vii|59-нқ|94-v|п\.\s*5-1|закон|заң|ст\.\s*\d+|\d+-бап|445-1|455\b|434\b|456-2|73-4|131\b|115\b|147\b|79\b|190\b|274\b|174\b|133-1|301-1|ст\.\s*21/i;
+  /human-in-the-loop|коап|ук\s*рк|әқбтк|қк\b|230-vii|59-нқ|94-v|п\.\s*5-1|закон|заң|ст\.\s*\d+|\d+-бап|445-1|455\b|488\b|434\b|456-2|73-4|131\b|115\b|147\b|79\b|190\b|274\b|174\b|133-1|301-1|ст\.\s*21/i;
 
 const PURE_ETHICS_ONLY_REGEX =
   /dark\s*pattern|fomo|манипулят|таймер|дефицит|вовлечение\s+в\s+азарт|иллюзи|этика\s+реклам|этика\s+коммуникац|сетев[а-яё]+\s+этикет/i;
 
 export function isHitlContextViolation(v: Pick<Violation, 'code' | 'title'>): boolean {
   const combined = `${v.code || ''} ${v.title || ''}`.toLowerCase();
+  if (/488\b|несанкционированн|несогласованн|перекрыт[а-яё]*\s+дорог/.test(combined) && !/human-in-the-loop/.test(combined)) {
+    return false;
+  }
   return /human-in-the-loop|проверка\s+контекста|протестный\s+контекст|общественно-политическ|мирных\s+собраний|бейбіт\s+жиналыс/.test(
     combined
   );
@@ -122,7 +125,7 @@ export function isCriticalLegalViolation(v: Pick<Violation, 'severity' | 'code' 
   if (/ч\.\s*3\s*ст\.\s*455|ст\.\s*21|21-бап|о\s+языках/.test(combined) && !/ч\.\s*[12]\s*ст\.\s*455|190|274|434|445-1/.test(combined)) {
     return false;
   }
-  if (/ч\.\s*1\s*ст\.\s*455|п\.\s*5-1|5-1\s*ст\.\s*6|445-1|190|274|456-2|147|79|434|131|115|73-4|301-1|133-1/.test(combined)) {
+  if (/ч\.\s*1\s*ст\.\s*455|п\.\s*5-1|5-1\s*ст\.\s*6|445-1|488\b|190|274|456-2|147|79|434|131|115|73-4|301-1|133-1/.test(combined)) {
     return true;
   }
   if ((/ч\.\s*2\s*ст\.\s*455|455|230-vii|59-нқ/.test(combined)) && v.severity === 'critical') {
@@ -366,7 +369,7 @@ export function getCompliancePenaltyDisplay(
 const ONLY_EMOJIS_REGEX = /^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s.,!?-]+$/u;
 const MONEY_EMOJI_CHARS_REGEX = /[💰💵💸💴💶💷🪙🤑]/u;
 const TEXTUAL_SCAM_OR_GAMBLING_EVIDENCE_REGEX =
-  /л[её]гк[а-яё]*\s+заработ|раскрутк|доход[а-яё]*\s+от.{0,24}в\s+день|перев[а-яё]*\s+на\s+карт|привяж[а-яё]*\s+карт|без\s+вложени|пассивн[а-яё]*\s+доход|42\s*500|42500|kaspi\s*profit|дипфейк|deepfake|казино|casino|ставк[аиуе]|слот|рулетк|фриспин|1win|1xbet|pin-up|mostbet|джекпот|jackpot|букмекер|\.(?:xyz|top|click|icu|buzz)\b/i;
+  /л[её]гк[а-яё]*\s+заработ|раскрутк|доход[а-яё]*\s+от.{0,24}в\s+день|перев[а-яё]*\s+на\s+карт|привяж[а-яё]*\s+карт|без\s+вложени|пассивн[а-яё]*\s+доход|42\s*500|42500|kaspi\s*profit|дипфейк|deepfake|(?<![а-яёәғқңөұүһіa-z])(?:казино|casino|ставк(?:а|и|у|е|ой|ами|ах)|слот[ыа-яё]*|рулетк[а-яё]*|фриспин[а-яё]*|1win|1xbet|pin-up|mostbet|джекпот|jackpot|букмекер[а-яё]*)(?=$|[^а-яёәғқңөұүһіa-z])|\.(?:xyz|top|click|icu|buzz)\b/i;
 const MONEY_SPAM_CLUSTER_TEXT_REGEX =
   /(?:💰|💵|💸|💴|💶|💷|🪙|🤑)(?:\s*(?:💰|💵|💸|💴|💶|💷|🪙|🤑)){2,}/u;
 
@@ -697,7 +700,13 @@ export function runLivePreCheck(
     });
   }
 
-  if (!isContextWarning && COMMERCIAL_REGEX.test(lower) && !AD_MARK_REGEX.test(lower) && !GAMBLING_REGEX.test(lower)) {
+  const explicitAssemblyCall = detectExplicitAssemblyViolation(combined);
+  const assemblyCall = detectPeacefulAssemblyCall(combined);
+  const isStrictCommercial =
+    COMMERCIAL_REGEX.test(lower) &&
+    (!(explicitAssemblyCall.detected || assemblyCall.detected) || STRICT_SHOPPING_REGEX.test(lower));
+
+  if (!isContextWarning && isStrictCommercial && !AD_MARK_REGEX.test(lower) && !GAMBLING_REGEX.test(lower)) {
     triggers.push({
       id: 'ad_label',
       category: 'legal',
@@ -730,8 +739,16 @@ export function runLivePreCheck(
     });
   }
 
-  const assemblyCall = detectPeacefulAssemblyCall(combined);
-  if (assemblyCall.detected) {
+  if (explicitAssemblyCall.detected) {
+    triggers.push({
+      id: 'unlawful_assembly',
+      category: 'legal',
+      labelRu: 'Прямой призыв к несанкционированному митингу',
+      labelKz: 'Рұқсат етілмеген митингке тікелей шақыру',
+      severity: 'critical',
+      article: 'ст. 488 КоАП РК / Закон РК «О порядке организации и проведения мирных собраний»',
+    });
+  } else if (assemblyCall.detected) {
     triggers.push({
       id: 'peaceful_assembly',
       category: 'legal',
@@ -828,10 +845,13 @@ export function findProfanityMatches(text: string): string[] {
 }
 
 const PROFANITY_REGEX = new RegExp(SAFE_PROFANITY_SOURCE, 'i');
-const GAMBLING_REGEX =
-  /казино|casino|1win|1xbet|pin-up|mostbet|слот|рулетк|фриспин|jackpot|жекпот|барабан|букмекер|aviator|luckyjet|luxury\s+slots/i;
+export const SAFE_GAMBLING_REGEX =
+  /(?<![а-яёәғқңөұүһіa-z])(?:казино|casino|1win|1xbet|pin-up|mostbet|слот[ыа-яё]*|рулетк[а-яё]*|фриспин[а-яё]*|jackpot|жекпот|крути(?:ть|те)?\s+барабан[ыа-яё]*|ставк(?:а|и|у|е|ой|ами|ах)|букмекер[а-яё]*|aviator|luckyjet|luxury\s+slots)(?=$|[^а-яёәғқңөұүһіa-z])/i;
+const GAMBLING_REGEX = SAFE_GAMBLING_REGEX;
+export const STRICT_SHOPPING_REGEX =
+  /промокод|скидк|распродаж|заказывай(?:те)?|оставьте\s+заявку|купи(?:ть|те)\s+(?:сейчас|курс|товар|по\s+ссылке)|бесплатный\s+выпуск|ссылка\s+в\s+био|оплата\s+в\s+рассрочк/i;
 const COMMERCIAL_REGEX =
-  /скидк|распродаж|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|купить|заказать|цена|курс|инвестиц|тариф|доставка|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй|бесплатный\s+выпуск|заказывайте|оставьте\s+заявку|подробнее\s+на\s+сайте/i;
+  /скидк|распродаж|(?<!наразылық\s)(?<!уличн[а-яё]*\s)(?<!протестн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|купить|заказать|цена|курс|инвестиц|тариф|доставка|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй|бесплатный\s+выпуск|заказывайте|оставьте\s+заявку|подробнее\s+на\s+сайте/i;
 const AD_MARK_REGEX = /жарнама|реклама|жарнамалық|спонсор/i;
 const BULLY_REGEX =
   /бездар|тупой|тупая|идиот|урод|мразь|ничтожеств|даун|клоун|найдем|за базар|продажн[а-я]+\s+твар|предател|мошенник[а-я]*(?=.*(?:кандидат|депутат|тварь|предатель))/i;
@@ -892,12 +912,32 @@ export function detectPersonalDataDoxing(rawText: string): {
   return { detected: matches.length > 0, matches };
 }
 
-// Deterministic fallback marker categories only (resignation, picket, rally, protest, march) — no specific slogans, dates, or surnames
+// Explicit direct mobilization calls to unauthorized rallies/protests/road blockades (ст. 488 КоАП РК)
+const EXPLICIT_UNLAWFUL_ASSEMBLY_CALL_REGEX =
+  /(?:призыва(?:ю|ем|ет|ют)|зову|зов[её]м|выходи(?:те)?|выходим|ид[её]м(?:те)?|вставай(?:те)?|собира(?:ем|йте)сь|все\s+(?:на|к))\s+(?:всех\s+|людей\s+|народ\s+|завтра\s+|сегодня\s+|сейчас\s+)?(?:на\s+)?(?:несанкционированн[а-яё]*\s+|несогласованн[а-яё]*\s+)?(?:митинг[а-яё]*|шестви[а-яё]*|пикет[а-яё]*|акци[юяи]\s+протеста|площад[ьи]|баррикад[а-яё]*|забастовк[а-яё]*)|(?:призыва[юе]|выходи[мт]|собирай|все\s+на)\b[^.!?\n]{0,45}\b(?:митинг[а-яё]*|пикет[а-яё]*|шестви[а-яё]*|площад[ьи]|протест[а-яё]*|наразылық|алаңға)|несанкционированн[а-яё]+\s+(?:митинг|шестви[ея]|пикет|акци[юия])|несогласованн[а-яё]+\s+(?:митинг|шестви[ея]|пикет|акци[юия])|перекрыти[ея]\s+дорог|перекры(?:ть|вай(?:те)?|ваем)\s+дорог[уи]|(?:алаңға|митинг(?:ке|іге)|шеру(?:ге)?|наразылық(?:\s+акциясына|\s+шеруіне)?)\s*(?:шығайық|шығыңдар|шығыңыз|жиналыңдар|жиналайық|барайық|барыңдар)|рұқсат\s+етілмеген\s+(?:митинг|жиын|акция|шеру)|жол(?:ды)?\s+жаб(?:айық|ыңдар|у)/i;
+
+// Deterministic Human-in-the-loop fallback: general protest/resignation/rally/picket/march discussion without direct mobilization call
 const PEACEFUL_ASSEMBLY_CALL_REGEX =
-  /(?:^|[\s«"(])(?:в\s+)?отставк[аеиуой](?=$|[\s.,!?;:»"')\]])|отставкағ?а|(?:выйти|выходим|выходите|приходи(?:те)?|собираемся|собирайтесь)\s+(?:на\s+)?(?:площад[ьи]|митинг|шестви[ея]|пикет|акци[юя]\s+протеста|уличн[а-яё]+\s+акци[юи]|перекрыти[ея]\s+дорог)|несанкционированн[а-яё]+\s+(?:митинг|шестви[ея]|пикет|акци[юия])|перекрыти[ея]\s+дорог|перекры(?:ть|вай(?:те)?|ваем)\s+дорог[уи]|(?:^|[\s«"(])(?:на|в)\s+митинг(?:и|ов|ам|ах|е|а|у)?(?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])митинг(?:и|ов|ам|ах|е|а|у|ке|іге|қа|ге|те)?(?=$|[\s.,!?;:»"')\]])|(?:уличн[а-яё]+\s+)?акци[яюи]\s+протеста|(?:^|[\s«"(])(?:на|к)\s+протест[ауы]?(?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])протест(?:овать|уем|уют|ный|ная|ное|ные|ов)?(?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])шестви[еяйю](?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])пикет(?:ы|ов|а|у|ам|е)?(?=$|[\s.,!?;:»"')\]])|алаңға\s*(?:шығ|жинал|кел)[а-яәғқңөұүһі]*|наразылық(?:\s+акция|\s+шеру|\s+білдір)?|шеру(?:ге)?(?=$|[\s.,!?;:»"')\]])|рұқсат\s+етілмеген\s+(?:митинг|жиын|акция)|жол(?:ды)?\s+жабу/i;
+  /(?:^|[\s«"(])(?:в\s+)?отставк[аеиуой](?=$|[\s.,!?;:»"')\]])|отставкағ?а|(?:^|[\s«"(])(?:на|в)\s+митинг(?:и|ов|ам|ах|е|а|у)?(?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])митинг(?:и|ов|ам|ах|е|а|у|ке|іге|қа|ге|те)?(?=$|[\s.,!?;:»"')\]])|(?:уличн[а-яё]+\s+|протестн[а-яё]+\s+)?акци[яюи]\s+протеста|(?:^|[\s«"(])(?:на|к)\s+протест[ауы]?(?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])протест(?:овать|уем|уют|ный|ная|ное|ные|ов)?(?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])шестви[еяйю](?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])пикет(?:ы|ов|а|у|ам|е)?(?=$|[\s.,!?;:»"')\]])|алаңға|наразылық(?:\s+акция|\s+шеру|\s+білдір)?|шеру(?:ге)?(?=$|[\s.,!?;:»"')\]])/i;
 
 const PEACEFUL_ELECTION_CONTEXT_REGEX =
   /приходите\s+на\s+выборы|голосуйте\s+по\s+совести|официальн[а-яё]+\s+выбор[а-яё]*|избирательн[а-яё]+\s+участ|сайлауға\s+(?:кел|қатыс)|ар-?ождан\S*\s+дауыс\s+бер/i;
+
+export function detectExplicitAssemblyViolation(rawText: string): {
+  detected: boolean;
+  quote?: string;
+} {
+  if (!rawText || isJournalisticWarningContext(rawText)) return { detected: false };
+  if (PEACEFUL_ELECTION_CONTEXT_REGEX.test(rawText)) {
+    return { detected: false };
+  }
+  const sanitized = rawText.replace(
+    /(?:без|нет|не\s+содержит|отсутств[а-яё]+)\s+(?:каких-либо\s+)?(?:прямых\s+|откровенных\s+|явных\s+)?призыв[а-яё]*[^.!?\n]{0,65}/gi,
+    ' '
+  );
+  const match = sanitized.match(EXPLICIT_UNLAWFUL_ASSEMBLY_CALL_REGEX);
+  return { detected: Boolean(match), quote: match ? match[0].trim() : undefined };
+}
 
 export function detectPeacefulAssemblyCall(rawText: string): {
   detected: boolean;
@@ -952,7 +992,8 @@ export function analyzeKzFraudAndLanguage(rawText: string, url?: string): KzFrau
     languageCoverage = 'ru_only';
   }
 
-  const isCommercial = COMMERCIAL_REGEX.test(lower);
+  const hasAssemblyContext = EXPLICIT_UNLAWFUL_ASSEMBLY_CALL_REGEX.test(combined) || PEACEFUL_ASSEMBLY_CALL_REGEX.test(combined);
+  const isCommercial = COMMERCIAL_REGEX.test(lower) && (!hasAssemblyContext || STRICT_SHOPPING_REGEX.test(lower));
   const isGambling = GAMBLING_REGEX.test(lower);
   const needsKzParityWarning = !isContextWarning && isCommercial && !isGambling && languageCoverage === 'ru_only' && combined.length > 25;
 

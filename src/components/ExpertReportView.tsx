@@ -78,7 +78,13 @@ interface ExpertReportViewProps {
   onOpenPdfModal: (entityTier?: BusinessEntityType) => void;
   onRetest: () => void;
   onReauditFixedText?: (fixedText: string) => Promise<void> | void;
-  onOpenShare?: (data: { title?: string; text?: string; isReport?: boolean }) => void;
+  onOpenShare?: (data: {
+    title?: string;
+    text?: string;
+    isReport?: boolean;
+    auditCase?: AuditCase;
+    entityTier?: BusinessEntityType;
+  }) => void;
 }
 
 type EntityTier = BusinessEntityType;
@@ -478,6 +484,8 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         title: `${language === 'kz' ? 'Сараптамалық есеп' : 'Экспертный отчёт'}: ${auditCase.title} (${auditCase.referenceNumber})`,
         text: summaryText,
         isReport: true,
+        auditCase,
+        entityTier,
       });
       return;
     }
@@ -505,7 +513,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
           );
         }
         if (activeRiskFilter === 'casino') {
-          return /ч\.\s*1\s*ст\.\s*455|п\.\s*5-1|5-1\s*ст\.\s*6|445-1|казино|casino|1win|1xbet|слот|букмекер|ставк|рулетк|фриспин|азартн|лотере/i.test(text);
+          return /ч\.\s*1\s*ст\.\s*455|п\.\s*5-1|5-1\s*ст\.\s*6|445-1|(?<![а-яёәғқңөұүһіa-z])(?:казино|casino|1win|1xbet|слот[ыа-яё]*|букмекер[а-яё]*|ставк(?:а|и|у|е|ой|ами|ах)|рулетк[а-яё]*|фриспин[а-яё]*|азартн[а-яё]*|лотере[а-яё]*)(?=$|[^а-яёәғқңөұүһіa-z])/i.test(text);
         }
         if (activeRiskFilter === 'dark_pattern') {
           return /dark pattern|манипуляц|fomo|дефицит|таймер|гарантир|обман|ложный|давлен/i.test(text);

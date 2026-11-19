@@ -56,7 +56,12 @@ export default function App() {
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
 
   const handleOpenShare = (data?: ShareData) => {
-    setShareData(data);
+    setShareData({
+      isReport: true,
+      auditCase: data?.auditCase || currentAuditCase,
+      entityTier: data?.entityTier || entityTier,
+      ...data,
+    });
     setIsShareModalOpen(true);
   };
 
