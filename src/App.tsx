@@ -42,7 +42,19 @@ function stripHeavyMediaForStorage(auditCase: AuditCase): AuditCase {
 }
 
 export default function App() {
-  const [showWelcome, setShowWelcome] = useState(true);
+  const [showWelcome, setShowWelcome] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      const search = window.location.search || '';
+      const hash = window.location.hash || '';
+      if (search.includes('view=') || search.includes('scanner') || hash.includes('scanner')) {
+        return false;
+      }
+      return sessionStorage.getItem('checkactivity_entered') !== 'true';
+    } catch {
+      return true;
+    }
+  });
   const [currentView, setCurrentView] = useState<ViewType>('home');
   const [currentAuditCase, setCurrentAuditCase] = useState<AuditCase>(() =>
     normalizeAuditCaseCompliance(PRIMARY_AUDIT_CASE)
@@ -158,6 +170,11 @@ export default function App() {
         onEnter={(targetView = 'home') => {
           setCurrentView(targetView);
           setShowWelcome(false);
+          try {
+            sessionStorage.setItem('checkactivity_entered', 'true');
+          } catch {
+            // ignore
+          }
         }}
       />
     );
