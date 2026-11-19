@@ -56,19 +56,25 @@ import { PRIMARY_AUDIT_CASE } from '../data/mockData';
 import { calculateRiskDistribution, ChartDatum } from '../utils/riskAnalytics';
 import { analyzeEmojis } from '../utils/emojiIntelligence';
 import { rewriteContentSafe } from '../services/geminiService';
+import { copyTextToClipboard } from '../utils/clipboard';
 import {
   buildOfficialDocument,
   getCompliancePenaltyDisplay,
+  getLocalizedRiskLevel,
+  getLocalizedStatus,
   isEthicsViolation,
   isLegalViolation,
   MRP_2026_KZT,
   normalizeAuditCaseCompliance,
   type BusinessEntityType,
 } from '../utils/kzComplianceIntelligence';
+import { findKzLawByViolation, KZ_LAWS_DB } from '../data/kzLawsDb';
 import { useApp } from '../utils/i18n';
 
 interface ExpertReportViewProps {
   auditCase?: AuditCase;
+  entityTier?: BusinessEntityType;
+  onEntityTierChange?: (tier: BusinessEntityType) => void;
   onOpenPdfModal: (entityTier?: BusinessEntityType) => void;
   onRetest: () => void;
   onReauditFixedText?: (fixedText: string) => Promise<void> | void;
@@ -204,6 +210,8 @@ function renderHighlightedText(
 
 export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
   auditCase: rawAuditCase = PRIMARY_AUDIT_CASE,
+  entityTier: propEntityTier,
+  onEntityTierChange,
   onOpenPdfModal,
   onRetest,
   onReauditFixedText,
@@ -231,29 +239,69 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
   const [isReauditing, setIsReauditing] = useState(false);
   const [rewriteLang, setRewriteLang] = useState<'ru' | 'kz'>('ru');
   const [copiedRewrite, setCopiedRewrite] = useState(false);
-  const [entityTier, setEntityTier] = useState<EntityTier>('small');
+  const [localEntityTier, setLocalEntityTier] = useState<EntityTier>('small');
+  const entityTier = propEntityTier ?? localEntityTier;
+  const setEntityTier = (tier: EntityTier) => {
+    setLocalEntityTier(tier);
+    onEntityTierChange?.(tier);
+  };
   const [docType, setDocType] = useState<'complaint_gov' | 'claim_blogger'>('claim_blogger');
   const [copiedLegalDoc, setCopiedLegalDoc] = useState(false);
   const audioElementRef = React.useRef<HTMLAudioElement | null>(null);
   const videoPlayerRef = React.useRef<HTMLVideoElement | null>(null);
+  const isMountedRef = React.useRef(true);
+  const activeCaseIdRef = React.useRef(auditCase.id);
+  const rewriteOpIdRef = React.useRef(0);
+  const reauditOpIdRef = React.useRef(0);
+  const copyTimersRef = React.useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const scheduleFlagReset = React.useCallback((setter: (v: boolean) => void, delayMs: number) => {
+    setter(true);
+    const timer = setTimeout(() => {
+      if (isMountedRef.current) setter(false);
+    }, delayMs);
+    copyTimersRef.current.push(timer);
+  }, []);
 
   React.useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      for (const timer of copyTimersRef.current) {
+        clearTimeout(timer);
+      }
+      copyTimersRef.current = [];
+    };
+  }, []);
+
+  React.useEffect(() => {
+    activeCaseIdRef.current = auditCase.id;
     setRewriteResult(auditCase.rewriteResult || null);
     setActiveBbox(auditCase.violations[0]?.id || null);
+    setIsRewriting(false);
+    setIsReauditing(false);
   }, [auditCase.id, auditCase.rewriteResult]);
 
+  const localizedStatus = getLocalizedStatus(auditCase.status, language);
+  const localizedRiskLevel = getLocalizedRiskLevel(auditCase.riskLevel, language);
+
   const seekToTimestamp = (timestampStr: string) => {
-    if (!timestampStr) return;
-    const clean = timestampStr.replace(/[^0-9:]/g, '');
-    const parts = clean.split(':').map((p) => parseFloat(p));
+    if (!timestampStr || typeof timestampStr !== 'string') return;
+    const clean = timestampStr.replace(/[^0-9:.]/g, '').trim();
+    if (!clean || !/\d/.test(clean)) return;
+    const parts = clean.split(':').map((p) => Number(p));
+    if (parts.some((n) => !Number.isFinite(n) || n < 0)) return;
     let sec = 0;
     if (parts.length === 2) {
-      sec = (parts[0] || 0) * 60 + (parts[1] || 0);
+      sec = parts[0] * 60 + parts[1];
     } else if (parts.length === 3) {
-      sec = (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+      sec = parts[0] * 3600 + parts[1] * 60 + parts[2];
     } else if (parts.length === 1) {
-      sec = parts[0] || 0;
+      sec = parts[0];
+    } else {
+      return;
     }
+    if (!Number.isFinite(sec) || sec < 0) return;
 
     if (videoPlayerRef.current) {
       videoPlayerRef.current.currentTime = sec;
@@ -263,7 +311,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
       const baseUrl = auditCase.videoDataUrl.split('?')[0];
       const iframe = document.querySelector('iframe');
       if (iframe) {
-        iframe.src = `${baseUrl}?start=${sec}&autoplay=1`;
+        iframe.src = `${baseUrl}?start=${Math.floor(sec)}&autoplay=1`;
         iframe.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     } else if (audioElementRef.current) {
@@ -275,49 +323,85 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
 
   const handleCopyReport = () => {
     const findingsList =
-      auditCase.mediaAnalysis?.findings && auditCase.mediaAnalysis.findings.length > 0
+      Array.isArray(auditCase.mediaAnalysis?.findings) && auditCase.mediaAnalysis.findings.length > 0
         ? auditCase.mediaAnalysis.findings
-            .map(
-              (f) =>
-                `[${f.timestamp}] [${f.source}] ${f.category}\nЦитата/Описание: «${f.quote_or_description}»\nДостоверность: ${f.confidence} | Обоснование: ${f.reasoning}`
+            .map((f) =>
+              language === 'kz'
+                ? `[${f.timestamp}] [${f.source}] ${f.category}\nДәйексөз/Сипаттама: «${f.quote_or_description}»\nДәлдік: ${f.confidence} | Негіздеме: ${f.reasoning}`
+                : `[${f.timestamp}] [${f.source}] ${f.category}\nЦитата/Описание: «${f.quote_or_description}»\nДостоверность: ${f.confidence} | Обоснование: ${f.reasoning}`
             )
             .join('\n\n')
         : auditCase.violations
             .map((v, i) => {
               const vp = getCompliancePenaltyDisplay([v], entityTier, language);
               const vpText = vp.mode === 'legal_fine' ? `${vp.mrpRangeText} (${vp.kztRangeText})` : vp.headline;
-              return `${i + 1}. [${v.category === 'ethics' ? 'ЭТИКА' : 'ЗАКОН РК'}] ${v.title} (${v.code})\nЦитата: «${v.quote || '-'}»\nОбоснование: ${v.basis}\nШтраф/Регулятор: ${vpText} (${v.jurisdiction || '-'})\nРекомендация: ${v.recommendation || '-'}`;
+              const tagLabel =
+                v.category === 'ethics'
+                  ? 'ЭТИКА'
+                  : language === 'kz'
+                  ? 'ҚР ЗАҢЫ'
+                  : 'ЗАКОН РК';
+              return language === 'kz'
+                ? `${i + 1}. [${tagLabel}] ${v.title} (${v.code})\nДәйексөз: «${v.quote || '-'}»\nНегіздеме: ${v.basis}\nАйыппұл/Реттеуші: ${vpText} (${v.jurisdiction || '-'})\nҰсыныс: ${v.recommendation || '-'}`
+                : `${i + 1}. [${tagLabel}] ${v.title} (${v.code})\nЦитата: «${v.quote || '-'}»\nОбоснование: ${v.basis}\nШтраф/Регулятор: ${vpText} (${v.jurisdiction || '-'})\nРекомендация: ${v.recommendation || '-'}`;
             })
             .join('\n\n');
 
-    const reportText = [
-      `═════════════════════════════════════════════════`,
-      `ЭКСПЕРТНЫЙ ОТЧЁТ CHECK ACTIVITY KZ: ${auditCase.referenceNumber}`,
-      `═════════════════════════════════════════════════`,
-      `Объект: ${auditCase.title}`,
-      `Дата и время: ${auditCase.timestamp}`,
-      `Индекс риска: ${auditCase.riskScore} / 100 (${auditCase.riskLevel})`,
-      `Правовой комплаенс: ${auditCase.legalScore || 0}% | Интернет-этика: ${auditCase.ethicsScore || 0}%`,
-      `Штраф (оценка): ${penaltyDisplay.headline} (${penaltyDisplay.mrpRangeText})`,
-      `Статус: ${auditCase.status}`,
-      auditCase.mediaAnalysis?.language ? `Язык материала: ${auditCase.mediaAnalysis.language}` : '',
-      auditCase.mediaAnalysis?.overall_risk ? `Общий уровень риска: ${auditCase.mediaAnalysis.overall_risk}` : '',
-      `Резюме: ${auditCase.mediaAnalysis?.summary || auditCase.summary}`,
-      ``,
-      `ВЫЯВЛЕННЫЕ РИСКИ И НАРУШЕНИЯ:`,
-      findingsList || '0 ₸ (Нарушений не выявлено). Материал соответствует нормам законодательства РК.',
-      ``,
-      auditCase.mediaAnalysis?.limitations ? `Ограничения анализа: ${auditCase.mediaAnalysis.limitations}` : '',
-      `═════════════════════════════════════════════════`,
-      `Результат предварительный, требуется проверка человеком.`,
-      `═════════════════════════════════════════════════`,
-    ]
+    const reportText = (
+      language === 'kz'
+        ? [
+            `═════════════════════════════════════════════════`,
+            `CHECK ACTIVITY KZ САРАПТАМАЛЫҚ ЕСЕБІ: ${auditCase.referenceNumber}`,
+            `═════════════════════════════════════════════════`,
+            `Нысан: ${auditCase.title}`,
+            `Күні мен уақыты: ${auditCase.timestamp}`,
+            `Тәуекел индексі: ${auditCase.riskScore} / 100 (${localizedRiskLevel})`,
+            `Құқықтық комплаенс: ${auditCase.legalScore || 0}% | Цифрлық этика: ${auditCase.ethicsScore || 0}%`,
+            `Айыппұл (бағалау): ${penaltyDisplay.headline} (${penaltyDisplay.mrpRangeText})`,
+            `Мәртебе: ${localizedStatus}`,
+            auditCase.mediaAnalysis?.language ? `Материал тілі: ${auditCase.mediaAnalysis.language}` : '',
+            auditCase.mediaAnalysis?.overall_risk ? `Жалпы тәуекел деңгейі: ${auditCase.mediaAnalysis.overall_risk}` : '',
+            `Түйін: ${auditCase.mediaAnalysis?.summary || auditCase.summary}`,
+            ``,
+            `АНЫҚТАЛҒАН ТӘУЕКЕЛДЕР МЕН БҰЗУШЫЛЫҚТАР:`,
+            findingsList || '0 ₸ (Бұзушылықтар анықталмады). Материал ҚР заңнамасына сәйкес келеді.',
+            ``,
+            auditCase.mediaAnalysis?.limitations ? `Талдау шектеулері: ${auditCase.mediaAnalysis.limitations}` : '',
+            `═════════════════════════════════════════════════`,
+            `Нәтиже алдын ала берілген, адам тексеруі қажет.`,
+            `═════════════════════════════════════════════════`,
+          ]
+        : [
+            `═════════════════════════════════════════════════`,
+            `ЭКСПЕРТНЫЙ ОТЧЁТ CHECK ACTIVITY KZ: ${auditCase.referenceNumber}`,
+            `═════════════════════════════════════════════════`,
+            `Объект: ${auditCase.title}`,
+            `Дата и время: ${auditCase.timestamp}`,
+            `Индекс риска: ${auditCase.riskScore} / 100 (${localizedRiskLevel})`,
+            `Правовой комплаенс: ${auditCase.legalScore || 0}% | Интернет-этика: ${auditCase.ethicsScore || 0}%`,
+            `Штраф (оценка): ${penaltyDisplay.headline} (${penaltyDisplay.mrpRangeText})`,
+            `Статус: ${localizedStatus}`,
+            auditCase.mediaAnalysis?.language ? `Язык материала: ${auditCase.mediaAnalysis.language}` : '',
+            auditCase.mediaAnalysis?.overall_risk ? `Общий уровень риска: ${auditCase.mediaAnalysis.overall_risk}` : '',
+            `Резюме: ${auditCase.mediaAnalysis?.summary || auditCase.summary}`,
+            ``,
+            `ВЫЯВЛЕННЫЕ РИСКИ И НАРУШЕНИЯ:`,
+            findingsList || '0 ₸ (Нарушений не выявлено). Материал соответствует нормам законодательства РК.',
+            ``,
+            auditCase.mediaAnalysis?.limitations ? `Ограничения анализа: ${auditCase.mediaAnalysis.limitations}` : '',
+            `═════════════════════════════════════════════════`,
+            `Результат предварительный, требуется проверка человеком.`,
+            `═════════════════════════════════════════════════`,
+          ]
+    )
       .filter(Boolean)
       .join('\n');
 
-    navigator.clipboard?.writeText(reportText);
-    setCopiedReport(true);
-    setTimeout(() => setCopiedReport(false), 2500);
+    void copyTextToClipboard(reportText).then((ok) => {
+      if (ok && isMountedRef.current) {
+        scheduleFlagReset(setCopiedReport, 2500);
+      }
+    });
   };
 
   const isVideoCase =
@@ -353,7 +437,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
     }
   };
 
-  const riskAnalytics = calculateRiskDistribution(auditCase.violations);
+  const riskAnalytics = calculateRiskDistribution(auditCase.violations, language);
 
   const legalViolations = auditCase.violations.filter((v) => isLegalViolation(v));
   const ethicsViolations = auditCase.violations.filter((v) => isEthicsViolation(v));
@@ -366,29 +450,32 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         : language === 'kz'
         ? 'Бұзушылықтар анықталған жоқ'
         : 'Нарушений не выявлено';
+    const safeSha = typeof auditCase.sha256 === 'string' && auditCase.sha256 ? auditCase.sha256 : 'unavailable';
 
     const summaryText =
       language === 'kz'
         ? [
             `CheckActivity KZ · Сараптамалық есеп ${auditCase.referenceNumber}`,
             `Нысан: ${auditCase.title}`,
-            `Мәртебе: ${auditCase.status} | Тәуекел индексі: ${auditCase.riskScore}/100 (${auditCase.riskLevel})`,
+            `Мәртебе: ${localizedStatus} | Тәуекел индексі: ${auditCase.riskScore}/100 (${localizedRiskLevel})`,
             `Айыппұл бағасы: ${penaltyDisplay.headline}`,
             `Анықталған баптар: ${articlesList}`,
-            `SHA-256: ${auditCase.sha256}`,
+            `SHA-256: ${safeSha}`,
           ].join('\n')
         : [
             `CheckActivity KZ · Экспертный отчёт ${auditCase.referenceNumber}`,
             `Объект: ${auditCase.title}`,
-            `Статус: ${auditCase.status} | Индекс риска: ${auditCase.riskScore}/100 (${auditCase.riskLevel})`,
+            `Статус: ${localizedStatus} | Индекс риска: ${auditCase.riskScore}/100 (${localizedRiskLevel})`,
             `Оценка штрафа: ${penaltyDisplay.headline}`,
             `Выявленные статьи: ${articlesList}`,
-            `SHA-256: ${auditCase.sha256}`,
+            `SHA-256: ${safeSha}`,
           ].join('\n');
 
-    navigator.clipboard?.writeText(summaryText);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+    void copyTextToClipboard(summaryText).then((ok) => {
+      if (ok && isMountedRef.current) {
+        scheduleFlagReset(setCopiedLink, 2000);
+      }
+    });
   };
 
   const filteredByRisk = activeRiskFilter
@@ -437,14 +524,20 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
           <div className="font-['JetBrains_Mono'] text-[11px] text-zinc-400 mb-2">
             {data.article}
           </div>
-          <div className="flex items-center justify-between border-t border-zinc-800 pt-1.5 text-[11px]">
-            <span className="text-zinc-400">Доля риска в кейсе:</span>
+          <div className="flex items-center justify-between border-t border-zinc-800 pt-1.5 text-[11px] gap-2">
+            <span className="text-zinc-400">
+              {language === 'kz' ? 'Істегі тәуекел үлесі:' : 'Доля риска в кейсе:'}
+            </span>
             <span className="font-semibold text-zinc-100 font-['JetBrains_Mono'] tabular-nums text-xs">{data.value}%</span>
           </div>
           {data.count > 0 && (
-            <div className="flex items-center justify-between text-[11px] mt-1">
-              <span className="text-zinc-400">Зафиксировано пунктов:</span>
-              <span className="font-medium text-zinc-200 tabular-nums">{data.count} шт.</span>
+            <div className="flex items-center justify-between text-[11px] mt-1 gap-2">
+              <span className="text-zinc-400">
+                {language === 'kz' ? 'Тіркелген тармақтар:' : 'Зафиксировано пунктов:'}
+              </span>
+              <span className="font-medium text-zinc-200 tabular-nums">
+                {data.count} {language === 'kz' ? 'дана' : 'шт.'}
+              </span>
             </div>
           )}
         </div>
@@ -523,11 +616,11 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         </div>
 
         {/* Action Buttons */}
-        <div className="flex flex-wrap items-center gap-2 shrink-0">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 w-full lg:w-auto shrink-0">
           <button
             type="button"
             onClick={handleCopyReport}
-            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-200 border border-zinc-200/80 dark:border-zinc-800 font-medium text-xs transition-colors whitespace-nowrap"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-200 border border-zinc-200/80 dark:border-zinc-800 font-medium text-xs transition-colors"
             title={
               language === 'kz'
                 ? 'Құрылымдалған сараптамалық есепті көшіру'
@@ -535,11 +628,11 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             }
           >
             {copiedReport ? (
-              <Check className="w-4 h-4 text-emerald-500" strokeWidth={1.8} />
+              <Check className="w-4 h-4 text-emerald-500 shrink-0" strokeWidth={1.8} />
             ) : (
-              <Copy className="w-4 h-4 text-zinc-500 dark:text-zinc-400" strokeWidth={1.6} />
+              <Copy className="w-4 h-4 text-zinc-500 dark:text-zinc-400 shrink-0" strokeWidth={1.6} />
             )}
-            <span>
+            <span className="truncate">
               {copiedReport
                 ? language === 'kz'
                   ? 'Есеп көшірілді!'
@@ -553,33 +646,34 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
           <button
             type="button"
             onClick={() => onOpenPdfModal(entityTier)}
-            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-zinc-200 dark:text-zinc-900 font-medium text-xs transition-colors whitespace-nowrap shadow-xs"
+            className="flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-zinc-200 dark:text-zinc-900 font-medium text-xs transition-colors shadow-xs"
           >
-            <FileText className="w-4 h-4" strokeWidth={1.6} />
-            <span>{t('printPdfBtn')}</span>
+            <FileText className="w-4 h-4 shrink-0" strokeWidth={1.6} />
+            <span className="truncate">{t('printPdfBtn')}</span>
           </button>
 
           <button
             type="button"
             onClick={onRetest}
-            className="flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-200 border border-zinc-200/80 dark:border-zinc-800 text-xs font-medium transition-colors whitespace-nowrap"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-200 border border-zinc-200/80 dark:border-zinc-800 text-xs font-medium transition-colors"
           >
-            <ArrowLeft className="w-4 h-4 text-zinc-500 dark:text-zinc-400" strokeWidth={1.6} />
-            <span>{t('newAuditBtn')}</span>
+            <ArrowLeft className="w-4 h-4 text-zinc-500 dark:text-zinc-400 shrink-0" strokeWidth={1.6} />
+            <span className="truncate">{t('newAuditBtn')}</span>
           </button>
 
           <button
             type="button"
             onClick={handleShare}
-            className="p-2 rounded-xl bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-800 transition-colors"
+            className="flex items-center justify-center gap-1.5 px-3 sm:p-2 py-2 rounded-xl bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-800 text-xs font-medium transition-colors"
             title={t('shareBtn')}
             aria-label={t('shareBtn')}
           >
             {copiedLink ? (
-              <Check className="w-4 h-4 text-emerald-500" strokeWidth={1.8} />
+              <Check className="w-4 h-4 text-emerald-500 shrink-0" strokeWidth={1.8} />
             ) : (
-              <Share2 className="w-4 h-4" strokeWidth={1.6} />
+              <Share2 className="w-4 h-4 shrink-0" strokeWidth={1.6} />
             )}
+            <span className="sm:hidden truncate">{copiedLink ? t('ocrCopied') : t('shareBtn')}</span>
           </button>
         </div>
       </div>
@@ -605,13 +699,13 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                   : 'bg-emerald-600 text-white'
               }`}
             >
-              {auditCase.status}
+              {localizedStatus}
             </span>
             <span className="font-['JetBrains_Mono'] text-sm font-bold text-zinc-950 dark:text-zinc-50 tabular-nums">
-              {language === 'kz' ? 'Тәуекел индексі:' : 'Индекс риска:'} {auditCase.riskScore} / 100 ({auditCase.riskLevel})
+              {language === 'kz' ? 'Тәуекел индексі:' : 'Индекс риска:'} {auditCase.riskScore} / 100 ({localizedRiskLevel})
             </span>
           </div>
-          <p className="text-xs sm:text-[13px] font-medium text-zinc-800 dark:text-zinc-200 leading-snug">
+          <p className="text-xs sm:text-[13px] font-medium text-zinc-800 dark:text-zinc-200 leading-snug break-words">
             {auditCase.summary || (isClean ? t('cleanMaterialNote') : penaltyDisplay.subline)}
           </p>
         </div>
@@ -663,7 +757,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                     : 'bg-emerald-600'
                 }`}
               />
-              <span>{auditCase.riskLevel}</span>
+              <span>{localizedRiskLevel}</span>
             </span>
           </div>
           <div className="my-2.5">
@@ -693,7 +787,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                 : 'text-emerald-700 dark:text-emerald-400'
             }`}
           >
-            {auditCase.status}
+            {localizedStatus}
           </span>
         </div>
 
@@ -830,14 +924,71 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
         </div>
       </div>
 
-      {/* Human-in-the-loop Disclaimer Banner */}
-      <div className="px-4 py-2.5 rounded-xl bg-zinc-100/80 dark:bg-zinc-900/90 border border-zinc-200/80 dark:border-zinc-800 flex items-center gap-2.5 text-xs text-zinc-600 dark:text-zinc-300">
-        <Info className="w-4 h-4 text-zinc-500 dark:text-zinc-400 shrink-0" strokeWidth={1.6} />
-        <span>
-          {language === 'kz'
-            ? 'Жүйе тек тәуекелдерді белгілейді, ал түпкілікті шешімді адам қабылдайды.'
-            : 'Система только подсвечивает риски, а финальное решение принимает человек.'}
-        </span>
+      {/* Human-in-the-loop Disclaimer Banner + Real Technical Telemetry */}
+      <div className="flex flex-col gap-2">
+        <div className="px-4 py-2.5 rounded-xl bg-zinc-100/80 dark:bg-zinc-900/90 border border-zinc-200/80 dark:border-zinc-800 flex items-center gap-2.5 text-xs text-zinc-600 dark:text-zinc-300">
+          <Info className="w-4 h-4 text-zinc-500 dark:text-zinc-400 shrink-0" strokeWidth={1.6} />
+          <span>
+            {language === 'kz'
+              ? 'Жүйе тек тәуекелдерді белгілейді, ал түпкілікті шешімді адам қабылдайды.'
+              : 'Система только подсвечивает риски, а финальное решение принимает человек.'}
+          </span>
+        </div>
+
+        {(() => {
+          const tel = auditCase.telemetry;
+          const checkedCount = tel?.checkedLawsCount ?? KZ_LAWS_DB.length;
+          const isLiveRag = tel?.engineMode === 'rag-live-ai';
+          const engineLabel = isLiveRag
+            ? `RAG + Vision AI${tel?.aiModel ? ` (${tel.aiModel})` : ''}`
+            : language === 'kz'
+            ? 'ҚР НҚА базасы бойынша жергілікті аудит'
+            : 'Локальный аудит по базе НПА РК';
+          const durationSec = tel?.totalMs ? `${(tel.totalMs / 1000).toFixed(2)} ${language === 'kz' ? 'сек' : 'сек'}` : null;
+
+          return (
+            <div className="px-4 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-2 text-[11px] font-['JetBrains_Mono'] text-zinc-600 dark:text-zinc-300">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    isLiveRag ? 'bg-emerald-500' : 'bg-amber-500'
+                  }`}
+                />
+                <span>
+                  {language === 'kz'
+                    ? `ҚР НҚА ${checkedCount} нормасы тексерілді`
+                    : `Проверено ${checkedCount} норм НПА РК`}
+                </span>
+                <span className="text-zinc-300 dark:text-zinc-700">·</span>
+                <span className="font-medium text-zinc-800 dark:text-zinc-200">{engineLabel}</span>
+                {typeof tel?.retrievedLawsCount === 'number' && tel.retrievedLawsCount > 0 && (
+                  <>
+                    <span className="text-zinc-300 dark:text-zinc-700">·</span>
+                    <span className="text-zinc-500 dark:text-zinc-400">
+                      {language === 'kz'
+                        ? `RAG-таңдау: ${tel.retrievedLawsCount}`
+                        : `RAG-контекст: ${tel.retrievedLawsCount}`}
+                    </span>
+                  </>
+                )}
+                {durationSec && (
+                  <>
+                    <span className="text-zinc-300 dark:text-zinc-700">·</span>
+                    <span className="tabular-nums">{durationSec}</span>
+                  </>
+                )}
+              </div>
+
+              {tel && (
+                <div className="text-[10px] text-zinc-400 dark:text-zinc-500 tabular-nums">
+                  {language === 'kz'
+                    ? `Алу: ${tel.extractMs}мс · Іздеу: ${tel.retrievalMs}мс · Аудит: ${tel.aiAuditMs}мс`
+                    : `Извлечение: ${tel.extractMs}мс · RAG: ${tel.retrievalMs}мс · AI: ${tel.aiAuditMs}мс`}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Fraud / Deepfake & KZ/RU Bilingual Compliance Alerts */}
@@ -852,11 +1003,13 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                     {auditCase.fraudSignals.riskCategory || 'Фишинг / Дипфейк / Скам РК'}
                   </span>
                   <span className="font-['JetBrains_Mono'] text-[10px] px-1.5 py-0.5 rounded bg-white dark:bg-zinc-900 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300">
-                    ст. 190, 274 УК РК
+                    {language === 'kz' ? 'ҚР ҚК 190, 274-баптары' : 'ст. 190, 274 УК РК'}
                   </span>
                 </div>
-                <p className="text-xs text-rose-800 dark:text-rose-300 mt-1 leading-relaxed">
-                  {auditCase.fraudSignals.indicators.join(' · ')}
+                <p className="text-xs text-rose-800 dark:text-rose-300 mt-1 leading-relaxed break-words">
+                  {Array.isArray(auditCase.fraudSignals.indicators)
+                    ? auditCase.fraudSignals.indicators.join(' · ')
+                    : ''}
                 </p>
               </div>
             </div>
@@ -1195,7 +1348,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                 {language === 'kz' ? 'Тексеру нысаны' : 'Объект проверки'}
               </span>
               <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-['JetBrains_Mono']">
-                {auditCase.metadata.fileSize || 'CONTENT PAYLOAD'}
+                {auditCase.metadata?.fileSize || 'CONTENT PAYLOAD'}
               </span>
             </div>
 
@@ -1423,7 +1576,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                           {auditCase.title}
                         </div>
                         <div className="flex items-center gap-2 text-[11px] font-['JetBrains_Mono'] text-zinc-400 mt-0.5 tabular-nums">
-                          <span>{auditCase.audioDuration || auditCase.metadata.duration || '00:28'}</span>
+                          <span>{auditCase.audioDuration || auditCase.metadata?.duration || '00:28'}</span>
                           <span>·</span>
                           <span className="text-emerald-400 font-medium">
                             {language === 'kz' ? 'Аудиопоток бекітілді' : 'Аудиопоток зафиксирован'}
@@ -1433,7 +1586,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                     </div>
 
                     <span className="px-2 py-0.5 rounded-md text-[10px] font-['JetBrains_Mono'] font-medium bg-zinc-800 text-zinc-300 border border-zinc-700 shrink-0">
-                      {auditCase.metadata.platform || 'Check Activity KZ'}
+                      {auditCase.metadata?.platform || 'Check Activity KZ'}
                     </span>
                   </div>
 
@@ -1553,24 +1706,27 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                   )}
                 </div>
               ) : auditCase.previewUrl ? (
-                <div className="relative max-h-full flex items-center justify-center w-full">
+                <div className="relative max-h-full flex items-center justify-center w-full overflow-hidden rounded-xl">
                   <img
                     src={auditCase.previewUrl}
                     alt={auditCase.title}
                     className="max-h-[360px] sm:max-h-[420px] w-auto max-w-full object-contain rounded-xl border border-zinc-200/80 dark:border-zinc-800 shadow-xs"
                   />
-                  {/* Interactive Bounding Boxes Overlay */}
+                  {/* Interactive Bounding Boxes Overlay (clamped within image viewport) */}
                   {auditCase.violations.map((v, i) => {
-                    const top = v.bbox?.y ?? (i === 0 ? 12 : 55);
-                    const left = v.bbox?.x ?? (i === 0 ? 48 : 10);
+                    const rawTop = typeof v.bbox?.y === 'number' && Number.isFinite(v.bbox.y) ? v.bbox.y : i === 0 ? 12 : 55;
+                    const rawLeft = typeof v.bbox?.x === 'number' && Number.isFinite(v.bbox.x) ? v.bbox.x : i === 0 ? 48 : 10;
+                    const top = Math.min(Math.max(rawTop, 4), 76);
+                    const left = Math.min(Math.max(rawLeft, 4), 65);
                     const isEthics = v.category === 'ethics';
                     const isSelected = activeBbox === v.id;
+                    const shortCode = String(v.code || (language === 'kz' ? 'ҚР Заңы' : 'Закон РК')).split('/')[0];
                     return (
                       <div
                         key={v.id || i}
                         onClick={() => setActiveBbox(v.id)}
                         style={{ top: `${top}%`, left: `${left}%` }}
-                        className={`absolute max-w-[200px] sm:max-w-[240px] rounded-lg p-2 transition-all cursor-pointer shadow-md select-none ${
+                        className={`absolute max-w-[175px] sm:max-w-[220px] rounded-lg p-2 transition-all cursor-pointer shadow-md select-none ${
                           isSelected
                             ? isEthics
                               ? 'bg-violet-600 text-white ring-2 ring-violet-400'
@@ -1580,15 +1736,15 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                       >
                         <div className="flex items-center justify-between pb-0.5 text-[10px] font-['JetBrains_Mono'] font-semibold">
                           <span
-                            className={
+                            className={`truncate ${
                               isSelected
                                 ? 'text-white'
                                 : isEthics
                                 ? 'text-violet-700 dark:text-violet-300'
                                 : 'text-rose-700 dark:text-rose-300'
-                            }
+                            }`}
                           >
-                            {isEthics ? 'ЭТИКА' : v.code.split('/')[0]}
+                            {isEthics ? 'ЭТИКА' : shortCode}
                           </span>
                         </div>
                         <div className="text-[11px] font-medium leading-tight line-clamp-1">
@@ -1605,7 +1761,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                       ? 'Талданатын материал мәтіні:'
                       : 'Текст анализируемого материала:'}
                   </div>
-                  <div className="p-3 bg-zinc-50 dark:bg-zinc-950 rounded-xl border border-zinc-200/80 dark:border-zinc-800 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 leading-relaxed max-h-64 overflow-y-auto whitespace-pre-wrap">
+                  <div className="p-3 bg-zinc-50 dark:bg-zinc-950 rounded-xl border border-zinc-200/80 dark:border-zinc-800 text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 leading-relaxed max-h-64 overflow-y-auto whitespace-pre-wrap break-words">
                     {renderHighlightedText(auditCase.rawText, auditCase.violations, activeBbox, setActiveBbox)}
                   </div>
                   <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-2.5 flex justify-between font-['JetBrains_Mono'] tabular-nums">
@@ -1647,9 +1803,11 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        navigator.clipboard?.writeText(extractedContent);
-                        setCopiedExtracted(true);
-                        setTimeout(() => setCopiedExtracted(false), 2000);
+                        void copyTextToClipboard(extractedContent).then((ok) => {
+                          if (ok && isMountedRef.current) {
+                            scheduleFlagReset(setCopiedExtracted, 2000);
+                          }
+                        });
                       }}
                       className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 transition-colors flex items-center gap-1"
                     >
@@ -1662,7 +1820,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                     </button>
                   </div>
                 </div>
-                <div className="p-3 bg-zinc-50 dark:bg-zinc-950 rounded-xl border border-zinc-200/80 dark:border-zinc-800 text-xs text-zinc-800 dark:text-zinc-200 font-['JetBrains_Mono'] leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap select-text">
+                <div className="p-3 bg-zinc-50 dark:bg-zinc-950 rounded-xl border border-zinc-200/80 dark:border-zinc-800 text-xs text-zinc-800 dark:text-zinc-200 font-['JetBrains_Mono'] leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap break-words select-text">
                   {renderHighlightedText(extractedContent, auditCase.violations, activeBbox, setActiveBbox)}
                 </div>
               </div>
@@ -1726,7 +1884,15 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                               ? 'bg-rose-50 dark:bg-rose-950/60 ring-1 ring-rose-400 scale-105'
                               : 'bg-white dark:bg-zinc-800 border border-zinc-200/80 dark:border-zinc-700'
                           }`}
-                          title={isFlagged ? 'Скрытый триггер' : 'Нейтральный эмодзи'}
+                          title={
+                            isFlagged
+                              ? language === 'kz'
+                                ? 'Жасырын триггер'
+                                : 'Скрытый триггер'
+                              : language === 'kz'
+                              ? 'Бейтарап эмодзи'
+                              : 'Нейтральный эмодзи'
+                          }
                         >
                           {emoji}
                         </span>
@@ -1816,7 +1982,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                 {activeRiskFilter ? ` / ${auditCase.violations.length}` : ''})
               </h2>
 
-              <div className="flex items-center gap-1 bg-zinc-100 dark:bg-zinc-950 p-1 rounded-xl border border-zinc-200/80 dark:border-zinc-800 text-xs self-start sm:self-auto">
+              <div className="flex items-center gap-1 bg-zinc-100 dark:bg-zinc-950 p-1 rounded-xl border border-zinc-200/80 dark:border-zinc-800 text-xs self-start sm:self-auto max-w-full overflow-x-auto">
                 <button
                   type="button"
                   onClick={() => setSelectedFilter('all')}
@@ -2025,7 +2191,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                         : 'border-zinc-200/80 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700'
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 sm:gap-3">
                       <div className="flex flex-col min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="inline-flex items-center gap-1.5 font-['JetBrains_Mono'] text-[10px] uppercase font-semibold tracking-wider text-zinc-600 dark:text-zinc-300">
@@ -2065,7 +2231,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                         </h3>
                       </div>
 
-                      <span className="px-2.5 py-0.5 rounded-md font-['JetBrains_Mono'] text-[11px] font-medium shrink-0 bg-zinc-50 dark:bg-zinc-950 text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-800">
+                      <span className="px-2.5 py-0.5 rounded-md font-['JetBrains_Mono'] text-[11px] font-medium shrink-0 self-start sm:self-auto max-w-full sm:max-w-[240px] break-words text-left sm:text-right bg-zinc-50 dark:bg-zinc-950 text-zinc-700 dark:text-zinc-300 border border-zinc-200/80 dark:border-zinc-800">
                         {v.code}
                       </span>
                     </div>
@@ -2151,7 +2317,13 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                             : 'Регулятор:'}{' '}
                         </span>
                         <strong className="text-zinc-700 dark:text-zinc-300 font-medium">
-                          {v.jurisdiction}
+                          {(() => {
+                            const dbLaw = !isEthicsOnly ? findKzLawByViolation(v) : undefined;
+                            if (dbLaw) {
+                              return language === 'kz' ? dbLaw.regulatorKz : dbLaw.regulator;
+                            }
+                            return v.jurisdiction;
+                          })()}
                         </strong>
                       </div>
                     </div>
@@ -2179,18 +2351,35 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             <button
               type="button"
               onClick={async () => {
+                if (isRewriting) return;
                 const source = extractedContent || auditCase.summary || auditCase.title;
                 if (!source) return;
+                const opId = ++rewriteOpIdRef.current;
+                const caseIdSnapshot = auditCase.id;
                 setIsRewriting(true);
                 try {
                   const res = await rewriteContentSafe({
                     text: source,
                     violations: auditCase.violations,
                     language,
+                    entityTier,
                   });
+                  if (
+                    !isMountedRef.current ||
+                    opId !== rewriteOpIdRef.current ||
+                    activeCaseIdRef.current !== caseIdSnapshot
+                  ) {
+                    return;
+                  }
                   setRewriteResult(res);
                 } finally {
-                  setIsRewriting(false);
+                  if (
+                    isMountedRef.current &&
+                    opId === rewriteOpIdRef.current &&
+                    activeCaseIdRef.current === caseIdSnapshot
+                  ) {
+                    setIsRewriting(false);
+                  }
                 }
               }}
               disabled={isRewriting}
@@ -2225,9 +2414,9 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
             </div>
           ) : (
             <div className="flex flex-col gap-3">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-['JetBrains_Mono'] text-[11px] px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200/80 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300 tabular-nums">
-                  Индекс риска: {auditCase.riskScore}% → {rewriteResult.newRiskScore}%
+                  {language === 'kz' ? 'Тәуекел индексі:' : 'Индекс риска:'} {auditCase.riskScore}% → {rewriteResult.newRiskScore}%
                 </span>
                 <div className="flex items-center bg-zinc-100 dark:bg-zinc-950 p-0.5 rounded-lg border border-zinc-200/80 dark:border-zinc-800 text-[11px] font-['JetBrains_Mono']">
                   <button
@@ -2255,7 +2444,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                 </div>
               </div>
 
-              <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-xs text-zinc-900 dark:text-zinc-100 font-['JetBrains_Mono'] leading-relaxed whitespace-pre-wrap max-h-44 overflow-y-auto">
+              <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-xs text-zinc-900 dark:text-zinc-100 font-['JetBrains_Mono'] leading-relaxed whitespace-pre-wrap break-words max-h-44 overflow-y-auto">
                 {rewriteLang === 'ru' ? rewriteResult.safeTextRu : rewriteResult.safeTextKz}
               </div>
 
@@ -2273,26 +2462,45 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                   type="button"
                   onClick={() => {
                     const txt = rewriteLang === 'ru' ? rewriteResult.safeTextRu : rewriteResult.safeTextKz;
-                    navigator.clipboard?.writeText(txt);
-                    setCopiedRewrite(true);
-                    setTimeout(() => setCopiedRewrite(false), 2000);
+                    void copyTextToClipboard(txt).then((ok) => {
+                      if (ok && isMountedRef.current) {
+                        scheduleFlagReset(setCopiedRewrite, 2000);
+                      }
+                    });
                   }}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800"
                 >
                   {copiedRewrite ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedRewrite ? 'Скопировано' : 'Копировать текст'}</span>
+                  <span>
+                    {copiedRewrite
+                      ? language === 'kz'
+                        ? 'Көшірілді'
+                        : 'Скопировано'
+                      : language === 'kz'
+                      ? 'Мәтінді көшіру'
+                      : 'Копировать текст'}
+                  </span>
                 </button>
                 {onReauditFixedText && (
                   <button
                     type="button"
                     disabled={isReauditing}
                     onClick={async () => {
+                      if (isReauditing) return;
+                      const opId = ++reauditOpIdRef.current;
+                      const caseIdSnapshot = auditCase.id;
                       const txt = rewriteLang === 'ru' ? rewriteResult.safeTextRu : rewriteResult.safeTextKz;
                       setIsReauditing(true);
                       try {
                         await onReauditFixedText(txt);
                       } finally {
-                        setIsReauditing(false);
+                        if (
+                          isMountedRef.current &&
+                          opId === reauditOpIdRef.current &&
+                          activeCaseIdRef.current === caseIdSnapshot
+                        ) {
+                          setIsReauditing(false);
+                        }
                       }
                     }}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-xs font-medium disabled:opacity-50"
@@ -2318,17 +2526,17 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
               </h3>
             </div>
             <span className="font-['JetBrains_Mono'] text-[11px] text-zinc-500 dark:text-zinc-400">
-              1 МРП = {MRP_RATE.toLocaleString('ru-RU')} ₸
+              1 {language === 'kz' ? 'АЕК' : 'МРП'} = {MRP_RATE.toLocaleString('ru-RU')} ₸
             </span>
           </div>
 
           {/* Entity Tier Selector */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
             {[
-              { id: 'individual' as EntityTier, label: 'Физлицо', mult: 1 },
-              { id: 'small' as EntityTier, label: 'Малый / ИП', mult: 2.5 },
-              { id: 'medium' as EntityTier, label: 'Средний', mult: 4 },
-              { id: 'large' as EntityTier, label: 'Крупный', mult: 6 },
+              { id: 'individual' as EntityTier, label: language === 'kz' ? 'Жеке тұлға' : 'Физлицо', mult: 1 },
+              { id: 'small' as EntityTier, label: language === 'kz' ? 'ШОБ / ЖК' : 'Малый / ИП', mult: 2.5 },
+              { id: 'medium' as EntityTier, label: language === 'kz' ? 'Орта' : 'Средний', mult: 4 },
+              { id: 'large' as EntityTier, label: language === 'kz' ? 'Ірі' : 'Крупный', mult: 6 },
             ].map((tier) => (
               <button
                 key={tier.id}
@@ -2420,12 +2628,12 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                   )}
                 </div>
 
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center bg-zinc-100 dark:bg-zinc-950 p-0.5 rounded-lg border border-zinc-200/80 dark:border-zinc-800 text-[11px]">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center bg-zinc-100 dark:bg-zinc-950 p-0.5 rounded-lg border border-zinc-200/80 dark:border-zinc-800 text-[11px] max-w-full overflow-x-auto">
                     <button
                       type="button"
                       onClick={() => setDocType('claim_blogger')}
-                      className={`px-2.5 py-1 rounded-md font-medium ${
+                      className={`px-2.5 py-1 rounded-md font-medium whitespace-nowrap ${
                         docType === 'claim_blogger'
                           ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-2xs'
                           : 'text-zinc-500'
@@ -2436,7 +2644,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                     <button
                       type="button"
                       onClick={() => setDocType('complaint_gov')}
-                      className={`px-2.5 py-1 rounded-md font-medium ${
+                      className={`px-2.5 py-1 rounded-md font-medium whitespace-nowrap ${
                         docType === 'complaint_gov'
                           ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 shadow-2xs'
                           : 'text-zinc-500'
@@ -2449,9 +2657,11 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      navigator.clipboard?.writeText(legalDocText);
-                      setCopiedLegalDoc(true);
-                      setTimeout(() => setCopiedLegalDoc(false), 2000);
+                      void copyTextToClipboard(legalDocText).then((ok) => {
+                        if (ok && isMountedRef.current) {
+                          scheduleFlagReset(setCopiedLegalDoc, 2000);
+                        }
+                      });
                     }}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-xs font-medium"
                   >
@@ -2468,7 +2678,7 @@ export const ExpertReportView: React.FC<ExpertReportViewProps> = ({
                   </button>
                 </div>
 
-                <pre className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-[11px] font-['JetBrains_Mono'] text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">
+                <pre className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-[11px] font-['JetBrains_Mono'] text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap break-words leading-relaxed max-h-40 overflow-y-auto overflow-x-auto">
                   {legalDocText}
                 </pre>
               </>

@@ -80,6 +80,19 @@ export interface BilingualCheck {
   languageParityOk: boolean;
 }
 
+export interface AuditTelemetry {
+  extractMs: number;
+  retrievalMs: number;
+  aiAuditMs: number;
+  totalMs: number;
+  checkedLawsCount: number;
+  retrievedLawsCount: number;
+  matchedLawCodes?: string[];
+  engineMode: 'rag-live-ai' | 'deterministic-db-fallback';
+  aiModel?: string;
+  fallbackReason?: string;
+}
+
 export interface AuditCase {
   id: string;
   referenceNumber: string;
@@ -127,6 +140,7 @@ export interface AuditCase {
   rewriteResult?: RewriteResult;
   fraudSignals?: FraudSignals;
   bilingualCheck?: BilingualCheck;
+  telemetry?: AuditTelemetry;
   accessRestricted?: boolean;
   accessNotice?: string;
 }

@@ -3,12 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { FileText, X, Printer } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { FileText, X, Printer, Copy, Check } from 'lucide-react';
 import { AuditCase } from '../types';
 import { calculateRiskDistribution } from '../utils/riskAnalytics';
+import { copyTextToClipboard } from '../utils/clipboard';
 import {
   getCompliancePenaltyDisplay,
+  getLocalizedRiskLevel,
+  getLocalizedStatus,
   isEthicsViolation,
   isLegalViolation,
   MRP_2026_KZT,
@@ -30,11 +33,25 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
 }) => {
   const { t, language } = useApp();
   const [isExporting, setIsExporting] = useState(false);
+  const [copiedProtocol, setCopiedProtocol] = useState(false);
   const [entityTier, setEntityTier] = useState<BusinessEntityType>(initialEntityTier);
+  const printTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   React.useEffect(() => {
     setEntityTier(initialEntityTier);
   }, [initialEntityTier]);
+
+  React.useEffect(() => {
+    return () => {
+      if (printTimerRef.current) {
+        clearTimeout(printTimerRef.current);
+      }
+      if (copyTimerRef.current) {
+        clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const auditCase = React.useMemo(
     () => normalizeAuditCaseCompliance(rawAuditCase),
@@ -42,17 +59,27 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
   );
 
   const handlePrint = () => {
+    if (printTimerRef.current) {
+      clearTimeout(printTimerRef.current);
+    }
     setIsExporting(true);
-    setTimeout(() => {
-      window.print();
+    printTimerRef.current = setTimeout(() => {
+      try {
+        window.print();
+      } catch {
+        // ignore iframe/blocked print errors
+      }
       setIsExporting(false);
     }, 300);
   };
 
-  const riskAnalytics = calculateRiskDistribution(auditCase.violations);
+  const riskAnalytics = calculateRiskDistribution(auditCase.violations, language);
   const legalViolations = auditCase.violations.filter((v) => isLegalViolation(v));
   const ethicsViolations = auditCase.violations.filter((v) => isEthicsViolation(v));
   const penaltyDisplay = getCompliancePenaltyDisplay(auditCase.violations, entityTier, language);
+  const localizedStatus = getLocalizedStatus(auditCase.status, language);
+  const localizedRiskLevel = getLocalizedRiskLevel(auditCase.riskLevel, language);
+  const safeSha256 = typeof auditCase.sha256 === 'string' && auditCase.sha256 ? auditCase.sha256 : 'unavailable';
 
   const dynamicRecommendations = React.useMemo(() => {
     const items: string[] = [];
@@ -87,15 +114,15 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-zinc-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4"
+      className="pdf-print-backdrop fixed inset-0 z-50 bg-zinc-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4"
       onClick={onClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-3xl max-h-[92vh] rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-4 sm:p-6 shadow-2xl flex flex-col gap-4 text-zinc-900 dark:text-zinc-100"
+        className="pdf-print-dialog w-full max-w-3xl max-h-[92vh] rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-4 sm:p-6 shadow-2xl flex flex-col gap-4 text-zinc-900 dark:text-zinc-100"
       >
         {/* Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-zinc-200/80 dark:border-zinc-800">
+        <div className="pdf-no-print flex items-center justify-between pb-3 border-b border-zinc-200/80 dark:border-zinc-800">
           <div className="flex items-center gap-2.5">
             <FileText className="w-5 h-5 text-zinc-800 dark:text-zinc-200" strokeWidth={1.7} />
             <h3 className="font-['Plus_Jakarta_Sans'] text-base sm:text-lg font-semibold text-zinc-950 dark:text-zinc-50">
@@ -114,12 +141,12 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
         {/* Printable High-Contrast Legal Report Sheet */}
         <div
           id="printable-protocol"
-          className="flex-1 overflow-y-auto bg-white text-zinc-950 p-5 sm:p-8 rounded-xl border-2 border-zinc-300 font-['Inter'] text-xs leading-relaxed space-y-5"
+          className="flex-1 overflow-y-auto bg-white text-zinc-950 p-4 sm:p-8 rounded-xl border-2 border-zinc-300 font-['Inter'] text-xs leading-relaxed space-y-5"
         >
           {/* Document Header */}
-          <div className="flex items-start justify-between border-b-2 border-zinc-950 pb-4">
-            <div>
-              <div className="flex items-center gap-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between border-b-2 border-zinc-950 pb-4 gap-2 sm:gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2.5">
                 <span className="font-['Plus_Jakarta_Sans'] font-extrabold text-lg text-zinc-950 tracking-tight">
                   CHECK ACTIVITY
                 </span>
@@ -129,27 +156,27 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-zinc-700 font-['JetBrains_Mono'] font-semibold mt-1 tabular-nums">
-                ID: {auditCase.referenceNumber} · 1 МРП = {MRP_2026_KZT.toLocaleString('ru-RU')} ₸
+                ID: {auditCase.referenceNumber} · 1 {language === 'kz' ? 'АЕК' : 'МРП'} = {MRP_2026_KZT.toLocaleString('ru-RU')} ₸
               </p>
             </div>
-            <div className="text-right text-[11px] font-['JetBrains_Mono'] text-zinc-800 tabular-nums">
+            <div className="text-left sm:text-right text-[11px] font-['JetBrains_Mono'] text-zinc-800 tabular-nums shrink-0">
               <div className="font-semibold">{auditCase.timestamp}</div>
-              <div className="text-zinc-600 mt-0.5">{auditCase.metadata.platform || 'Online Media KZ'}</div>
+              <div className="text-zinc-600 mt-0.5">{auditCase.metadata?.platform || 'Online Media KZ'}</div>
             </div>
           </div>
 
           {/* High-Contrast Verdict & Financial Risk Summary Strip */}
           <div className={`p-4 rounded-xl border-2 border-l-8 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${verdictStripClass}`}>
-            <div className="space-y-1">
+            <div className="space-y-1 min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <span className={`px-2.5 py-0.5 rounded font-['JetBrains_Mono'] text-[11px] font-bold border ${statusBadgeClass}`}>
-                  {auditCase.status}
+                  {localizedStatus}
                 </span>
                 <span className="font-['JetBrains_Mono'] font-extrabold text-sm text-zinc-950 tabular-nums">
-                  {language === 'kz' ? 'ТӘУЕКЕЛ ИНДЕКСІ:' : 'ИНДЕКС РИСКА:'} {auditCase.riskScore} / 100 ({auditCase.riskLevel})
+                  {language === 'kz' ? 'ТӘУЕКЕЛ ИНДЕКСІ:' : 'ИНДЕКС РИСКА:'} {auditCase.riskScore} / 100 ({localizedRiskLevel})
                 </span>
               </div>
-              <p className="text-[11px] font-medium text-zinc-900 leading-snug">
+              <p className="text-[11px] font-medium text-zinc-900 leading-snug break-words">
                 {auditCase.summary || penaltyDisplay.subline}
               </p>
             </div>
@@ -175,35 +202,35 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
           </div>
 
           {/* Target Summary Cards */}
-          <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-300 grid grid-cols-2 sm:grid-cols-4 gap-4 text-[11px]">
-            <div>
+          <div className="bg-zinc-50 p-3.5 sm:p-4 rounded-xl border border-zinc-300 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 text-[11px]">
+            <div className="min-w-0">
               <span className="text-[10px] font-bold text-zinc-600 font-['JetBrains_Mono'] uppercase block">
-                Объект проверки
+                {language === 'kz' ? 'Тексеру нысаны' : 'Объект проверки'}
               </span>
-              <div className="text-zinc-950 font-bold truncate mt-1">{auditCase.title}</div>
+              <div className="text-zinc-950 font-bold break-words mt-1">{auditCase.title}</div>
             </div>
-            <div>
+            <div className="min-w-0">
               <span className="text-[10px] font-bold text-zinc-600 font-['JetBrains_Mono'] uppercase block">
-                Файл / Ссылка
+                {language === 'kz' ? 'Файл / Сілтеме' : 'Файл / Ссылка'}
               </span>
-              <div className="text-zinc-950 font-['JetBrains_Mono'] font-medium truncate mt-1">
+              <div className="text-zinc-950 font-['JetBrains_Mono'] font-medium break-all mt-1">
                 {auditCase.sourceName}
               </div>
             </div>
-            <div>
+            <div className="min-w-0">
               <span className="text-[10px] font-bold text-zinc-600 font-['JetBrains_Mono'] uppercase block">
-                Индекс риска
+                {language === 'kz' ? 'Тәуекел индексі' : 'Индекс риска'}
               </span>
               <div className="font-['JetBrains_Mono'] font-bold mt-1 text-zinc-950 text-sm tabular-nums">
-                {auditCase.riskScore} / 100 ({auditCase.riskLevel})
+                {auditCase.riskScore} / 100 ({localizedRiskLevel})
               </div>
             </div>
-            <div>
+            <div className="min-w-0">
               <span className="text-[10px] font-bold text-zinc-600 font-['JetBrains_Mono'] uppercase block">
-                Статус проверки
+                {language === 'kz' ? 'Тексеру мәртебесі' : 'Статус проверки'}
               </span>
               <div className="font-['JetBrains_Mono'] font-extrabold mt-1 text-zinc-950">
-                {auditCase.status}
+                {localizedStatus}
               </div>
             </div>
           </div>
@@ -212,12 +239,16 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
             <div className="p-3.5 bg-white border-2 border-zinc-300 rounded-xl">
               <span className="font-bold text-zinc-950 block mb-1">
-                Правовой комплаенс РК (КоАП / УК / № 230-VII)
+                {language === 'kz'
+                  ? 'ҚР құқықтық комплаенсі (ӘҚБтК / ҚК / № 230-VII)'
+                  : 'Правовой комплаенс РК (КоАП / УК / № 230-VII)'}
               </span>
               <div className="text-zinc-900 font-medium tabular-nums">
                 {penaltyDisplay.mode === 'legal_fine' ? (
                   <>
-                    Нарушений закона: <strong className="text-rose-700 font-bold">{legalViolations.length}</strong> · Санкция:{' '}
+                    {language === 'kz' ? 'Заң бұзушылықтар:' : 'Нарушений закона:'}{' '}
+                    <strong className="text-rose-700 font-bold">{legalViolations.length}</strong> ·{' '}
+                    {language === 'kz' ? 'Санкция:' : 'Санкция:'}{' '}
                     <strong className="text-rose-700 font-bold">{penaltyDisplay.kztRangeText}</strong> ({penaltyDisplay.mrpRangeText})
                   </>
                 ) : penaltyDisplay.mode === 'ethics_only' ? (
@@ -229,10 +260,14 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
             </div>
             <div className="p-3.5 bg-white border-2 border-zinc-300 rounded-xl">
               <span className="font-bold text-zinc-950 block mb-1">
-                Цифровая этика и культура коммуникации
+                {language === 'kz'
+                  ? 'Цифрлық этика және коммуникация мәдениеті'
+                  : 'Цифровая этика и культура коммуникации'}
               </span>
               <div className="text-zinc-900 font-medium tabular-nums">
-                Этических рисков: <strong className="text-zinc-950 font-bold">{ethicsViolations.length}</strong> · Индекс этики:{' '}
+                {language === 'kz' ? 'Этикалық тәуекелдер:' : 'Этических рисков:'}{' '}
+                <strong className="text-zinc-950 font-bold">{ethicsViolations.length}</strong> ·{' '}
+                {language === 'kz' ? 'Этика индексі:' : 'Индекс этики:'}{' '}
                 <strong className="text-zinc-950 font-bold">{auditCase.ethicsScore ?? 0} / 100</strong>
               </div>
             </div>
@@ -241,10 +276,14 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
           {/* Risk Distribution Breakdown */}
           <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-300">
             <div className="text-[11px] font-bold text-zinc-900 mb-3 flex items-center justify-between">
-              <span>Распределение рисков (% соотношение)</span>
+              <span>
+                {language === 'kz'
+                  ? 'Тәуекелдерді бөлу (% арақатынасы)'
+                  : 'Распределение рисков (% соотношение)'}
+              </span>
               <span className="text-zinc-700 font-['JetBrains_Mono'] font-semibold">100%</span>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
               {riskAnalytics.coreCategories.map((cat) => (
                 <div
                   key={cat.id}
@@ -268,12 +307,16 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
           {/* Issues and Violations List */}
           <div>
             <h2 className="text-xs font-bold text-zinc-950 uppercase tracking-wide mb-2.5">
-              Обнаруженные замечания и риски ({auditCase.violations.length})
+              {language === 'kz'
+                ? `Анықталған ескертулер мен тәуекелдер (${auditCase.violations.length})`
+                : `Обнаруженные замечания и риски (${auditCase.violations.length})`}
             </h2>
             <div className="space-y-2.5">
               {auditCase.violations.length === 0 ? (
                 <div className="p-3.5 rounded-xl border-2 border-emerald-600 bg-emerald-50 text-emerald-900 font-semibold">
-                  0 ₸ (Нарушений не выявлено). Замечаний по законодательству РК и сетевой этике не зафиксировано.
+                  {language === 'kz'
+                    ? '0 ₸ (Бұзушылықтар анықталмады). ҚР заңнамасы мен желілік этика нормалары бойынша ескертулер тіркелмеді.'
+                    : '0 ₸ (Нарушений не выявлено). Замечаний по законодательству РК и сетевой этике не зафиксировано.'}
                 </div>
               ) : (
                 auditCase.violations.map((v, i) => {
@@ -285,41 +328,62 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
                       : cardPenalty.headline;
                   return (
                     <div key={v.id} className="p-3.5 rounded-xl border-2 border-zinc-300 bg-white break-inside-avoid">
-                      <div className="flex items-center justify-between pb-2 border-b border-zinc-200 gap-2">
+                      <div className="flex flex-wrap items-center justify-between pb-2 border-b border-zinc-200 gap-2">
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-['JetBrains_Mono'] font-bold text-zinc-700 tabular-nums">
+                          <span className="font-['JetBrains_Mono'] font-bold text-zinc-700 tabular-nums shrink-0">
                             #{i + 1}
                           </span>
-                          <span className="font-bold text-zinc-950 text-xs">{v.title}</span>
+                          <span className="font-bold text-zinc-950 text-xs break-words">{v.title}</span>
                           <span className="text-zinc-400">·</span>
                           <span
-                            className={`text-[10px] font-['JetBrains_Mono'] font-bold ${
+                            className={`text-[10px] font-['JetBrains_Mono'] font-bold shrink-0 ${
                               isEthicsOnly ? 'text-violet-700' : 'text-rose-700'
                             }`}
                           >
-                            {isEthicsOnly ? 'Этика' : 'Закон РК'}
+                            {isEthicsOnly
+                              ? language === 'kz'
+                                ? 'Этика'
+                                : 'Этика'
+                              : language === 'kz'
+                              ? 'ҚР Заңы'
+                              : 'Закон РК'}
                           </span>
                         </div>
-                        <span className="font-['JetBrains_Mono'] text-[11px] font-bold text-zinc-900 shrink-0">
+                        <span className="font-['JetBrains_Mono'] text-[11px] font-bold text-zinc-900 break-words">
                           {v.code}
                         </span>
                       </div>
-                      <p className="text-zinc-900 text-[11px] mt-2 leading-relaxed">{v.basis}</p>
+                      <p className="text-zinc-900 text-[11px] mt-2 leading-relaxed break-words">{v.basis}</p>
                       {v.recommendation && (
-                        <div className="mt-2 text-[11px] text-zinc-900 bg-zinc-100 p-2.5 rounded-lg border border-zinc-200">
-                          <strong className="text-zinc-950">Рекомендация:</strong> {v.recommendation}
+                        <div className="mt-2 text-[11px] text-zinc-900 bg-zinc-100 p-2.5 rounded-lg border border-zinc-200 break-words">
+                          <strong className="text-zinc-950">
+                            {language === 'kz' ? 'Ұсыныс:' : 'Рекомендация:'}
+                          </strong>{' '}
+                          {v.recommendation}
                         </div>
                       )}
                       <div className="mt-2.5 pt-2 border-t border-zinc-200 flex flex-wrap items-center justify-between gap-2 text-[10.5px] font-['JetBrains_Mono'] text-zinc-700">
                         <span>
-                          {isEthicsOnly ? 'Риск: ' : 'Штраф: '}
+                          {isEthicsOnly
+                            ? language === 'kz'
+                              ? 'Тәуекел: '
+                              : 'Риск: '
+                            : language === 'kz'
+                            ? 'Айыппұл: '
+                            : 'Штраф: '}
                           <strong className={isEthicsOnly ? 'text-amber-800' : 'text-rose-700'}>
                             {cardFineText}
                           </strong>
                         </span>
                         <span>
-                          {isEthicsOnly ? 'Стандарт: ' : 'Орган: '}
-                          <strong className="text-zinc-950">{v.jurisdiction}</strong>
+                          {isEthicsOnly
+                            ? language === 'kz'
+                              ? 'Стандарт: '
+                              : 'Стандарт: '
+                            : language === 'kz'
+                            ? 'Орган: '
+                            : 'Орган: '}
+                          <strong className="text-zinc-950">{v.jurisdiction || 'МКИ РК'}</strong>
                         </span>
                       </div>
                     </div>
@@ -332,34 +396,40 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
           {/* Actionable Recommendations */}
           <div className="p-4 rounded-xl bg-zinc-50 border-2 border-zinc-300 text-zinc-900 break-inside-avoid">
             <h3 className="font-bold text-xs text-zinc-950 uppercase tracking-wide mb-2">
-              Рекомендации эксперта по комплаенсу
+              {language === 'kz'
+                ? 'Комплаенс жөніндегі сарапшы ұсыныстары'
+                : 'Рекомендации эксперта по комплаенсу'}
             </h3>
             <ul className="list-disc list-inside space-y-1 text-[11px] text-zinc-900">
               {dynamicRecommendations.map((rec, idx) => (
-                <li key={idx}>{rec}</li>
+                <li key={idx} className="break-words">{rec}</li>
               ))}
             </ul>
           </div>
 
           {/* Footer note */}
-          <div className="border-t-2 border-zinc-300 pt-3 flex items-center justify-between text-[10px] font-['JetBrains_Mono'] font-semibold text-zinc-700">
-            <span>Check Activity KZ · Результат предварительный</span>
-            <span className="tabular-nums">SHA-256: {auditCase.sha256.slice(0, 24)}...</span>
+          <div className="border-t-2 border-zinc-300 pt-3 flex flex-wrap items-center justify-between gap-2 text-[10px] font-['JetBrains_Mono'] font-semibold text-zinc-700">
+            <span>
+              {language === 'kz'
+                ? 'Check Activity KZ · Нәтиже алдын ала берілген'
+                : 'Check Activity KZ · Результат предварительный'}
+            </span>
+            <span className="tabular-nums">SHA-256: {safeSha256.slice(0, 24)}...</span>
           </div>
         </div>
 
         {/* Modal Controls */}
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-zinc-200/80 dark:border-zinc-800">
+        <div className="pdf-no-print flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-zinc-200/80 dark:border-zinc-800">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="font-['JetBrains_Mono'] text-[10px] text-zinc-500 dark:text-zinc-400 uppercase mr-1">
               {language === 'kz' ? 'Субъект:' : 'Субъект:'}
             </span>
             {(
               [
-                { id: 'individual', label: 'Физлицо' },
-                { id: 'small', label: 'МБ / ИП' },
-                { id: 'medium', label: 'Средний' },
-                { id: 'large', label: 'Крупный' },
+                { id: 'individual', label: language === 'kz' ? 'Жеке тұлға' : 'Физлицо' },
+                { id: 'small', label: language === 'kz' ? 'ШОБ / ЖК' : 'МБ / ИП' },
+                { id: 'medium', label: language === 'kz' ? 'Орта' : 'Средний' },
+                { id: 'large', label: language === 'kz' ? 'Ірі' : 'Крупный' },
               ] as const
             ).map((tier) => (
               <button
@@ -377,19 +447,50 @@ export const PdfExportModal: React.FC<PdfExportModalProps> = ({
             ))}
           </div>
 
-          <div className="flex items-center gap-2 self-end sm:self-auto">
+          <div className="flex flex-wrap items-center justify-end gap-2 w-full sm:w-auto">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-xs font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              className="px-3.5 py-2 rounded-xl text-xs font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
             >
               {t('closeBtn')}
             </button>
             <button
               type="button"
+              onClick={() => {
+                const protocolText = [
+                  `CHECK ACTIVITY KZ PROTOCOL ${auditCase.referenceNumber}`,
+                  `${auditCase.title} (${auditCase.timestamp})`,
+                  `${localizedStatus} | ${auditCase.riskScore}/100 (${localizedRiskLevel})`,
+                  `${penaltyDisplay.headline} (${penaltyDisplay.mrpRangeText})`,
+                  ...auditCase.violations.map((v, idx) => `${idx + 1}. ${v.code}: ${v.title}`),
+                  `SHA-256: ${safeSha256}`,
+                ].join('\n');
+                void copyTextToClipboard(protocolText).then((ok) => {
+                  if (!ok) return;
+                  setCopiedProtocol(true);
+                  if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+                  copyTimerRef.current = setTimeout(() => setCopiedProtocol(false), 2000);
+                });
+              }}
+              className="px-3.5 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-800 dark:text-zinc-200 text-xs font-medium flex items-center gap-1.5 transition-colors"
+            >
+              {copiedProtocol ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>
+                {copiedProtocol
+                  ? language === 'kz'
+                    ? 'Көшірілді'
+                    : 'Скопировано'
+                  : language === 'kz'
+                  ? 'Көшіру'
+                  : 'Копировать'}
+              </span>
+            </button>
+            <button
+              type="button"
               onClick={handlePrint}
               disabled={isExporting}
-              className="px-5 py-2 rounded-xl bg-zinc-900 dark:bg-zinc-100 hover:bg-zinc-800 dark:hover:bg-zinc-200 text-white dark:text-zinc-900 font-['Plus_Jakarta_Sans'] text-xs font-semibold flex items-center gap-2 transition-colors"
+              className="px-4 sm:px-5 py-2 rounded-xl bg-zinc-900 dark:bg-zinc-100 hover:bg-zinc-800 dark:hover:bg-zinc-200 text-white dark:text-zinc-900 font-['Plus_Jakarta_Sans'] text-xs font-semibold flex items-center gap-2 transition-colors"
             >
               <Printer className="w-4 h-4" strokeWidth={1.6} />
               <span>

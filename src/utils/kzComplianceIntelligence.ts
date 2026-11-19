@@ -4,8 +4,16 @@
  */
 
 import type { AuditCase, Violation } from '../types/index.ts';
+import { findKzLawByViolation, KZ_LAWS_DB, type KzLawEntry } from '../data/kzLawsDb.ts';
 
 export const MRP_2026_KZT = 4325;
+
+export const HITL_PROTEST_ARTICLE =
+  'Human-in-the-loop / ст. 174, 274 УК РК (проверка контекста)';
+export const HITL_PROTEST_DESCRIPTION =
+  'Обнаружен общественно-политический / протестный контекст. Выражение мнения не является нарушением, но требуется экспертная проверка человеком на отсутствие заведомо ложной информации или призывов к несогласованным акциям.';
+export const PEACEFUL_ASSEMBLY_LAW_TITLE = HITL_PROTEST_ARTICLE;
+export const PEACEFUL_ASSEMBLY_RECOMMENDATION = HITL_PROTEST_DESCRIPTION;
 
 export type BusinessEntityType = 'individual' | 'small' | 'medium' | 'large';
 
@@ -63,10 +71,17 @@ export interface CompliancePenaltyDisplay {
 }
 
 const LEGAL_CODE_OR_LAW_REGEX =
-  /коап|ук\s*рк|әқбтк|қк\b|230-vii|94-v|закон|заң|ст\.\s*\d+|\d+-бап|445-1|455\b|434\b|456-2|73-4|131\b|115\b|147\b|79\b|190\b|274\b|133-1|301-1|ст\.\s*21/i;
+  /human-in-the-loop|коап|ук\s*рк|әқбтк|қк\b|230-vii|94-v|закон|заң|ст\.\s*\d+|\d+-бап|445-1|455\b|434\b|456-2|73-4|131\b|115\b|147\b|79\b|190\b|274\b|174\b|133-1|301-1|ст\.\s*21/i;
 
 const PURE_ETHICS_ONLY_REGEX =
-  /dark\s*pattern|fomo|манипулят|таймер|дефицит|вовлечение\s+в\s+азарт|иллюзи|этика\s+реклам|этика\s+коммуникац|сетев\w+\s+этикет/i;
+  /dark\s*pattern|fomo|манипулят|таймер|дефицит|вовлечение\s+в\s+азарт|иллюзи|этика\s+реклам|этика\s+коммуникац|сетев[а-яё]+\s+этикет/i;
+
+export function isHitlContextViolation(v: Pick<Violation, 'code' | 'title'>): boolean {
+  const combined = `${v.code || ''} ${v.title || ''}`.toLowerCase();
+  return /human-in-the-loop|проверка\s+контекста|протестный\s+контекст|общественно-политическ|мирных\s+собраний|бейбіт\s+жиналыс/.test(
+    combined
+  );
+}
 
 /**
  * Determines whether a violation corresponds to a Kazakhstan statutory norm
@@ -99,6 +114,9 @@ export function isEthicsViolation(v: Pick<Violation, 'category' | 'code' | 'titl
  * Determines whether a statutory violation is critical (70-100 risk bracket) vs warning (45-69 bracket).
  */
 export function isCriticalLegalViolation(v: Pick<Violation, 'severity' | 'code' | 'title'>): boolean {
+  if (isHitlContextViolation(v)) {
+    return false;
+  }
   const combined = `${v.code || ''} ${v.title || ''}`.toLowerCase();
   if (/445-1|190|274|456-2|147|79|434|131|115|73-4|301-1|133-1/.test(combined)) {
     return true;
@@ -109,10 +127,67 @@ export function isCriticalLegalViolation(v: Pick<Violation, 'severity' | 'code' 
   return v.severity === 'critical';
 }
 
-export function normalizeViolation(v: Violation): Violation {
-  const legal = isLegalViolation(v);
+export function getLocalizedStatus(status: AuditCase['status'] | string | undefined, lang: 'ru' | 'kz'): string {
+  const norm = String(status || 'БЕЗОПАСНО').toUpperCase();
+  if (lang === 'kz') {
+    if (norm === 'ТРЕБУЕТ МЕР' || norm === 'ШАРАЛАР ҚАЖЕТ') return 'ШАРАЛАР ҚАЖЕТ';
+    if (norm === 'ПРЕДУПРЕЖДЕНИЕ' || norm === 'ЕСКЕРТУ') return 'ЕСКЕРТУ';
+    return 'ҚАУІПСІЗ';
+  }
+  if (norm === 'ШАРАЛАР ҚАЖЕТ' || norm === 'ТРЕБУЕТ МЕР') return 'ТРЕБУЕТ МЕР';
+  if (norm === 'ЕСКЕРТУ' || norm === 'ПРЕДУПРЕЖДЕНИЕ') return 'ПРЕДУПРЕЖДЕНИЕ';
+  return 'БЕЗОПАСНО';
+}
+
+export function getLocalizedRiskLevel(riskLevel: AuditCase['riskLevel'] | string | undefined, lang: 'ru' | 'kz'): string {
+  const norm = String(riskLevel || 'Низкий').toLowerCase();
+  if (lang === 'kz') {
+    if (norm.includes('крит') || norm.includes('қатерлі')) return 'Қатерлі';
+    if (norm.includes('высок') || norm.includes('жоғары')) return 'Жоғары';
+    if (norm.includes('сред') || norm.includes('орташа')) return 'Орташа';
+    return 'Төмен';
+  }
+  if (norm.includes('крит') || norm.includes('қатерлі')) return 'Критический';
+  if (norm.includes('высок') || norm.includes('жоғары')) return 'Высокий';
+  if (norm.includes('сред') || norm.includes('орташа')) return 'Средний';
+  return 'Низкий';
+}
+
+export function normalizeViolation(rawV: Violation): Violation {
+  const safeV: Violation =
+    rawV && typeof rawV === 'object'
+      ? rawV
+      : {
+          id: 'v-fallback',
+          category: 'legal',
+          code: 'КоАП РК',
+          title: 'Зафиксированное замечание',
+          severity: 'warning',
+          basis: '',
+          fineAmount: '',
+          jurisdiction: 'МКИ РК',
+        };
+  const safeCode = typeof safeV.code === 'string' && safeV.code.trim() ? safeV.code : 'Закон РК';
+  const safeTitle = typeof safeV.title === 'string' && safeV.title.trim() ? safeV.title : 'Зафиксированное замечание';
+  const safeSeverity: Violation['severity'] =
+    safeV.severity === 'critical' || safeV.severity === 'warning' || safeV.severity === 'info'
+      ? safeV.severity
+      : 'warning';
+  const withStrings: Violation = {
+    ...safeV,
+    id: typeof safeV.id === 'string' && safeV.id ? safeV.id : `v-${Math.random().toString(36).slice(2, 8)}`,
+    code: safeCode,
+    title: safeTitle,
+    severity: safeSeverity,
+    basis: typeof safeV.basis === 'string' ? safeV.basis : '',
+    fineAmount: typeof safeV.fineAmount === 'string' ? safeV.fineAmount : '',
+    jurisdiction: typeof safeV.jurisdiction === 'string' ? safeV.jurisdiction : '',
+    ...(typeof safeV.quote === 'string' ? { quote: safeV.quote } : { quote: undefined }),
+    ...(typeof safeV.recommendation === 'string' ? { recommendation: safeV.recommendation } : {}),
+  };
+  const legal = isLegalViolation(withStrings);
   return {
-    ...v,
+    ...withStrings,
     category: legal ? 'legal' : 'ethics',
   };
 }
@@ -131,130 +206,27 @@ export function calculateMrpPenalty(
       continue;
     }
 
-    const code = `${rawV.code || ''} ${rawV.title || ''}`.toLowerCase();
+    if (isHitlContextViolation(rawV)) {
+      // Human-in-the-loop advisory check: 0 MRP, no automatic statutory fine or blocking
+      continue;
+    }
+
+    const matchedLaw = findKzLawByViolation(rawV);
+    if (matchedLaw?.isAdvisoryHitl) {
+      continue;
+    }
+
     let minMrp = 0;
     let maxMrp = 0;
     let articleKey = rawV.code || rawV.id;
     let isFixedIndividualArticle = false;
 
-    if (code.includes('445-1')) {
-      articleKey = 'ст. 445-1 КоАП РК';
-      if (entityType === 'individual') {
-        minMrp = 60;
-        maxMrp = 100;
-      } else if (entityType === 'small') {
-        minMrp = 200;
-        maxMrp = 300;
-      } else if (entityType === 'medium') {
-        minMrp = 400;
-        maxMrp = 500;
-      } else {
-        minMrp = 700;
-        maxMrp = 1000;
-      }
-    } else if (code.includes('455') || code.includes('230-vii') || code.includes('230')) {
-      articleKey = 'ст. 455 КоАП РК / Закон № 230-VII';
-      if (entityType === 'individual') {
-        minMrp = 20;
-        maxMrp = 40;
-      } else if (entityType === 'small') {
-        minMrp = 50;
-        maxMrp = 100;
-      } else if (entityType === 'medium') {
-        minMrp = 100;
-        maxMrp = 150;
-      } else {
-        minMrp = 150;
-        maxMrp = 200;
-      }
-    } else if (code.includes('434')) {
-      articleKey = 'ст. 434 КоАП РК';
-      isFixedIndividualArticle = true;
-      minMrp = isRepeat ? 20 : 20;
-      maxMrp = isRepeat ? 30 : 20;
-    } else if (code.includes('73-4') || code.includes('131') || code.includes('115')) {
-      articleKey = code.includes('131')
-        ? 'ст. 131 УК РК / ст. 73-4 КоАП РК'
-        : code.includes('115')
-        ? 'ст. 115 УК РК / ст. 73-4 КоАП РК'
-        : 'ст. 73-4 КоАП РК';
-      if (entityType === 'individual') {
-        minMrp = 15;
-        maxMrp = code.includes('131') ? 100 : 30;
-      } else if (entityType === 'small') {
-        minMrp = 30;
-        maxMrp = 100;
-      } else if (entityType === 'medium') {
-        minMrp = 50;
-        maxMrp = 150;
-      } else {
-        minMrp = 100;
-        maxMrp = 200;
-      }
-    } else if (code.includes('79') || code.includes('147') || code.includes('94-v')) {
-      articleKey = code.includes('147') ? 'ст. 147 УК РК / ст. 79 КоАП РК' : 'ст. 79 КоАП РК';
-      if (entityType === 'individual') {
-        minMrp = 10;
-        maxMrp = 30;
-      } else if (entityType === 'small') {
-        minMrp = 30;
-        maxMrp = 60;
-      } else if (entityType === 'medium') {
-        minMrp = 60;
-        maxMrp = 100;
-      } else {
-        minMrp = 100;
-        maxMrp = 200;
-      }
-    } else if (code.includes('190') || code.includes('274') || code.includes('456-2') || code.includes('301-1')) {
-      articleKey = code.includes('456-2')
-        ? 'ст. 274 УК РК / ст. 456-2 КоАП РК'
-        : code.includes('301-1')
-        ? 'ст. 301-1 УК РК'
-        : 'ст. 190 / 274 УК РК';
-      if (entityType === 'individual') {
-        minMrp = code.includes('456-2') ? 20 : 200;
-        maxMrp = code.includes('456-2') ? 100 : 1000;
-      } else if (entityType === 'small') {
-        minMrp = code.includes('456-2') ? 50 : 500;
-        maxMrp = 2000;
-      } else if (entityType === 'medium') {
-        minMrp = 100;
-        maxMrp = 3000;
-      } else {
-        minMrp = 250;
-        maxMrp = 4000;
-      }
-    } else if (code.includes('133-1')) {
-      articleKey = 'ст. 133-1 КоАП РК';
-      if (entityType === 'individual') {
-        minMrp = 20;
-        maxMrp = 40;
-      } else if (entityType === 'small') {
-        minMrp = 50;
-        maxMrp = 100;
-      } else if (entityType === 'medium') {
-        minMrp = 100;
-        maxMrp = 150;
-      } else {
-        minMrp = 150;
-        maxMrp = 200;
-      }
-    } else if (code.includes('язык') || code.includes('ст. 21') || code.includes('21-бап')) {
-      articleKey = 'ст. 21 Закона о языках';
-      if (entityType === 'individual') {
-        minMrp = 5;
-        maxMrp = 15;
-      } else if (entityType === 'small') {
-        minMrp = 10;
-        maxMrp = 25;
-      } else if (entityType === 'medium') {
-        minMrp = 25;
-        maxMrp = 35;
-      } else {
-        minMrp = 35;
-        maxMrp = 50;
-      }
+    if (matchedLaw) {
+      articleKey = matchedLaw.articleGroupKey;
+      const bracket = matchedLaw.penaltiesByTier[entityType] || matchedLaw.penaltiesByTier.small;
+      minMrp = bracket.minMrp;
+      maxMrp = bracket.maxMrp;
+      isFixedIndividualArticle = Boolean(matchedLaw.isFixedIndividualArticle);
     } else {
       articleKey = rawV.code || 'КоАП РК';
       const tierFactor = entityType === 'individual' ? 1 : entityType === 'small' ? 2 : entityType === 'medium' ? 3 : 4;
@@ -329,6 +301,30 @@ export function getCompliancePenaltyDisplay(
     };
   }
 
+  const hasAssemblyReview = legalList.some((v) => isHitlContextViolation(v));
+
+  if (legalList.length > 0 && penaltyCalc.maxMrp === 0 && hasAssemblyReview && ethicsOnlyList.length === 0) {
+    return {
+      mode: 'ethics_only',
+      mrpRangeText: lang === 'kz' ? '0 АЕК (Human-in-the-loop)' : '0 МРП (Human-in-the-loop)',
+      kztRangeText:
+        lang === 'kz'
+          ? 'Айыппұл 0 АЕК · Контекстті адаммен тексеру қажет'
+          : 'Штраф 0 МРП · Требуется экспертная проверка контекста человеком',
+      headline:
+        lang === 'kz'
+          ? 'Адаммен тексеру қажет (Human-in-the-loop)'
+          : 'Требуется проверка человеком (Human-in-the-loop)',
+      subline:
+        lang === 'kz'
+          ? 'Human-in-the-loop · Қоғамдық-саяси контекстті тексеру (0 АЕК)'
+          : 'Human-in-the-loop · Проверка общественно-политического контекста (0 МРП)',
+      penaltyCalc: { minMrp: 0, maxMrp: 0, minKzt: 0, maxKzt: 0, breakdown: [] },
+      legalCount: legalList.length,
+      ethicsOnlyCount: 0,
+    };
+  }
+
   if (ethicsOnlyList.length > 0) {
     return {
       mode: 'ethics_only',
@@ -363,23 +359,90 @@ export function getCompliancePenaltyDisplay(
   };
 }
 
+const ONLY_EMOJIS_REGEX = /^[\p{Emoji_Presentation}\p{Extended_Pictographic}\s.,!?-]+$/u;
+const MONEY_EMOJI_CHARS_REGEX = /[💰💵💸💴💶💷🪙🤑]/u;
+const TEXTUAL_SCAM_OR_GAMBLING_EVIDENCE_REGEX =
+  /л[её]гк[а-яё]*\s+заработ|раскрутк|доход[а-яё]*\s+от.{0,24}в\s+день|перев[а-яё]*\s+на\s+карт|привяж[а-яё]*\s+карт|без\s+вложени|пассивн[а-яё]*\s+доход|42\s*500|42500|kaspi\s*profit|дипфейк|deepfake|казино|casino|ставк[аиуе]|слот|рулетк|фриспин|1win|1xbet|pin-up|mostbet|джекпот|jackpot|букмекер|\.(?:xyz|top|click|icu|buzz)\b/i;
+const MONEY_SPAM_CLUSTER_TEXT_REGEX =
+  /(?:💰|💵|💸|💴|💶|💷|🪙|🤑)(?:\s*(?:💰|💵|💸|💴|💶|💷|🪙|🤑)){2,}/u;
+
+export function isEmojiOnlyViolation(v: Pick<Violation, 'id' | 'code' | 'title' | 'quote' | 'basis'>): boolean {
+  const idLower = (v.id || '').toLowerCase();
+  const codeLower = (v.code || '').toLowerCase();
+  const titleLower = (v.title || '').toLowerCase();
+  const quoteTrimmed = (v.quote || '').trim();
+  if (idLower.startsWith('v-emoji-')) return true;
+  if (/эмодзи-триггер|спам\s*эмодзи|денежный\s+спам|денежный\s+маркер/.test(`${codeLower} ${titleLower}`)) {
+    return true;
+  }
+  if (quoteTrimmed && ONLY_EMOJIS_REGEX.test(quoteTrimmed)) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Single authoritative normalizer for any AuditCase:
  * Enforces strict mathematical consistency across riskScore, legalScore, ethicsScore, riskLevel, status, and violations.
  */
 export function normalizeAuditCaseCompliance(auditCase: AuditCase): AuditCase {
-  const normalizedViolations = (auditCase.violations || []).map(normalizeViolation);
+  const safeCase = (auditCase && typeof auditCase === 'object' ? auditCase : {}) as Partial<AuditCase>;
+  const contextTextForGuard = `${safeCase.extractedText || ''} ${safeCase.rawText || ''} ${safeCase.title || ''}`;
+  const hasMoneyScamTextEvidence = TEXTUAL_SCAM_OR_GAMBLING_EVIDENCE_REGEX.test(contextTextForGuard);
+  const hasMoneySpamCluster = MONEY_SPAM_CLUSTER_TEXT_REGEX.test(contextTextForGuard);
+
+  const rawViolations = Array.isArray(safeCase.violations) ? safeCase.violations : [];
+  let normalizedViolations = rawViolations
+    .filter((v): v is Violation => Boolean(v && typeof v === 'object'))
+    .map(normalizeViolation)
+    .filter((v) => {
+      // Guard: drop false-positive 190/445-1 violations triggered solely by 1–2 neutral money emojis without textual evidence
+      const isMoneyTriggered =
+        MONEY_EMOJI_CHARS_REGEX.test(`${v.quote || ''} ${v.title || ''} ${v.basis || ''}`) ||
+        /эмодзи\s+денег|смайл\S*\s+денег/i.test(`${v.title || ''} ${v.basis || ''}`);
+      const isFraudOrGamblingCode = /190|274|445-1/.test((v.code || '').toLowerCase());
+      if (isFraudOrGamblingCode && isMoneyTriggered && !hasMoneyScamTextEvidence && !hasMoneySpamCluster) {
+        return false;
+      }
+      if (isEmojiOnlyViolation(v) && MONEY_EMOJI_CHARS_REGEX.test(v.quote || '') && !hasMoneyScamTextEvidence && !hasMoneySpamCluster) {
+        return false;
+      }
+      return true;
+    });
+
+  // Guard: if ALL remaining violations are emoji-only triggers (no statutory КоАП/УК evidence in text/media),
+  // demote them to soft ethics warnings (0 MRP) instead of elevating to ст. 190/445-1 critical fines.
+  const onlyEmojiTriggersPresent =
+    normalizedViolations.length > 0 && normalizedViolations.every((v) => isEmojiOnlyViolation(v));
+
+  if (onlyEmojiTriggersPresent) {
+    normalizedViolations = normalizedViolations.map((v) => ({
+      ...v,
+      category: 'ethics' as const,
+      severity: 'warning' as const,
+      code: v.code?.includes('Этика') ? v.code : 'Этика: Спам / визуальные триггеры (эмодзи)',
+      fineAmount: '0 МРП (этический риск)',
+    }));
+  }
+
   const legalList = normalizedViolations.filter((v) => isLegalViolation(v));
   const ethicsOnlyList = normalizedViolations.filter((v) => !isLegalViolation(v));
   const hasAnyEthicsImpact = normalizedViolations.some((v) => isEthicsViolation(v));
 
-  let riskScore = Number.isFinite(auditCase.riskScore) ? Math.round(auditCase.riskScore) : 0;
-  let status: AuditCase['status'] = auditCase.status || 'БЕЗОПАСНО';
-  let riskLevel: AuditCase['riskLevel'] = auditCase.riskLevel || 'Низкий';
-  let legalScore = typeof auditCase.legalScore === 'number' && Number.isFinite(auditCase.legalScore) ? Math.round(auditCase.legalScore) : 0;
-  let ethicsScore = typeof auditCase.ethicsScore === 'number' && Number.isFinite(auditCase.ethicsScore) ? Math.round(auditCase.ethicsScore) : 0;
+  let riskScore = typeof safeCase.riskScore === 'number' && Number.isFinite(safeCase.riskScore) ? Math.round(safeCase.riskScore) : 0;
+  let status: AuditCase['status'] = safeCase.status || 'БЕЗОПАСНО';
+  let riskLevel: AuditCase['riskLevel'] = safeCase.riskLevel || 'Низкий';
+  let legalScore = typeof safeCase.legalScore === 'number' && Number.isFinite(safeCase.legalScore) ? Math.round(safeCase.legalScore) : 0;
+  let ethicsScore = typeof safeCase.ethicsScore === 'number' && Number.isFinite(safeCase.ethicsScore) ? Math.round(safeCase.ethicsScore) : 0;
 
-  if (legalList.length > 0) {
+  if (onlyEmojiTriggersPresent) {
+    // Emoji-only trigger without statutory offense: cap strictly at soft ethics warning 25..35
+    riskScore = Math.max(25, Math.min(35, riskScore >= 25 && riskScore <= 35 ? riskScore : 28));
+    status = 'ПРЕДУПРЕЖДЕНИЕ';
+    riskLevel = 'Средний';
+    legalScore = 0;
+    ethicsScore = riskScore;
+  } else if (legalList.length > 0) {
     const hasCriticalLegal = legalList.some((v) => isCriticalLegalViolation(v));
     if (hasCriticalLegal) {
       // Rule 1a: Critical statutory violations -> strictly 70..100, status ТРЕБУЕТ МЕР
@@ -388,8 +451,17 @@ export function normalizeAuditCaseCompliance(auditCase: AuditCase): AuditCase {
       status = 'ТРЕБУЕТ МЕР';
       riskLevel = riskScore >= 75 ? 'Критический' : 'Высокий';
     } else {
-      // Rule 1b: Legal warning violations (e.g. ст. 21 Закона о языках) -> strictly 45..69, status ПРЕДУПРЕЖДЕНИЕ
-      riskScore = Math.max(45, Math.min(69, riskScore >= 45 ? riskScore : 52 + Math.min(15, (legalList.length - 1) * 7)));
+      // Rule 1b: Legal warning violations (e.g. ст. 21 Закона о языках or Human-in-the-loop context check)
+      const hasAssemblyReview = legalList.some((v) => isHitlContextViolation(v));
+      if (hasAssemblyReview) {
+        const defaultAssemblyScore = Math.min(55, 50 + Math.max(0, legalList.length - 1) * 2);
+        riskScore = Math.max(
+          46,
+          Math.min(55, riskScore >= 46 && riskScore <= 55 ? riskScore : defaultAssemblyScore)
+        );
+      } else {
+        riskScore = Math.max(45, Math.min(69, riskScore >= 45 ? riskScore : 52 + Math.min(15, (legalList.length - 1) * 7)));
+      }
       status = 'ПРЕДУПРЕЖДЕНИЕ';
       riskLevel = riskScore >= 60 ? 'Высокий' : 'Средний';
     }
@@ -418,31 +490,123 @@ export function normalizeAuditCaseCompliance(auditCase: AuditCase): AuditCase {
     ethicsScore = 0;
   }
 
-  const normalizedMediaAnalysis = auditCase.mediaAnalysis
-    ? {
-        ...auditCase.mediaAnalysis,
-        overall_risk:
-          status === 'ТРЕБУЕТ МЕР'
-            ? ('высокий' as const)
-            : status === 'ПРЕДУПРЕЖДЕНИЕ'
-            ? ('средний' as const)
-            : riskScore > 0
-            ? ('низкий' as const)
-            : ('нет' as const),
-        needs_human_review: normalizedViolations.length > 0,
-      }
+  const normalizedMediaAnalysis =
+    safeCase.mediaAnalysis && typeof safeCase.mediaAnalysis === 'object'
+      ? {
+          ...safeCase.mediaAnalysis,
+          summary: typeof safeCase.mediaAnalysis.summary === 'string' ? safeCase.mediaAnalysis.summary : (typeof safeCase.summary === 'string' ? safeCase.summary : ''),
+          language: safeCase.mediaAnalysis.language || 'русский',
+          findings: Array.isArray(safeCase.mediaAnalysis.findings)
+            ? safeCase.mediaAnalysis.findings.filter((f): f is NonNullable<typeof f> => Boolean(f && typeof f === 'object'))
+            : [],
+          overall_risk:
+            status === 'ТРЕБУЕТ МЕР'
+              ? ('высокий' as const)
+              : status === 'ПРЕДУПРЕЖДЕНИЕ'
+              ? ('средний' as const)
+              : riskScore > 0
+              ? ('низкий' as const)
+              : ('нет' as const),
+          needs_human_review: normalizedViolations.length > 0,
+        }
+      : undefined;
+
+  const safeFraudSignals =
+    safeCase.fraudSignals && typeof safeCase.fraudSignals === 'object'
+      ? {
+          isPhishingOrDeepfake: Boolean(safeCase.fraudSignals.isPhishingOrDeepfake),
+          indicators: Array.isArray(safeCase.fraudSignals.indicators)
+            ? safeCase.fraudSignals.indicators.map((ind) => String(ind)).filter(Boolean)
+            : [],
+          ...(typeof safeCase.fraudSignals.riskCategory === 'string'
+            ? { riskCategory: safeCase.fraudSignals.riskCategory }
+            : {}),
+        }
+      : undefined;
+
+  const safeTranscript = Array.isArray(safeCase.transcript)
+    ? safeCase.transcript
+        .filter((t): t is NonNullable<typeof t> => Boolean(t && typeof t === 'object'))
+        .map((t) => ({
+          time: typeof t.time === 'string' && t.time ? t.time : '00:00',
+          speaker: typeof t.speaker === 'string' && t.speaker ? t.speaker : 'Спикер',
+          text: typeof t.text === 'string' ? t.text : '',
+          flagged: Boolean(t.flagged),
+          ...(typeof t.flaggedText === 'string' ? { flaggedText: t.flaggedText } : {}),
+          ...(typeof t.article === 'string' ? { article: t.article } : {}),
+        }))
     : undefined;
 
+  const rawMeta = safeCase.metadata && typeof safeCase.metadata === 'object' ? safeCase.metadata : ({} as Partial<AuditCase['metadata']>);
+  const safeMetadata: AuditCase['metadata'] = {
+    ...(typeof rawMeta.fileSize === 'string' && rawMeta.fileSize ? { fileSize: rawMeta.fileSize } : {}),
+    ...(typeof rawMeta.duration === 'string' && rawMeta.duration ? { duration: rawMeta.duration } : {}),
+    engineConfidence:
+      typeof rawMeta.engineConfidence === 'number' && Number.isFinite(rawMeta.engineConfidence)
+        ? rawMeta.engineConfidence
+        : 98.2,
+    platform:
+      typeof rawMeta.platform === 'string' && rawMeta.platform
+        ? rawMeta.platform
+        : 'CheckActivity Engine v5.0 (Казахстан)',
+  };
+
+  const safeTelemetry =
+    safeCase.telemetry && typeof safeCase.telemetry === 'object'
+      ? {
+          extractMs: Number.isFinite(safeCase.telemetry.extractMs) ? Math.max(0, Math.round(safeCase.telemetry.extractMs)) : 0,
+          retrievalMs: Number.isFinite(safeCase.telemetry.retrievalMs) ? Math.max(0, Math.round(safeCase.telemetry.retrievalMs)) : 0,
+          aiAuditMs: Number.isFinite(safeCase.telemetry.aiAuditMs) ? Math.max(0, Math.round(safeCase.telemetry.aiAuditMs)) : 0,
+          totalMs: Number.isFinite(safeCase.telemetry.totalMs) ? Math.max(1, Math.round(safeCase.telemetry.totalMs)) : 1,
+          checkedLawsCount:
+            typeof safeCase.telemetry.checkedLawsCount === 'number' && safeCase.telemetry.checkedLawsCount > 0
+              ? safeCase.telemetry.checkedLawsCount
+              : KZ_LAWS_DB.length,
+          retrievedLawsCount:
+            typeof safeCase.telemetry.retrievedLawsCount === 'number' && safeCase.telemetry.retrievedLawsCount >= 0
+              ? safeCase.telemetry.retrievedLawsCount
+              : 0,
+          ...(Array.isArray(safeCase.telemetry.matchedLawCodes)
+            ? { matchedLawCodes: safeCase.telemetry.matchedLawCodes.map((c) => String(c)).filter(Boolean) }
+            : {}),
+          engineMode:
+            safeCase.telemetry.engineMode === 'rag-live-ai'
+              ? ('rag-live-ai' as const)
+              : ('deterministic-db-fallback' as const),
+          ...(typeof safeCase.telemetry.aiModel === 'string' && safeCase.telemetry.aiModel
+            ? { aiModel: safeCase.telemetry.aiModel }
+            : {}),
+          ...(typeof safeCase.telemetry.fallbackReason === 'string' && safeCase.telemetry.fallbackReason
+            ? { fallbackReason: safeCase.telemetry.fallbackReason }
+            : {}),
+        }
+      : undefined;
+
   return {
-    ...auditCase,
+    ...safeCase,
+    id: typeof safeCase.id === 'string' && safeCase.id ? safeCase.id : `audit-${Date.now()}`,
+    referenceNumber: typeof safeCase.referenceNumber === 'string' && safeCase.referenceNumber ? safeCase.referenceNumber : '#CHK-KZ-000000',
+    timestamp: typeof safeCase.timestamp === 'string' && safeCase.timestamp ? safeCase.timestamp : new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }),
+    sourceType: safeCase.sourceType || 'text',
+    title: typeof safeCase.title === 'string' && safeCase.title ? safeCase.title : 'Проверенный материал',
+    sourceName: typeof safeCase.sourceName === 'string' && safeCase.sourceName ? safeCase.sourceName : (typeof safeCase.title === 'string' ? safeCase.title : 'Материал'),
+    sha256: typeof safeCase.sha256 === 'string' && safeCase.sha256 ? safeCase.sha256 : 'sha256-unavailable',
+    summary: typeof safeCase.summary === 'string' ? safeCase.summary : '',
+    ethicsSummary: typeof safeCase.ethicsSummary === 'string' ? safeCase.ethicsSummary : '',
+    extractedText: typeof safeCase.extractedText === 'string' ? safeCase.extractedText : '',
+    detectedActions: typeof safeCase.detectedActions === 'string' ? safeCase.detectedActions : '',
     violations: normalizedViolations,
     riskScore,
     legalScore,
     ethicsScore,
     riskLevel,
     status,
+    metadata: safeMetadata,
+    ...(safeTelemetry ? { telemetry: safeTelemetry } : {}),
+    ...(safeFraudSignals ? { fraudSignals: safeFraudSignals } : {}),
+    ...(safeTranscript ? { transcript: safeTranscript } : {}),
     ...(normalizedMediaAnalysis ? { mediaAnalysis: normalizedMediaAnalysis } : {}),
-  };
+  } as AuditCase;
 }
 
 export function runLivePreCheck(
@@ -562,6 +726,18 @@ export function runLivePreCheck(
     });
   }
 
+  const assemblyCall = detectPeacefulAssemblyCall(combined);
+  if (assemblyCall.detected) {
+    triggers.push({
+      id: 'peaceful_assembly',
+      category: 'legal',
+      labelRu: 'Общественно-политический / протестный контекст (Human-in-the-loop)',
+      labelKz: 'Қоғамдық-саяси / наразылық контексі (Human-in-the-loop)',
+      severity: 'warning',
+      article: HITL_PROTEST_ARTICLE,
+    });
+  }
+
   if (fraudAndLang.needsKzParityWarning && !GAMBLING_REGEX.test(lower)) {
     triggers.push({
       id: 'lang_parity',
@@ -600,7 +776,10 @@ export function runLivePreCheck(
       statusLabelRu = 'ТРЕБУЕТ МЕР';
       statusLabelKz = 'ШАРАЛАР ҚАЖЕТ';
     } else {
-      riskScore = Math.min(69, 48 + (legalTriggers.length - 1) * 7);
+      const hasAssemblyTrigger = legalTriggers.some((t) => t.id === 'peaceful_assembly');
+      riskScore = hasAssemblyTrigger
+        ? Math.min(55, Math.max(46, 50 + (legalTriggers.length - 1) * 2))
+        : Math.min(69, 48 + (legalTriggers.length - 1) * 7);
       status = 'warning';
       statusLabelRu = 'ПРЕДУПРЕЖДЕНИЕ';
       statusLabelKz = 'ЕСКЕРТУ';
@@ -648,7 +827,7 @@ const PROFANITY_REGEX = new RegExp(SAFE_PROFANITY_SOURCE, 'i');
 const GAMBLING_REGEX =
   /казино|casino|1win|1xbet|pin-up|mostbet|слот|рулетк|фриспин|jackpot|жекпот|барабан|букмекер|aviator|luckyjet|luxury\s+slots/i;
 const COMMERCIAL_REGEX =
-  /скидк|распродаж|акция|промокод|купить|заказать|цена|курс|инвестиц|тариф|доставка|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй|бесплатный\s+выпуск|заказывайте|оставьте\s+заявку|подробнее\s+на\s+сайте/i;
+  /скидк|распродаж|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|купить|заказать|цена|курс|инвестиц|тариф|доставка|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй|бесплатный\s+выпуск|заказывайте|оставьте\s+заявку|подробнее\s+на\s+сайте/i;
 const AD_MARK_REGEX = /жарнама|реклама|жарнамалық|спонсор/i;
 const BULLY_REGEX =
   /бездар|тупой|тупая|идиот|урод|мразь|ничтожеств|даун|клоун|найдем|за базар|продажн[а-я]+\s+твар|предател|мошенник[а-я]*(?=.*(?:кандидат|депутат|тварь|предатель))/i;
@@ -685,16 +864,21 @@ export function isJournalisticWarningContext(rawText: string): boolean {
   return WARNING_FRAMING_REGEX.test(lower);
 }
 
+const ADVERTISER_BIN_DISCLOSURE_REGEX =
+  /(?:рекламодател[ья]|жарнама\s+беруші|заказчик\s+рекламы)(?:\s*\/\s*(?:рекламодател[ья]|жарнама\s+беруші))?\s*[:\-–]?\s*(?:(?:иин\/бин|жсн\/бсн|ұйым\s+бсн|бин\s+организации|иин|жсн|бин|бсн)\s*[:\-–]?\s*)?[\[\(]?\d{12}[\]\)]?|\b(?:иин\/бин|жсн\/бсн|ұйым\s+бсн|бин\s+организации|бин|бсн)\s*[:\-–]?\s*[\[\(]?\d{12}[\]\)]?/gi;
+
 export function detectPersonalDataDoxing(rawText: string): {
   detected: boolean;
   matches: string[];
 } {
   if (!rawText) return { detected: false, matches: [] };
+  const sanitizedForDoxing = rawText.replace(ADVERTISER_BIN_DISCLOSURE_REGEX, ' ');
   const matches: string[] = [];
-  const phoneMatch = rawText.match(PERSONAL_PHONE_REGEX);
-  const iinMatch = rawText.match(IIN_REGEX);
-  const addrMatch = rawText.match(ADDRESS_LEAK_REGEX);
-  const hasDoxingContext = DOXING_CONTEXT_REGEX.test(rawText) || Boolean(iinMatch && phoneMatch) || Boolean(addrMatch);
+  const phoneMatch = sanitizedForDoxing.match(PERSONAL_PHONE_REGEX);
+  const iinMatch = sanitizedForDoxing.match(IIN_REGEX);
+  const addrMatch = sanitizedForDoxing.match(ADDRESS_LEAK_REGEX);
+  const hasDoxingContext =
+    DOXING_CONTEXT_REGEX.test(sanitizedForDoxing) || Boolean(iinMatch && phoneMatch) || Boolean(addrMatch);
 
   if (hasDoxingContext) {
     if (phoneMatch) matches.push(phoneMatch[0]);
@@ -702,6 +886,25 @@ export function detectPersonalDataDoxing(rawText: string): {
     if (addrMatch) matches.push(addrMatch[0]);
   }
   return { detected: matches.length > 0, matches };
+}
+
+// Deterministic fallback marker categories only (resignation, picket, rally, protest, march) — no specific slogans, dates, or surnames
+const PEACEFUL_ASSEMBLY_CALL_REGEX =
+  /(?:^|[\s«"(])(?:в\s+)?отставк[аеиуой](?=$|[\s.,!?;:»"')\]])|отставкағ?а|(?:выйти|выходим|выходите|приходи(?:те)?|собираемся|собирайтесь)\s+(?:на\s+)?(?:площад[ьи]|митинг|шестви[ея]|пикет|акци[юя]\s+протеста|уличн[а-яё]+\s+акци[юи]|перекрыти[ея]\s+дорог)|несанкционированн[а-яё]+\s+(?:митинг|шестви[ея]|пикет|акци[юия])|перекрыти[ея]\s+дорог|перекры(?:ть|вай(?:те)?|ваем)\s+дорог[уи]|(?:^|[\s«"(])(?:на|в)\s+митинг(?:и|ов|ам|ах|е|а|у)?(?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])митинг(?:и|ов|ам|ах|е|а|у|ке|іге|қа|ге|те)?(?=$|[\s.,!?;:»"')\]])|(?:уличн[а-яё]+\s+)?акци[яюи]\s+протеста|(?:^|[\s«"(])(?:на|к)\s+протест[ауы]?(?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])протест(?:овать|уем|уют|ный|ная|ное|ные|ов)?(?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])шестви[еяйю](?=$|[\s.,!?;:»"')\]])|(?:^|[\s«"(])пикет(?:ы|ов|а|у|ам|е)?(?=$|[\s.,!?;:»"')\]])|алаңға\s*(?:шығ|жинал|кел)[а-яәғқңөұүһі]*|наразылық(?:\s+акция|\s+шеру|\s+білдір)?|шеру(?:ге)?(?=$|[\s.,!?;:»"')\]])|рұқсат\s+етілмеген\s+(?:митинг|жиын|акция)|жол(?:ды)?\s+жабу/i;
+
+const PEACEFUL_ELECTION_CONTEXT_REGEX =
+  /приходите\s+на\s+выборы|голосуйте\s+по\s+совести|официальн[а-яё]+\s+выбор[а-яё]*|избирательн[а-яё]+\s+участ|сайлауға\s+(?:кел|қатыс)|ар-?ождан\S*\s+дауыс\s+бер/i;
+
+export function detectPeacefulAssemblyCall(rawText: string): {
+  detected: boolean;
+  quote?: string;
+} {
+  if (!rawText) return { detected: false };
+  if (PEACEFUL_ELECTION_CONTEXT_REGEX.test(rawText)) {
+    return { detected: false };
+  }
+  const match = rawText.match(PEACEFUL_ASSEMBLY_CALL_REGEX);
+  return { detected: Boolean(match), quote: match ? match[0].trim() : undefined };
 }
 
 export function detectPoliticalDisinfo(rawText: string): {
@@ -775,19 +978,50 @@ export function buildOfficialDocument(
       ? `${overallPenalty.mrpRangeText} (${overallPenalty.kztRangeText})`
       : overallPenalty.headline;
 
+  const matchedLaws: KzLawEntry[] = [];
+  const seenLawIds = new Set<string>();
+  for (const v of auditCase.violations || []) {
+    const found = findKzLawByViolation(v);
+    if (found && !seenLawIds.has(found.id)) {
+      seenLawIds.add(found.id);
+      matchedLaws.push(found);
+    }
+  }
+
+  const dynamicRegulators = Array.from(
+    new Set(
+      matchedLaws
+        .map((l) => (lang === 'kz' ? l.regulatorKz : l.regulator))
+        .filter(Boolean)
+    )
+  );
+  const dynamicOrgLine =
+    recipientOrOrg ||
+    (dynamicRegulators.length > 0
+      ? dynamicRegulators.join(' / ')
+      : lang === 'kz'
+      ? 'ҚР Мәдениет және ақпарат министрлігі / ҚМА / ІІМ — eOtinish форматы'
+      : 'Министерство культуры и информации РК / АФМ РК / МВД РК — формат eOtinish');
+
   const violationsText =
     auditCase.violations.length > 0
       ? auditCase.violations
           .map((v, idx) => {
+            const matchedLaw = findKzLawByViolation(v);
             const cardDisp = getCompliancePenaltyDisplay([v], entityType, lang);
             const cardPenaltyText =
               cardDisp.mode === 'legal_fine'
                 ? `${cardDisp.mrpRangeText} (${cardDisp.kztRangeText})`
                 : cardDisp.headline;
+            const lawRef = matchedLaw
+              ? lang === 'kz'
+                ? matchedLaw.lawNameKz
+                : matchedLaw.lawName
+              : v.code;
             if (lang === 'kz') {
-              return `${idx + 1}. [${v.code}] ${v.title}${v.quote ? ` — үзінді: «${v.quote}»` : ''}. Санкция бағасы: ${cardPenaltyText}.`;
+              return `${idx + 1}. [${v.code}] ${v.title}${v.quote ? ` — үзінді: «${v.quote}»` : ''}.\n   Норма: ${lawRef}. Санкция бағасы: ${cardPenaltyText}.`;
             }
-            return `${idx + 1}. [${v.code}] ${v.title}${v.quote ? ` — фрагмент: «${v.quote}»` : ''}. Риск: ${cardPenaltyText}.`;
+            return `${idx + 1}. [${v.code}] ${v.title}${v.quote ? ` — фрагмент: «${v.quote}»` : ''}.\n   Норма: ${lawRef}. Риск: ${cardPenaltyText}.`;
           })
           .join('\n')
       : lang === 'kz'
@@ -795,9 +1029,18 @@ export function buildOfficialDocument(
       : 'Нарушений действующих норм законодательства РК не зафиксировано.';
 
   if (docType === 'eotinish') {
+    const eOtinishBases =
+      matchedLaws.length > 0
+        ? matchedLaws
+            .map((l, i) => `${i + 1}) ${lang === 'kz' ? l.eOtinishBasisKz : l.eOtinishBasisRu}`)
+            .join('\n')
+        : lang === 'kz'
+        ? '«Онлайн-платформалар және онлайн-жарнама туралы» № 230-VII Заңы мен ҚР ӘҚБтК нормалары негізінде тексеру жүргізуді сұраймын.'
+        : 'На основании Закона РК № 230-VII «Об онлайн-платформах и онлайн-рекламе» и норм КоАП РК прошу провести проверку и принять меры реагирования.';
+
     if (lang === 'kz') {
       return `ҚАЗАҚСТАН РЕСПУБЛИКАСЫНЫҢ УӘКІЛЕТТІ ОРГАНЫНА
-(ҚР Мәдениет және ақпарат министрлігі / ҚМА / ІІМ, eOtinish порталы арқылы)
+(${dynamicOrgLine}, eOtinish порталы арқылы)
 
 ӨТІНІШ (КОМПЛАЕНС-ХАТТАМА НЕГІЗІНДЕ)
 Тіркеу нөмірі: ${ref}
@@ -806,21 +1049,21 @@ export function buildOfficialDocument(
 
 1. ТЕКСЕРІЛГЕН НЫСАН:
 Атауы / Көзі: ${auditCase.title} (${auditCase.sourceName})
-Тәуекел индексі: ${auditCase.riskScore}% (${auditCase.riskLevel})
+Тәуекел индексі: ${auditCase.riskScore}% (${getLocalizedRiskLevel(auditCase.riskLevel, 'kz')})
 Жиынтық санкция бағасы: ${overallPenaltyLine}
 
 2. АНЫҚТАЛҒАН ҚҰҚЫҚ БҰЗУШЫЛЫҚ БЕЛГІЛЕРІ:
 ${violationsText}
 
-3. ТАЛАП ЕТЕМІН:
-Қазақстан Республикасының «Онлайн-платформалар және онлайн-жарнама туралы» № 230-VII Заңына және ҚР ӘҚБтК нормаларына сәйкес тексеру жүргізіп, заңсыз контентті бұғаттау немесе әкімшілік шара қолдануыңызды сұраймын.
+3. ҚҰҚЫҚТЫҚ НЕГІЗДЕМЕ ЖӘНЕ ТАЛАП (ҚР НҚА БАЗАСЫ БОЙЫНША):
+${eOtinishBases}
 
 Қосымша: Цифрлық сараптама есебі (${ref}), скриншоттар / стенограмма.
 Дайындалды: Check Activity KZ Compliance Engine`;
     }
 
     return `В УПОЛНОМОЧЕННЫЙ ГОСУДАРСТВЕННЫЙ ОРГАН РК
-(${recipientOrOrg || 'Министерство культуры и информации РК / АФМ РК / МВД РК — формат eOtinish'})
+(${dynamicOrgLine})
 
 ОБРАЩЕНИЕ О ПРИЗНАКАХ НАРУШЕНИЯ ЗАКОНОДАТЕЛЬСТВА РК
 Идентификатор аудита: ${ref}
@@ -835,14 +1078,23 @@ ${violationsText}
 2. ЗАФИКСИРОВАННЫЕ ПРИЗНАКИ НАРУШЕНИЙ:
 ${violationsText}
 
-3. ПРОСИТЕЛЬНАЯ ЧАСТЬ:
-На основании Закона РК от 10.07.2023 № 230-VII «Об онлайн-платформах и онлайн-рекламе» и норм КоАП РК прошу провести проверку указанного информационного материала и принять предусмотренные законом меры реагирования (вынесение предписания об удалении / блокировке либо привлечение к административной ответственности).
+3. ПРАВОВОЕ ОБОСНОВАНИЕ И ПРОСИТЕЛЬНАЯ ЧАСТЬ (ПО БАЗЕ НПА РК):
+${eOtinishBases}
 
 Приложение: Экспертный отчет Check Activity KZ (${ref}), фиксация текста/кадров.
 Сформировано автоматически: Check Activity KZ Compliance Engine`;
   }
 
-  // Pretension / notice to blogger or contractor
+  // Pretension / notice to blogger or contractor grounded strictly in matched KZ_LAWS_DB records
+  const pretensionSteps =
+    matchedLaws.length > 0
+      ? matchedLaws
+          .map((l, i) => `${i + 1}. ${lang === 'kz' ? l.pretensionRequirementKz : l.pretensionRequirementRu}`)
+          .join('\n')
+      : lang === 'kz'
+      ? '1. ҚР заңнамасы мен цифрлық этика стандарттарына сәйкес материалды түзетуді сұраймыз.'
+      : '1. Привести публикацию в соответствие с нормами законодательства РК и цифровой этики.';
+
   if (lang === 'kz') {
     return `СОТҚА ДЕЙІНГІ ЕСКЕРТУ ЖӘНЕ КОМПЛАЕНС-НҰСҚАМА
 Құжат № ${ref} | Күні: ${dateStr}
@@ -854,11 +1106,8 @@ ${violationsText}
 
 Есептік санкция тәуекелі: ${overallPenaltyLine}.
 
-ТАЛАП:
-24 сағат ішінде бұзушылықты жоюыңызды сұраймыз:
-• Міндетті «Жарнама / Реклама» таңбасын және жарнама берушінің БИН/ЖСН деректерін қосыңыз (№ 230-VII Заң);
-• Бейәдеп сөздерді, тыйым салынған сілтемелерді және манипулятивті уәделерді алып тастаңыз;
-• ҚР «Тілдер туралы» Заңының 21-бабына сәйкес қазақша нұсқасын қамтамасыз етіңіз.
+ТАЛАП (24 сағат ішінде орындау):
+${pretensionSteps}
 
 Тәуекелді қайта тексеру референсі: ${ref}`;
   }
@@ -873,12 +1122,9 @@ ${violationsText}
 
 Расчётный риск санкций: ${overallPenaltyLine}.
 
-ТРЕБОВАНИЕ:
-В течение 24 часов с момента получения настоящего уведомления необходимо:
-1. Устранить выявленные нарушения и удалить запрещенные формулировки / ссылки.
-2. При коммерческом характере контента нанести маркировку «Жарнама / Реклама» и указать ИИН/БИН рекламодателя (Закон РК № 230-VII, ст. 455 КоАП РК).
-3. Привести рекламные материалы в соответствие со ст. 21 Закона РК «О языках в Республике Казахстан».
+ТРЕБОВАНИЕ (устранить в течение 24 часов):
+${pretensionSteps}
 
-В противном случае материалы с цифровой фиксацией SHA-256 (${hash}) могут быть направлены в уполномоченные органы РК.
+В противном случае материалы с цифровой фиксацией SHA-256 (${hash}) могут быть направлены в уполномоченные органы РК (${dynamicRegulators.join(', ') || 'МКИ РК / АФМ РК / МВД РК'}).
 Сформировано: Check Activity KZ`;
 }

@@ -7,18 +7,23 @@ import { AuditCase, BilingualCheck, FraudSignals, ModalityType, RewriteResult, V
 import { analyzeEmojis } from '../utils/emojiIntelligence';
 import {
   analyzeKzFraudAndLanguage,
+  detectPeacefulAssemblyCall,
   detectPersonalDataDoxing,
   detectPoliticalDisinfo,
   findProfanityMatches,
   getCompliancePenaltyDisplay,
+  HITL_PROTEST_ARTICLE,
+  HITL_PROTEST_DESCRIPTION,
   isEthicsViolation,
   isJournalisticWarningContext,
   normalizeAuditCaseCompliance,
   normalizeViolation,
   runLivePreCheck,
+  type BusinessEntityType,
 } from '../utils/kzComplianceIntelligence';
 import { computeContentPayloadSha256 } from '../utils/cryptoHash';
 import { MAX_SERVER_PAYLOAD_BYTES } from '../utils/fileParser';
+import { retrieveRelevantKzLaws } from '../data/kzLawsDb';
 
 function getJsonByteSize(obj: unknown): number {
   try {
@@ -65,10 +70,35 @@ function sanitizePayloadForServerLimit(payload: ContentPayload): ContentPayload 
   return candidate;
 }
 
-function computeRewriteResidualRisk(safeTextRu: string, safeTextKz: string): number {
-  const ruScore = runLivePreCheck(safeTextRu, undefined, 'small', 'ru').riskScore;
-  const kzScore = runLivePreCheck(safeTextKz, undefined, 'small', 'kz').riskScore;
-  return Math.max(ruScore, kzScore);
+function computeRewriteResidualRisk(
+  safeTextRu: string,
+  safeTextKz: string,
+  entityTier: BusinessEntityType = 'small'
+): number {
+  const ruCheck = runLivePreCheck(safeTextRu, undefined, entityTier, 'ru');
+  const kzCheck = runLivePreCheck(safeTextKz, undefined, entityTier, 'kz');
+  const hasBilingualPair =
+    safeTextRu.trim().length > 0 &&
+    safeTextKz.trim().length > 0 &&
+    analyzeKzFraudAndLanguage(`${safeTextRu}\n${safeTextKz}`).languageCoverage === 'bilingual';
+
+  if (!hasBilingualPair) {
+    return Math.max(ruCheck.riskScore, kzCheck.riskScore);
+  }
+
+  const effectiveScore = (res: ReturnType<typeof runLivePreCheck>): number => {
+    const remaining = res.triggers.filter((t) => t.id !== 'lang_parity');
+    if (remaining.length === 0) return 4;
+    if (remaining.length === res.triggers.length) return res.riskScore;
+    const legal = remaining.filter((t) => t.category === 'legal');
+    if (legal.some((t) => t.severity === 'critical')) {
+      return Math.min(98, 76 + (legal.length - 1) * 6);
+    }
+    if (legal.length > 0) return Math.min(69, 48 + (legal.length - 1) * 7);
+    return Math.min(55, 36 + (remaining.length - 1) * 8);
+  };
+
+  return Math.max(effectiveScore(ruCheck), effectiveScore(kzCheck));
 }
 
 export interface ContentPayload {
@@ -122,32 +152,38 @@ export async function extractTextWithOcr(
 
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 35000);
+    const timeoutId = setTimeout(() => controller.abort(), 32000);
 
-    const response = await fetch('/api/ocr', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      signal: controller.signal,
-      body: JSON.stringify({ imageDataUrl, fileName }),
-    });
-    clearTimeout(timeoutId);
+    try {
+      const response = await fetch('/api/ocr', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+        body: JSON.stringify({ imageDataUrl, fileName }),
+      });
 
-    if (response.ok) {
-      const data: OcrResult = await response.json();
-      if (data.text) {
-        data.text = data.text.replace(/\[текст на изображении не обнаружен\]/gi, '').trim();
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (response.ok && contentType.includes('application/json')) {
+        const data: OcrResult = await response.json();
+        if (data && typeof data === 'object') {
+          if (typeof data.text === 'string') {
+            data.text = data.text.replace(/\[текст на изображении не обнаружен\]/gi, '').trim();
+          }
+          const isRefusal =
+            /^(?:извините|простите|к сожалению|я не могу помочь|sorry|i cannot assist|i can't help)/i.test(
+              data.text || ''
+            );
+          if (typeof data.text === 'string' && data.text.length > 0 && !isRefusal) {
+            return data;
+          }
+        }
+      } else if (!response.ok) {
+        console.warn('/api/ocr returned status:', response.status);
       }
-      const isRefusal =
-        /^(?:извините|простите|к сожалению|я не могу помочь|sorry|i cannot assist|i can't help)/i.test(
-          data.text || ''
-        );
-      if (data.text && data.text.length > 0 && !isRefusal) {
-        return data;
-      }
-    } else {
-      console.warn('/api/ocr returned status:', response.status);
+    } finally {
+      clearTimeout(timeoutId);
     }
   } catch (err) {
     console.info('Fast client OCR fallback notice:', err);
@@ -180,42 +216,75 @@ export async function extractTextWithOcr(
 }
 
 export async function analyzeContentWithGemini(
-  payload: ContentPayload
+  payload: ContentPayload,
+  options?: { signal?: AbortSignal }
 ): Promise<AuditCase> {
+  if (options?.signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
   const resolvedSha256 = await computeContentPayloadSha256(payload);
+  if (options?.signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
   const fullPayload: ContentPayload = {
     ...payload,
     sha256: resolvedSha256,
   };
   const networkPayload = sanitizePayloadForServerLimit(fullPayload);
+  const hasRichMedia = Boolean(
+    networkPayload.mediaBase64 ||
+      networkPayload.videoDataUrl?.startsWith('data:') ||
+      networkPayload.audioDataUrl?.startsWith('data:') ||
+      (Array.isArray(networkPayload.videoFrames) && networkPayload.videoFrames.length > 1)
+  );
 
   // Call server-side full-stack endpoint /api/analyze
   try {
-    const response = await fetch('/api/analyze', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(networkPayload),
-    });
-
-    if (response.ok) {
-      const data: AuditCase = await response.json();
-      return normalizeAuditCaseCompliance({
-        ...data,
-        previewUrl: data.previewUrl || payload.imageDataUrl || payload.videoFrames?.[0],
-        videoDataUrl: data.videoDataUrl || payload.videoDataUrl,
-        audioDataUrl: data.audioDataUrl || payload.audioDataUrl,
-        videoFrames:
-          Array.isArray(data.videoFrames) && data.videoFrames.length > 0
-            ? data.videoFrames
-            : payload.videoFrames,
+    const controller = new AbortController();
+    const onExternalAbort = () => controller.abort();
+    options?.signal?.addEventListener('abort', onExternalAbort, { once: true });
+    const timeoutId = setTimeout(() => controller.abort(), hasRichMedia ? 75000 : 35000);
+    try {
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+        body: JSON.stringify(networkPayload),
       });
-    } else {
-      console.warn('Server /api/analyze returned status:', response.status);
+
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (response.ok && contentType.includes('application/json')) {
+        const data: AuditCase = await response.json();
+        if (data && typeof data === 'object') {
+          return normalizeAuditCaseCompliance({
+            ...data,
+            previewUrl: data.previewUrl || payload.imageDataUrl || payload.videoFrames?.[0],
+            videoDataUrl: data.videoDataUrl || payload.videoDataUrl,
+            audioDataUrl: data.audioDataUrl || payload.audioDataUrl,
+            videoFrames:
+              Array.isArray(data.videoFrames) && data.videoFrames.length > 0
+                ? data.videoFrames
+                : payload.videoFrames,
+          });
+        }
+      } else {
+        console.warn('Server /api/analyze non-JSON or error status:', response.status, contentType);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      options?.signal?.removeEventListener('abort', onExternalAbort);
     }
   } catch (err) {
+    if (options?.signal?.aborted) {
+      throw err;
+    }
     console.warn('Network error reaching /api/analyze, falling back to local analyzer:', err);
+  }
+
+  if (options?.signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
   }
 
   // Robust client-side fallback
@@ -226,25 +295,43 @@ export async function rewriteContentSafe(params: {
   text: string;
   violations?: Violation[];
   language?: 'ru' | 'kz';
+  entityTier?: BusinessEntityType;
 }): Promise<RewriteResult> {
   const sourceText = (params.text || '').trim();
   const lang = params.language || 'ru';
+  const entityTier: BusinessEntityType = params.entityTier || 'small';
 
   try {
-    const response = await fetch('/api/rewrite', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (response.ok) {
-      const result = (await response.json()) as RewriteResult;
-      return {
-        ...result,
-        newRiskScore:
-          typeof result.newRiskScore === 'number'
-            ? result.newRiskScore
-            : computeRewriteResidualRisk(result.safeTextRu || '', result.safeTextKz || ''),
-      };
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 35000);
+    try {
+      const response = await fetch('/api/rewrite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({ ...params, entityTier }),
+      });
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (response.ok && contentType.includes('application/json')) {
+        const result = (await response.json()) as RewriteResult;
+        if (result && typeof result === 'object' && (result.safeTextRu || result.safeTextKz)) {
+          return {
+            ...result,
+            originalText: typeof result.originalText === 'string' ? result.originalText : sourceText,
+            safeTextRu: typeof result.safeTextRu === 'string' ? result.safeTextRu : '',
+            safeTextKz: typeof result.safeTextKz === 'string' ? result.safeTextKz : '',
+            appliedFixes: Array.isArray(result.appliedFixes)
+              ? result.appliedFixes.map((f) => String(f)).filter(Boolean)
+              : [],
+            newRiskScore:
+              typeof result.newRiskScore === 'number' && Number.isFinite(result.newRiskScore)
+                ? result.newRiskScore
+                : computeRewriteResidualRisk(result.safeTextRu || '', result.safeTextKz || '', entityTier),
+          };
+        }
+      }
+    } finally {
+      clearTimeout(timeoutId);
     }
   } catch (err) {
     console.warn('Network fallback for /api/rewrite:', err);
@@ -282,12 +369,25 @@ export async function rewriteContentSafe(params: {
         : 'Персональные данные (телефон, ИИН, адрес) скрыты по ст. 79 КоАП РК и ст. 147 УК РК'
     );
   }
+  const taxLabelRu =
+    entityTier === 'individual'
+      ? 'ИИН'
+      : entityTier === 'medium' || entityTier === 'large'
+      ? 'БИН организации'
+      : 'ИИН/БИН';
+  const taxLabelKz =
+    entityTier === 'individual'
+      ? 'ЖСН'
+      : entityTier === 'medium' || entityTier === 'large'
+      ? 'Ұйым БСН'
+      : 'ЖСН/БСН';
+
   if (isAd && !/жарнама|реклама/i.test(cleanRu)) {
-    cleanRu = `Реклама / Жарнама\n${cleanRu}\n\nРекламодатель: ИИН/БИН [000000000000] (Закон РК № 230-VII)`;
+    cleanRu = `Реклама / Жарнама\n${cleanRu}\n\nРекламодатель: ${taxLabelRu} [000000000000] (Закон РК № 230-VII)`;
     appliedFixes.push(
       lang === 'kz'
-        ? '«Жарнама / Реклама» таңбасы және ЖСН/БСН өрісі қосылды (№ 230-VII Заңы)'
-        : 'Добавлена обязательная маркировка «Реклама / Жарнама» и реквизиты БИН/ИИН (Закон № 230-VII)'
+        ? `«Жарнама / Реклама» таңбасы және ${taxLabelKz} өрісі қосылды (№ 230-VII Заңы)`
+        : `Добавлена обязательная маркировка «Реклама / Жарнама» и реквизиты ${taxLabelRu} (Закон № 230-VII)`
     );
   }
   if (appliedFixes.length === 0) {
@@ -301,7 +401,7 @@ export async function rewriteContentSafe(params: {
   let safeTextKz = cleanRu;
   if (isAd) {
     const bodyOnly = cleanRu.replace(/^Реклама \/ Жарнама\n?/i, '').replace(/\n\nРекламодатель:[\s\S]*$/i, '');
-    safeTextKz = `Жарнама / Реклама\nҚР заңнамасына сәйкестендірілген қауіпсіз хабарландыру:\n${bodyOnly}\n\nЖарнама беруші: ЖСН/БСН [000000000000] (ҚР № 230-VII Заңы)`;
+    safeTextKz = `Жарнама / Реклама\nҚР заңнамасына сәйкестендірілген қауіпсіз хабарландыру:\n${bodyOnly}\n\nЖарнама беруші: ${taxLabelKz} [000000000000] (ҚР № 230-VII Заңы)`;
   } else if (/выборы\s+15\s+марта/i.test(cleanRu)) {
     safeTextKz = `Ресми дереккөздер арқылы растауды қажет ететін ақпарат. Дербес деректер жасырылды.\n15 наурыздағы сайлауға келіп, ар-ожданыңызбен дауыс беріңіз!`;
   } else if (isGamblingText) {
@@ -315,13 +415,14 @@ export async function rewriteContentSafe(params: {
     safeTextRu: cleanRu,
     safeTextKz,
     appliedFixes,
-    newRiskScore: computeRewriteResidualRisk(cleanRu, safeTextKz),
+    newRiskScore: computeRewriteResidualRisk(cleanRu, safeTextKz, entityTier),
     engineUsed: 'CheckActivity Client Safe-Rewrite',
   };
 }
 
 // Client-side fallback analyzer with comprehensive Kazakhstan Legal & Internet Ethics rules
 function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): AuditCase {
+  const fallbackStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const timestamp =
     new Date().toLocaleString('ru-RU', {
       timeZone: 'Asia/Almaty',
@@ -448,12 +549,12 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
   }
 
   // 3. Commercial ad without "Жарнама" marking (Закон № 230-VII, ст. 455 КоАП)
-  const hasCommercial = !isGamblingMatch && /скидк|купить|акция|промокод|цена|инвестиц|заказать|распродаж|курс/i.test(content);
+  const hasCommercial = !isGamblingMatch && /скидк|купить|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|цена|инвестиц|заказать|распродаж|курс/i.test(content);
   const contentForAdMark = content.replace(/маркировка\s*[«"]?(?:жарнама|реклама)[»"]?\s*(?:и\s+[^\n)]*\s*)?отсутств\S*/gi, '').replace(/рекламодател[яюе]?\S*/gi, '');
   const hasAdMark = /(?:^|[\s#«"(])(?:жарнама|реклама|жарнамалық|спонсорский\s+материал)(?=$|[\s»"),.:!])/i.test(contentForAdMark);
 
   if (!isContextWarning && hasCommercial && !hasAdMark) {
-    const adMatch = content.match(/скидк[а-я]*|купить|акция|промокод|цена|распродаж[а-я]*|курс/i);
+    const adMatch = content.match(/скидк[а-я]*|купить|(?<!наразылық\s)акция(?!\s+протеста)|промокод|цена|распродаж[а-я]*|курс/i);
     violations.push({
       id: 'v-client-ad-missing',
       category: 'legal',
@@ -531,6 +632,25 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     legalScore = Math.max(legalScore, 45);
   }
 
+  // 7. Universal Human-in-the-loop fallback: general protest/resignation/rally/picket/march marker categories only
+  const assemblyCheck = detectPeacefulAssemblyCall(rawFull);
+  if (assemblyCheck.detected) {
+    violations.push({
+      id: 'v-client-peaceful-assembly',
+      category: 'legal',
+      code: HITL_PROTEST_ARTICLE,
+      title: 'Общественно-политический / протестный контекст (Human-in-the-loop)',
+      severity: 'warning',
+      quote: assemblyCheck.quote || 'Общественно-политический / протестный контекст',
+      basis: HITL_PROTEST_DESCRIPTION,
+      fineAmount: '0 МРП · Требуется проверка человеком (Human-in-the-loop)',
+      jurisdiction: 'Правовой комплаенс РК · Human-in-the-loop (проверка контекста)',
+      recommendation: HITL_PROTEST_DESCRIPTION,
+    });
+    legalScore = Math.max(legalScore, 50);
+    detectedActions += 'Обнаружен общественно-политический / протестный контекст — требуется проверка человеком (Human-in-the-loop). ';
+  }
+
   const isAudio = payload.modality === 'audio' || Boolean(payload.audioDataUrl);
   const isVideo = payload.modality === 'video' || Boolean(payload.videoDataUrl) || (Array.isArray(payload.videoFrames) && payload.videoFrames.length > 0);
   let transcript: Array<{ time: string; speaker: string; text: string; flagged?: boolean; flaggedText?: string; article?: string }> | undefined = undefined;
@@ -565,7 +685,7 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
   const emojiAnalysis = analyzeEmojis(content + ' ' + (payload.text || ''));
   if (emojiAnalysis.flaggedEmojis.length > 0) {
     for (const item of emojiAnalysis.flaggedEmojis) {
-      if (item.category === 'gambling' && !violations.some((v) => v.code?.includes('445-1'))) {
+      if (!isContextWarning && item.category === 'gambling' && !violations.some((v) => v.code?.includes('445-1'))) {
         violations.unshift({
           id: `v-emoji-${item.emoji}`,
           category: 'legal',
@@ -578,7 +698,7 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
           jurisdiction: 'АФМ РК / Контроль онлайн-казино',
           recommendation: 'Исключить символы азартных игр и призывы к ставкам.',
         });
-        legalScore = Math.max(legalScore, 85);
+        legalScore = Math.max(legalScore, item.emoji === '🎰' ? 85 : 55);
       } else if (item.category === 'profanity_insult' && !violations.some((v) => v.code?.includes('434') || v.code?.includes('73-4'))) {
         violations.unshift({
           id: `v-emoji-${item.emoji}`,
@@ -594,6 +714,20 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
         });
         legalScore = Math.max(legalScore, 76);
         ethicsScore = Math.max(ethicsScore, 80);
+      } else if (item.category === 'spam' && !violations.some((v) => v.id?.startsWith('v-emoji-'))) {
+        violations.push({
+          id: `v-emoji-${item.emoji}`,
+          category: 'ethics',
+          code: 'Этика: Спам / визуальные триггеры (эмодзи)',
+          title: `${item.label} (${item.emoji})`,
+          severity: 'warning',
+          quote: item.emoji,
+          basis: item.description,
+          fineAmount: '0 МРП (этический риск)',
+          jurisdiction: 'Цифровая этика / Стандарты платформ',
+          recommendation: 'Сократить избыточные повторы денежных и рекламных эмодзи.',
+        });
+        ethicsScore = Math.max(ethicsScore, 28);
       }
     }
   }
@@ -659,7 +793,7 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     ? 0
     : isScenario1Combo
     ? 84
-    : Math.min(100, Math.max(legalScore, ethicsScore, emojiAnalysis.totalRiskPoints > 30 ? 75 : 0));
+    : Math.min(100, Math.max(legalScore, ethicsScore));
   const riskLevel =
     overallRiskScore >= 70 ? 'Критический' : overallRiskScore >= 40 ? 'Высокий' : overallRiskScore >= 20 ? 'Средний' : 'Низкий';
   const status = overallRiskScore >= 40 ? 'ТРЕБУЕТ МЕР' : overallRiskScore >= 20 ? 'ПРЕДУПРЕЖДЕНИЕ' : 'БЕЗОПАСНО';
@@ -713,6 +847,12 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     };
   });
 
+  const retrieval = retrieveRelevantKzLaws(rawFull, {
+    modality: payload.modality,
+    hasMedia: hasImage || isAudio || isVideo,
+  });
+  const elapsedMs = Math.max(1, Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - fallbackStart));
+
   return normalizeAuditCaseCompliance({
     id: caseId,
     referenceNumber: refNum,
@@ -746,6 +886,17 @@ function analyzeClientFallback(payload: ContentPayload, sha256Hash: string): Aud
     transcript,
     rawText: cleanExtractedText,
     violations: computedViolations,
+    telemetry: {
+      extractMs: 0,
+      retrievalMs: elapsedMs,
+      aiAuditMs: 0,
+      totalMs: elapsedMs,
+      checkedLawsCount: retrieval.checkedLawsCount,
+      retrievedLawsCount: retrieval.matchedLaws.length,
+      matchedLawCodes: retrieval.matchedLaws.slice(0, 6).map((l) => l.code),
+      engineMode: 'deterministic-db-fallback',
+      fallbackReason: 'Сервер или AI-модель недоступны — выполнен локальный аудит по базе НПА РК',
+    },
     metadata: {
       fileSize: payload.fileSize || '1.1 MB',
       duration: payload.audioDuration || (isAudio ? '00:28' : isVideo ? '00:20' : undefined),

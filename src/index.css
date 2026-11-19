@@ -219,18 +219,46 @@ html.dark body {
   body * {
     visibility: hidden;
   }
+  .pdf-no-print {
+    display: none !important;
+  }
+  .pdf-print-backdrop {
+    position: static !important;
+    inset: auto !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    display: block !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+  .pdf-print-dialog {
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+    background: white !important;
+  }
   #printable-protocol,
   #printable-protocol * {
     visibility: visible;
   }
   #printable-protocol {
-    position: absolute;
-    left: 0;
-    top: 0;
+    position: static !important;
     width: 100% !important;
     max-width: 100% !important;
+    height: auto !important;
     margin: 0 !important;
-    padding: 1.2cm !important;
+    padding: 1cm !important;
     background: white !important;
     color: #09090b !important;
     box-shadow: none !important;

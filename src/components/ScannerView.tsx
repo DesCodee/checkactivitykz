@@ -36,6 +36,7 @@ import {
   computeSha256FromBuffer,
   dataUrlToUint8Array,
 } from '../utils/cryptoHash';
+import { copyTextToClipboard } from '../utils/clipboard';
 import {
   FileUp,
   Video,
@@ -67,75 +68,6 @@ import {
 interface ScannerViewProps {
   onRunAudit: (auditCase: AuditCase) => void;
   presetData?: { modality: ModalityType; urlOrText: string };
-}
-
-// Client-side image preparer: optimizes resolution, preserves text sharpness, and prevents PNG transparency from becoming black
-function prepareImageFile(file: File): Promise<{ dataUrl: string; sizeStr: string }> {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const originalDataUrl = (e.target?.result as string) || '';
-      const img = new Image();
-      img.onload = () => {
-        const MAX_DIM = 1600;
-        let { width, height } = img;
-
-        // If file is already an optimized JPEG under 350KB and within 1600px, pass through directly
-        if (file.type === 'image/jpeg' && width <= MAX_DIM && height <= MAX_DIM && file.size < 350 * 1024) {
-          resolve({
-            dataUrl: originalDataUrl,
-            sizeStr: `${Math.round(file.size / 1024)} KB`,
-          });
-          return;
-        }
-
-        // Scale proportionally if larger than MAX_DIM to accelerate OCR and network transfer
-        if (width > MAX_DIM || height > MAX_DIM) {
-          if (width > height) {
-            height = Math.round((height * MAX_DIM) / width);
-            width = MAX_DIM;
-          } else {
-            width = Math.round((width * MAX_DIM) / height);
-            height = MAX_DIM;
-          }
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d', { willReadFrequently: false });
-        if (ctx) {
-          // Fill canvas with pure white background before drawing
-          // This prevents PNG alpha channels / transparency from becoming solid black in JPEG conversion
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fillRect(0, 0, width, height);
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = 'high';
-          ctx.drawImage(img, 0, 0, width, height);
-
-          // High quality 0.90 JPEG gives razor-sharp text with 10x-15x faster network transmission
-          const compressed = canvas.toDataURL('image/jpeg', 0.90);
-          const approxKb = Math.round((compressed.length * 3) / 4 / 1024);
-          resolve({ dataUrl: compressed, sizeStr: `${approxKb} KB (быстрое сжатие)` });
-          return;
-        }
-
-        resolve({
-          dataUrl: originalDataUrl,
-          sizeStr: file.size > 0 ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : '320 KB',
-        });
-      };
-      img.onerror = () => {
-        resolve({
-          dataUrl: originalDataUrl,
-          sizeStr: file.size > 0 ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : '320 KB',
-        });
-      };
-      img.src = originalDataUrl;
-    };
-    reader.onerror = () => resolve({ dataUrl: '', sizeStr: '0 KB' });
-    reader.readAsDataURL(file);
-  });
 }
 
 function readFileAsBase64(file: File): Promise<string> {
@@ -187,6 +119,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   const [videoDuration, setVideoDuration] = useState<string>('00:00');
   const [videoFileSha256, setVideoFileSha256] = useState<string | null>(null);
   const [isExtractingFrames, setIsExtractingFrames] = useState(false);
+  const [videoPrepStage, setVideoPrepStage] = useState<'idle' | 'extracting_media' | 'ocr_frames' | 'ready'>('idle');
   const videoFileInputRef = useRef<HTMLInputElement>(null);
 
   // Audio & Microphone states
@@ -227,6 +160,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
   const [processingStepIndex, setProcessingStepIndex] = useState<1 | 2 | 3 | 4>(1);
+  const [processingModality, setProcessingModality] = useState<ModalityType | null>(null);
+  const [isSlowNetwork, setIsSlowNetwork] = useState(false);
   const [restrictedUrlNotice, setRestrictedUrlNotice] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -235,6 +170,46 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   const activeVideoOcrPromiseRef = useRef<Promise<{ text: string; warningNotice?: string } | null> | null>(null);
   const lastPayloadRef = useRef<ContentPayload | null>(null);
   const textInputDirtyRef = useRef<boolean>(Boolean(presetData?.modality === 'text' && presetData?.urlOrText));
+
+  // Lifecycle, blob URL tracking & async race-condition guards
+  const isMountedRef = useRef<boolean>(true);
+  const activeFileBlobUrlRef = useRef<string | null>(null);
+  const activeAudioBlobUrlRef = useRef<string | null>(null);
+  const activeVideoBlobUrlRef = useRef<string | null>(null);
+  const handedOffBlobUrlsRef = useRef<Set<string>>(new Set());
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const fileOpIdRef = useRef<number>(0);
+  const audioOpIdRef = useRef<number>(0);
+  const videoOpIdRef = useRef<number>(0);
+  const ocrOpIdRef = useRef<number>(0);
+  const auditOpIdRef = useRef<number>(0);
+  const autoAuditTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyOcrTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const progressTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const slowNetworkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleFileSelectRef = useRef<(file: File) => void>(() => {});
+
+  const revokeIfNotHandedOff = (url: string | null | undefined) => {
+    if (url && url.startsWith('blob:') && !handedOffBlobUrlsRef.current.has(url)) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        // ignore revoke errors
+      }
+    }
+  };
+
+  const clearProgressTimers = () => {
+    for (const timer of progressTimersRef.current) {
+      clearTimeout(timer);
+    }
+    progressTimersRef.current = [];
+    if (slowNetworkTimerRef.current) {
+      clearTimeout(slowNetworkTimerRef.current);
+      slowNetworkTimerRef.current = null;
+    }
+    setIsSlowNetwork(false);
+  };
 
   const applyExtractedTextToInputs = (rawText: string) => {
     const clean = (rawText || '').replace(/\[текст на изображении не обнаружен\]/gi, '').trim();
@@ -268,13 +243,29 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     }
   }, [presetData]);
 
-  // Clean up audio recorder and timer on unmount
+  // Clean up audio recorder, media tracks, timers, and unused blob URLs on unmount
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+      if (autoAuditTimerRef.current) clearTimeout(autoAuditTimerRef.current);
+      if (copyOcrTimerRef.current) clearTimeout(copyOcrTimerRef.current);
+      clearProgressTimers();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
+        try {
+          mediaRecorderRef.current.stop();
+        } catch {
+          // ignore
+        }
       }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+      }
+      revokeIfNotHandedOff(activeFileBlobUrlRef.current);
+      revokeIfNotHandedOff(activeAudioBlobUrlRef.current);
+      revokeIfNotHandedOff(activeVideoBlobUrlRef.current);
     };
   }, []);
 
@@ -291,6 +282,11 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         return;
       }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!isMountedRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      mediaStreamRef.current = stream;
       audioChunksRef.current = [];
       const recorder = new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
@@ -302,25 +298,39 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
       };
 
       recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        if (mediaStreamRef.current === stream) {
+          mediaStreamRef.current = null;
+        }
+        if (!isMountedRef.current) return;
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         audioBlob
           .arrayBuffer()
           .then(computeSha256FromBuffer)
-          .then(setAudioFileSha256)
+          .then((hash) => {
+            if (isMountedRef.current) setAudioFileSha256(hash);
+          })
           .catch(() => {});
         const reader = new FileReader();
         reader.onload = (ev) => {
+          if (!isMountedRef.current) return;
           const dataUrl = ev.target?.result as string;
+          revokeIfNotHandedOff(activeAudioBlobUrlRef.current);
+          activeAudioBlobUrlRef.current = null;
           setAudioDataUrl(dataUrl);
+          setAudioMediaBase64(dataUrl);
           setAudioFileName(`voice_record_${Date.now()}.webm`);
           const totalSecs = recordingSecondsRef.current || 1;
           const mins = Math.floor(totalSecs / 60).toString().padStart(2, '0');
           const secs = (totalSecs % 60).toString().padStart(2, '0');
           setAudioDuration(`${mins}:${secs}`);
-          setAudioTranscriptPreview('Голосовая аудиозапись зафиксирована с микрофона устройства. Нажмите «Запустить аудит» для транскрибации речи и проверки на нормы РК.');
+          setAudioTranscriptPreview(
+            language === 'kz'
+              ? 'Құрылғы микрофонынан дауыстық жазба алынды. Сөзді транскрибациялау және ҚР нормалары бойынша тексеру үшін «Аудитті бастау» батырмасын басыңыз.'
+              : 'Голосовая аудиозапись зафиксирована с микрофона устройства. Нажмите «Запустить аудит» для транскрибации речи и проверки на нормы РК.'
+          );
         };
         reader.readAsDataURL(audioBlob);
-        stream.getTracks().forEach((track) => track.stop());
       };
 
       recorder.start(250);
@@ -336,11 +346,13 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
       }, 1000);
     } catch (err) {
       console.warn('Microphone error:', err);
-      setUploadError(
-        language === 'kz'
-          ? 'Микрофон қолжетімсіз. Аудиофайлды құрылғыдан жүктей аласыз.'
-          : 'Микрофон недоступен. Вы можете переключиться на загрузку аудиофайла с устройства.'
-      );
+      if (isMountedRef.current) {
+        setUploadError(
+          language === 'kz'
+            ? 'Микрофон қолжетімсіз. Аудиофайлды құрылғыдан жүктей аласыз.'
+            : 'Микрофон недоступен. Вы можете переключиться на загрузку аудиофайла с устройства.'
+        );
+      }
     }
   };
 
@@ -355,30 +367,47 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     }
   };
 
-
-
   const handleAudioFileSelect = async (file: File) => {
     setUploadError(null);
     setAuditError(null);
+    if (file.size === 0) {
+      setUploadError(
+        language === 'kz'
+          ? 'Таңдалған аудиофайл бос (0 байт). Жарамды аудиофайлды таңдаңыз.'
+          : 'Выбранный аудиофайл пуст (0 байт). Загрузите корректную аудиозапись.'
+      );
+      return;
+    }
     if (file.size > 100 * 1024 * 1024) {
       setUploadError(
-        'Аудиофайл слишком большой (> 100 МБ). Пожалуйста, загрузите фрагмент короче (рекомендуется до 5–10 минут или до 50 МБ) для быстрой обработки.'
+        language === 'kz'
+          ? 'Аудиофайл тым үлкен (> 100 МБ). Жылдам өңдеу үшін қысқарақ үзіндіні (50 МБ дейін) жүктеңіз.'
+          : 'Аудиофайл слишком большой (> 100 МБ). Пожалуйста, загрузите фрагмент короче (рекомендуется до 5–10 минут или до 50 МБ) для быстрой обработки.'
       );
       return;
     }
 
+    const opId = ++audioOpIdRef.current;
     const canInlineMedia = file.size <= MAX_INLINE_MEDIA_BYTES;
     const [inlineDataUrl, computedHash] = await Promise.all([
       canInlineMedia ? readFileAsBase64(file) : Promise.resolve(null),
-      file.size > 0 ? computeFileSha256(file).catch(() => null) : Promise.resolve(null),
+      computeFileSha256(file).catch(() => null),
     ]);
+    if (!isMountedRef.current || opId !== audioOpIdRef.current) return;
+
+    revokeIfNotHandedOff(activeAudioBlobUrlRef.current);
     const playbackUrl = inlineDataUrl || URL.createObjectURL(file);
+    activeAudioBlobUrlRef.current = playbackUrl.startsWith('blob:') ? playbackUrl : null;
     setAudioDataUrl(playbackUrl);
     setAudioMediaBase64(inlineDataUrl);
     setAudioFileName(file.name);
     setAudioDuration('00:30');
     setAudioFileSha256(computedHash);
-    setAudioTranscriptPreview('Аудиозапись загружена. Готова к транскрипции с таймкодами (ММ:СС) и комплаенс-проверке.');
+    setAudioTranscriptPreview(
+      language === 'kz'
+        ? 'Аудиожазба жүктелді. Таймкодтармен (ММ:СС) транскрибацияға және комплаенс-тексеруге дайын.'
+        : 'Аудиозапись загружена. Готова к транскрипции с таймкодами (ММ:СС) и комплаенс-проверке.'
+    );
   };
 
   const handleVideoFileSelect = async (file: File) => {
@@ -386,20 +415,31 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     setAuditError(null);
     setVideoFrameOcrText('');
     setVideoAudioDataUrl(null);
+    if (file.size === 0) {
+      setUploadError(
+        language === 'kz'
+          ? 'Таңдалған бейнефайл бос (0 байт). Жарамды MP4/MOV файлын жүктеңіз.'
+          : 'Выбранный видеофайл пуст (0 байт). Пожалуйста, выберите корректный видеофайл.'
+      );
+      return;
+    }
     if (file.size > 100 * 1024 * 1024) {
       setUploadError(
-        'Файл видео слишком большой (> 100 МБ). Пожалуйста, загрузите фрагмент короче (рекомендуется до 1–2 минут или до 50 МБ) для быстрой и точной обработки.'
+        language === 'kz'
+          ? 'Бейнефайл тым үлкен (> 100 МБ). Жылдам және дәл өңдеу үшін қысқарақ үзіндіні (50 МБ дейін) жүктеңіз.'
+          : 'Файл видео слишком большой (> 100 МБ). Пожалуйста, загрузите фрагмент короче (рекомендуется до 1–2 минут или до 50 МБ) для быстрой и точной обработки.'
       );
       return;
     }
 
-    if (videoPlayableUrl && videoPlayableUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(videoPlayableUrl);
-    }
+    const opId = ++videoOpIdRef.current;
+    revokeIfNotHandedOff(activeVideoBlobUrlRef.current);
+    activeVideoBlobUrlRef.current = null;
 
     setVideoFile(file);
     setVideoCaption(file.name);
     setIsExtractingFrames(true);
+    setVideoPrepStage('extracting_media');
 
     const canInlineMedia = file.size <= MAX_INLINE_MEDIA_BYTES;
 
@@ -408,8 +448,15 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
       extractVideoPreview(file, { keepPlayableUrl: true }),
       extractVideoAudioAsWavDataUrl(file, 90),
       canInlineMedia ? readFileAsBase64(file) : Promise.resolve(null),
-      file.size > 0 ? computeFileSha256(file).catch(() => null) : Promise.resolve(null),
+      computeFileSha256(file).catch(() => null),
     ]);
+
+    if (!isMountedRef.current || opId !== videoOpIdRef.current) {
+      if (framesResult.playableUrl?.startsWith('blob:')) {
+        URL.revokeObjectURL(framesResult.playableUrl);
+      }
+      return;
+    }
 
     setIsExtractingFrames(false);
     const { videoFrames: frames, durationStr: durationLabel, playableUrl } = framesResult;
@@ -417,9 +464,11 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     if (frames.length > 0) {
       setVideoFrames(frames);
       setFilePreviewUrl(frames[0]);
+      setVideoPrepStage('ocr_frames');
       // Recognize visible text across ALL extracted keyframes so captions/ads in middle or end frames are never missed
       const ocrPromise = extractOcrAcrossFrames(frames, file.name, extractTextWithOcr)
         .then((ocrRes) => {
+          if (!isMountedRef.current || opId !== videoOpIdRef.current) return null;
           if (ocrRes.text) {
             setVideoFrameOcrText(ocrRes.text);
           }
@@ -430,13 +479,29 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         })
         .catch(() => null)
         .finally(() => {
-          activeVideoOcrPromiseRef.current = null;
+          if (opId === videoOpIdRef.current) {
+            activeVideoOcrPromiseRef.current = null;
+            if (isMountedRef.current) {
+              setVideoPrepStage('ready');
+            }
+          }
         });
       activeVideoOcrPromiseRef.current = ocrPromise;
     } else {
       activeVideoOcrPromiseRef.current = null;
+      setVideoPrepStage(b64 || extractedAudioWav ? 'ready' : 'idle');
+      if (!b64 && !extractedAudioWav) {
+        setUploadError(
+          language === 'kz'
+            ? 'Бейнефайл зақымдалған немесе браузер кодекті оқи алмады. MP4/H.264 файлын таңдап көріңіз.'
+            : 'Не удалось декодировать видеофайл (файл повреждён или неподдерживаемый кодек). Попробуйте MP4/H.264.'
+        );
+      }
     }
-    setVideoPlayableUrl(playableUrl || URL.createObjectURL(file));
+
+    const finalPlayableUrl = playableUrl || URL.createObjectURL(file);
+    activeVideoBlobUrlRef.current = finalPlayableUrl.startsWith('blob:') ? finalPlayableUrl : null;
+    setVideoPlayableUrl(finalPlayableUrl);
     setVideoDuration(durationLabel);
     setVideoMediaBase64(b64);
     setVideoAudioDataUrl(extractedAudioWav || null);
@@ -444,9 +509,9 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   };
 
   const handleClearVideo = () => {
-    if (videoPlayableUrl && videoPlayableUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(videoPlayableUrl);
-    }
+    videoOpIdRef.current += 1;
+    revokeIfNotHandedOff(activeVideoBlobUrlRef.current);
+    activeVideoBlobUrlRef.current = null;
     setVideoFile(null);
     setVideoFrames([]);
     setVideoPlayableUrl(null);
@@ -456,6 +521,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     setVideoFrameOcrText('');
     setVideoDuration('00:00');
     setVideoFileSha256(null);
+    setIsExtractingFrames(false);
+    setVideoPrepStage('idle');
     activeVideoOcrPromiseRef.current = null;
     if (videoFileInputRef.current) videoFileInputRef.current.value = '';
   };
@@ -471,9 +538,12 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   };
 
   const handleClearAudio = () => {
+    audioOpIdRef.current += 1;
     if (audioElementRef.current) {
       audioElementRef.current.pause();
     }
+    revokeIfNotHandedOff(activeAudioBlobUrlRef.current);
+    activeAudioBlobUrlRef.current = null;
     setAudioDataUrl(null);
     setAudioMediaBase64(null);
     setAudioFileName('');
@@ -487,9 +557,11 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   // OCR Execution handler for images, scanned PDFs, and video frames
   const triggerOcr = (dataUrl: string, fileName?: string) => {
     if (!dataUrl) return Promise.resolve(null);
+    const opId = ++ocrOpIdRef.current;
     setIsOcrLoading(true);
     const promise = extractTextWithOcr(dataUrl, fileName)
       .then((res) => {
+        if (!isMountedRef.current || opId !== ocrOpIdRef.current) return null;
         if (res.text && res.text.trim().length > 0) {
           const cleanText = res.text.replace(/\[текст на изображении не обнаружен\]/gi, '').trim();
           const isPlaceholder = /^\[(?:Графический объект|Материал|Скриншот)/i.test(cleanText);
@@ -505,11 +577,15 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
       })
       .catch((err) => {
         console.warn('OCR processing error:', err);
-        setOcrSuccess(true);
+        if (isMountedRef.current && opId === ocrOpIdRef.current) {
+          setOcrSuccess(true);
+        }
         return null;
       })
       .finally(() => {
-        setIsOcrLoading(false);
+        if (isMountedRef.current && opId === ocrOpIdRef.current) {
+          setIsOcrLoading(false);
+        }
       });
 
     activeOcrPromiseRef.current = promise;
@@ -517,49 +593,72 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   };
 
   const executeDirectPayload = async (payload: ContentPayload) => {
+    const opId = ++auditOpIdRef.current;
+    clearProgressTimers();
     setIsProcessing(true);
+    setProcessingModality(payload.modality);
+    setIsSlowNetwork(false);
     setAuditError(null);
     setRestrictedUrlNotice(null);
     lastPayloadRef.current = payload;
+
+    const isVideoPayload = payload.modality === 'video';
     setProcessingStepIndex(1);
     setProcessingStep(
-      language === 'kz'
+      isVideoPayload
+        ? language === 'kz'
+          ? '1. 5 негізгі кадр мен аудионы шығару...'
+          : '1. Извлечение 5 кадров и аудиодорожки...'
+        : language === 'kz'
         ? '1. Мәтінді (KZ/RU OCR) және метадеректерді шығару'
         : '1. Извлечение текста (KZ/RU OCR) и метаданных'
     );
 
     const t1 = setTimeout(() => {
+      if (!isMountedRef.current || opId !== auditOpIdRef.current) return;
       setProcessingStepIndex(2);
       setProcessingStep(
-        language === 'kz'
+        isVideoPayload
+          ? language === 'kz'
+            ? '2. Кадрлардан мәтінді (OCR) және сөзді тану...'
+            : '2. Распознавание текста (OCR) и речи на кадрах...'
+          : language === 'kz'
           ? '2. Бейне / аудио / суретті мультимодальды талдау (Vision AI)'
           : '2. Мультимодальный анализ изображения / видео / аудио (Vision AI)'
       );
-    }, 550);
+    }, isVideoPayload ? 750 : 550);
 
     const t2 = setTimeout(() => {
+      if (!isMountedRef.current || opId !== auditOpIdRef.current) return;
       setProcessingStepIndex(3);
       setProcessingStep(
         language === 'kz'
-          ? '3. ҚР ӘҚБтК, ҚК және № 230-VII Заңы бойынша құқықтық салыстыру'
-          : '3. Правовая сверка с КоАП РК, УК РК и Законом № 230-VII'
+          ? '3. ҚР ӘҚБтК, ҚК және № 230-VII Заңы бойынша заңдық AI-аудит...'
+          : '3. Юридический AI-аудит РК (КоАП, УК и Закон № 230-VII)...'
       );
-    }, 1100);
+    }, isVideoPayload ? 1800 : 1200);
 
     const t3 = setTimeout(() => {
+      if (!isMountedRef.current || opId !== auditOpIdRef.current) return;
       setProcessingStepIndex(4);
       setProcessingStep(
         language === 'kz'
           ? '4. Контексті, этиканы тексеру және SHA-256 есебін жасау'
           : '4. Проверка контекста, этики и формирование SHA-256 отчёта'
       );
-    }, 1650);
+    }, isVideoPayload ? 3200 : 2000);
+
+    progressTimersRef.current = [t1, t2, t3];
+    slowNetworkTimerRef.current = setTimeout(() => {
+      if (isMountedRef.current && opId === auditOpIdRef.current) {
+        setIsSlowNetwork(true);
+      }
+    }, 8000);
 
     try {
       const audited = await analyzeContentWithGemini(payload);
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
+      clearProgressTimers();
+      if (!isMountedRef.current || opId !== auditOpIdRef.current) return;
       setIsProcessing(false);
 
       if (audited.accessRestricted) {
@@ -573,12 +672,24 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         return;
       }
 
+      if (audited.videoDataUrl?.startsWith('blob:')) {
+        handedOffBlobUrlsRef.current.add(audited.videoDataUrl);
+      }
+      if (audited.audioDataUrl?.startsWith('blob:')) {
+        handedOffBlobUrlsRef.current.add(audited.audioDataUrl);
+      }
+      if (payload.videoDataUrl?.startsWith('blob:')) {
+        handedOffBlobUrlsRef.current.add(payload.videoDataUrl);
+      }
+      if (payload.audioDataUrl?.startsWith('blob:')) {
+        handedOffBlobUrlsRef.current.add(payload.audioDataUrl);
+      }
+
       onRunAudit(audited);
     } catch (err) {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
+      clearProgressTimers();
       console.warn('Analysis error:', err);
+      if (!isMountedRef.current || opId !== auditOpIdRef.current) return;
       setIsProcessing(false);
       const detail = err instanceof Error && err.message ? err.message : '';
       setAuditError(
@@ -590,11 +701,36 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   };
 
   const handleFileSelect = async (file: File) => {
-    setUploadedFile(file);
+    if (autoAuditTimerRef.current) {
+      clearTimeout(autoAuditTimerRef.current);
+      autoAuditTimerRef.current = null;
+    }
     setUploadError(null);
     setAuditError(null);
+
+    if (file.size === 0) {
+      setUploadedFile(null);
+      setParsedFileInfo(null);
+      setUploadError(
+        language === 'kz'
+          ? 'Таңдалған файл бос (0 байт). Жарамды құжат, сурет немесе медиафайл жүктеңіз.'
+          : 'Выбранный файл пуст (0 байт). Пожалуйста, загрузите корректный документ, изображение или медиафайл.'
+      );
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    const opId = ++fileOpIdRef.current;
+    ocrOpIdRef.current += 1;
+    revokeIfNotHandedOff(activeFileBlobUrlRef.current);
+    activeFileBlobUrlRef.current = null;
+
+    setUploadedFile(file);
+    setParsedFileInfo(null);
+    setFilePreviewUrl(null);
     setFileSha256(null);
     setOcrText('');
+    setOcrCharCount(0);
     setOcrWarning(null);
     setOcrSuccess(false);
     setIsOcrLoading(true);
@@ -602,8 +738,35 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     try {
       const [parsed, computedHash] = await Promise.all([
         parseUploadedFileUniversal(file, (dataUrl, fname) => triggerOcr(dataUrl, fname)),
-        file.size > 0 ? computeFileSha256(file).catch(() => null) : Promise.resolve(null),
+        computeFileSha256(file).catch(() => null),
       ]);
+
+      if (!isMountedRef.current || opId !== fileOpIdRef.current) {
+        if (parsed.dataUrl?.startsWith('blob:')) URL.revokeObjectURL(parsed.dataUrl);
+        if (parsed.audioDataUrl?.startsWith('blob:')) URL.revokeObjectURL(parsed.audioDataUrl);
+        return;
+      }
+
+      if (parsed.fileType === 'image' && !parsed.dataUrl && !parsed.previewUrl) {
+        setUploadedFile(null);
+        setParsedFileInfo(null);
+        setFilePreviewUrl(null);
+        setIsOcrLoading(false);
+        setUploadError(
+          language === 'kz'
+            ? 'Сурет зақымдалған немесе форматы қате (файл кеңейтімін тексеріңіз).'
+            : 'Изображение повреждено или не распознаётся браузером (проверьте корректность формата файла).'
+        );
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+
+      if (parsed.dataUrl?.startsWith('blob:')) {
+        activeFileBlobUrlRef.current = parsed.dataUrl;
+      } else if (parsed.audioDataUrl?.startsWith('blob:')) {
+        activeFileBlobUrlRef.current = parsed.audioDataUrl;
+      }
+
       if (computedHash) {
         setFileSha256(computedHash);
       }
@@ -641,19 +804,27 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
           text: parsed.text,
           sha256: computedHash || undefined,
         };
-        setTimeout(() => {
-          executeDirectPayload(payload);
+        autoAuditTimerRef.current = setTimeout(() => {
+          if (isMountedRef.current && opId === fileOpIdRef.current) {
+            executeDirectPayload(payload);
+          }
         }, 800);
       }
     } catch (err) {
       console.warn('Universal file parse error:', err);
-      const fallbackText = `[Файл: ${file.name}]. Загружен для комплаенс-проверки по законам РК.`;
+      if (!isMountedRef.current || opId !== fileOpIdRef.current) return;
+      const fallbackText =
+        language === 'kz'
+          ? `[Файл: ${file.name}]. ҚР заңнамасы бойынша комплаенс-тексеру үшін жүктелді.`
+          : `[Файл: ${file.name}]. Загружен для комплаенс-проверки по законам РК.`;
       setOcrText(fallbackText);
       setOcrCharCount(fallbackText.length);
       setOcrSuccess(true);
       setIsOcrLoading(false);
     }
   };
+
+  handleFileSelectRef.current = handleFileSelect;
 
   // Support instant Ctrl+V screenshot paste anywhere in scanner
   useEffect(() => {
@@ -663,7 +834,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         if (file.type.startsWith('image/')) {
           e.preventDefault();
           setActiveTab('file');
-          handleFileSelect(file);
+          handleFileSelectRef.current(file);
         }
       }
     };
@@ -681,6 +852,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
   };
 
   const handleClearFile = () => {
+    fileOpIdRef.current += 1;
+    ocrOpIdRef.current += 1;
+    if (autoAuditTimerRef.current) {
+      clearTimeout(autoAuditTimerRef.current);
+      autoAuditTimerRef.current = null;
+    }
+    revokeIfNotHandedOff(activeFileBlobUrlRef.current);
+    activeFileBlobUrlRef.current = null;
     setUploadedFile(null);
     setParsedFileInfo(null);
     setFilePreviewUrl(null);
@@ -689,6 +868,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     setOcrText('');
     setOcrWarning(null);
     setOcrSuccess(false);
+    setIsOcrLoading(false);
     setOcrCharCount(0);
     if (!textInputDirtyRef.current) {
       setTextInput('');
@@ -700,6 +880,13 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
 
   // Instant Sample Screenshot Loader for immediate OCR testing
   const handleLoadSampleScreenshot = (type: SampleCaseType) => {
+    if (autoAuditTimerRef.current) {
+      clearTimeout(autoAuditTimerRef.current);
+      autoAuditTimerRef.current = null;
+    }
+    fileOpIdRef.current += 1;
+    revokeIfNotHandedOff(activeFileBlobUrlRef.current);
+    activeFileBlobUrlRef.current = null;
     setUploadError(null);
     setAuditError(null);
     setFileSha256(null);
@@ -708,32 +895,56 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
     const sampleBytes = dataUrlToUint8Array(sample.dataUrl);
     if (sampleBytes) {
       computeSha256FromBuffer(sampleBytes)
-        .then(setFileSha256)
+        .then((hash) => {
+          if (isMountedRef.current) setFileSha256(hash);
+        })
         .catch(() => {});
     }
     setUploadedFile(new File([], sample.fileName, { type: 'image/png' }));
+    setParsedFileInfo(null);
     setFilePreviewUrl(sample.dataUrl);
     setFileTextNote('');
     // Instantly set text and warning so user never waits and never sees empty state
     applyExtractedTextToInputs(sampleText);
     setOcrSuccess(true);
     if (type === 'political_doxing') {
-      setOcrWarning('Внимание: зафиксирован политический вброс, публичное оскорбление и доксинг ИИН/телефона (ст. 274, 131, 147 УК РК).');
+      setOcrWarning(
+        language === 'kz'
+          ? 'Назар аударыңыз: саяси жалған ақпарат, жария қорлау және ЖСН/телефон доксингі тіркелді (ҚР ҚК 274, 131, 147-баптары).'
+          : 'Внимание: зафиксирован политический вброс, публичное оскорбление и доксинг ИИН/телефона (ст. 274, 131, 147 УК РК).'
+      );
     } else if (type === 'profanity_chat') {
-      setOcrWarning('Внимание: зафиксирована ненормативная лексика и обсценная брань (ст. 434 КоАП РК).');
+      setOcrWarning(
+        language === 'kz'
+          ? 'Назар аударыңыз: бейәдеп сөздер мен былапыт сөз тіркестері анықталды (ҚР ӘҚБтК 434-бабы).'
+          : 'Внимание: зафиксирована ненормативная лексика и обсценная брань (ст. 434 КоАП РК).'
+      );
     } else if (type === 'casino_banner') {
-      setOcrWarning('Внимание: выявлены слоты / рулетка / $ USD / USDT (ст. 445-1 КоАП РК — даже без слова «казино»).');
+      setOcrWarning(
+        language === 'kz'
+          ? 'Назар аударыңыз: слоттар / рулетка / $ USD / USDT анықталды (ҚР ӘҚБтК 445-1-бабы).'
+          : 'Внимание: выявлены слоты / рулетка / $ USD / USDT (ст. 445-1 КоАП РК — даже без слова «казино»).'
+      );
     } else if (type === 'scam_phishing') {
-      setOcrWarning('Внимание: выявлен фишинг / дипфейк-скам под бренды РК и ложные выплаты 42 500 ₸ (ст. 190, 274 УК РК).');
+      setOcrWarning(
+        language === 'kz'
+          ? 'Назар аударыңыз: ҚР брендтері атынан фишинг / дипфейк-скам және 42 500 ₸ жалған төлемдері анықталды (ҚР ҚК 190, 274-баптары).'
+          : 'Внимание: выявлен фишинг / дипфейк-скам под бренды РК и ложные выплаты 42 500 ₸ (ст. 190, 274 УК РК).'
+      );
     } else if (type === 'journalism_context') {
       setOcrWarning(null);
     } else {
-      setOcrWarning('Внимание: отсутствуют обязательная маркировка «Жарнама» и данные рекламодателя (Закон № 230-VII).');
+      setOcrWarning(
+        language === 'kz'
+          ? 'Назар аударыңыз: міндетті «Жарнама» белгісі және жарнама берушінің деректері жоқ (№ 230-VII Заңы).'
+          : 'Внимание: отсутствуют обязательная маркировка «Жарнама» и данные рекламодателя (Закон № 230-VII).'
+      );
     }
     triggerOcr(sample.dataUrl, sample.fileName);
   };
 
   const handleExecute = async () => {
+    if (isProcessing) return;
     setUploadError(null);
     setAuditError(null);
     let payload: ContentPayload;
@@ -848,6 +1059,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
         }
         let awaitedFrameOcr = videoFrameOcrText.trim();
         if (!awaitedFrameOcr && activeVideoOcrPromiseRef.current) {
+          setIsProcessing(true);
+          setProcessingModality('video');
+          setProcessingStepIndex(2);
+          setProcessingStep(
+            language === 'kz'
+              ? '2. Кадрлардан мәтінді (OCR) тану аяқталуда...'
+              : '2. Завершение распознавания текста (OCR) по 5 кадрам...'
+          );
           try {
             const res = await activeVideoOcrPromiseRef.current;
             if (res?.text) {
@@ -996,7 +1215,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                     setRestrictedUrlNotice(null);
                     setActiveTab(tab.id as 'file' | 'url' | 'text' | 'media');
                   }}
-                  className={`py-2.5 px-3 rounded-lg text-xs sm:text-[13px] font-medium flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${
+                  className={`py-2 sm:py-2.5 px-2 sm:px-3 rounded-lg text-[11px] sm:text-[13px] font-medium flex items-center justify-center gap-1.5 sm:gap-2 transition-colors whitespace-nowrap ${
                     isActive
                       ? 'bg-white dark:bg-zinc-800 text-zinc-950 dark:text-zinc-50 shadow-2xs border border-zinc-200/60 dark:border-zinc-700'
                       : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
@@ -1205,16 +1424,16 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                 </div>
               ) : (
                 <div className="border border-zinc-200/80 dark:border-zinc-800 rounded-2xl p-4 bg-zinc-50/70 dark:bg-zinc-950/50 flex flex-col gap-3.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
                       {filePreviewUrl ? (
                         <img
                           src={filePreviewUrl}
                           alt="Preview"
-                          className="w-14 h-14 rounded-xl object-cover border border-zinc-200 dark:border-zinc-700 shrink-0"
+                          className="w-11 h-11 sm:w-14 sm:h-14 rounded-xl object-cover border border-zinc-200 dark:border-zinc-700 shrink-0"
                         />
                       ) : (
-                        <div className="w-14 h-14 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 flex flex-col items-center justify-center text-zinc-700 dark:text-zinc-300 shrink-0">
+                        <div className="w-11 h-11 sm:w-14 sm:h-14 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 flex flex-col items-center justify-center text-zinc-700 dark:text-zinc-300 shrink-0">
                           <FileText className="w-5 h-5" strokeWidth={1.5} />
                           <span className="text-[9px] font-['JetBrains_Mono'] uppercase mt-0.5 text-zinc-400">
                             {parsedFileInfo?.fileType || 'DOC'}
@@ -1296,9 +1515,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                           <button
                             type="button"
                             onClick={() => {
-                              navigator.clipboard?.writeText(ocrText);
-                              setCopiedOcr(true);
-                              setTimeout(() => setCopiedOcr(false), 2000);
+                              void copyTextToClipboard(ocrText).then((ok) => {
+                                if (!ok || !isMountedRef.current) return;
+                                setCopiedOcr(true);
+                                if (copyOcrTimerRef.current) clearTimeout(copyOcrTimerRef.current);
+                                copyOcrTimerRef.current = setTimeout(() => {
+                                  if (isMountedRef.current) setCopiedOcr(false);
+                                }, 2000);
+                              });
                             }}
                             className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 flex items-center gap-1 transition-colors"
                           >
@@ -1407,7 +1631,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                                 }`}
                               />
                               <span className="font-medium text-zinc-800 dark:text-zinc-200">
-                                {language === 'kz' ? 'Индекс риска (Pre-Check):' : 'Индекс риска (Pre-Check):'}
+                                {language === 'kz' ? 'Тәуекел индексі (Pre-Check):' : 'Индекс риска (Pre-Check):'}
                               </span>
                               <span className="font-['JetBrains_Mono'] font-bold tabular-nums text-zinc-950 dark:text-zinc-50">
                                 {pre.riskScore} / 100
@@ -1464,7 +1688,11 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                                   }`}
                                 >
                                   <span className="font-['JetBrains_Mono'] text-[9px] uppercase opacity-75">
-                                    {trg.category === 'legal' ? 'Закон РК' : 'Этика'}
+                                    {trg.category === 'legal'
+                                      ? language === 'kz'
+                                        ? 'ҚР Заңы'
+                                        : 'Закон РК'
+                                      : 'Этика'}
                                   </span>
                                   <span>· {language === 'kz' ? trg.labelKz : trg.labelRu}</span>
                                   <span className="font-['JetBrains_Mono'] text-[10px] opacity-75">({trg.article})</span>
@@ -1492,14 +1720,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                     setUploadError(null);
                     setMediaSubMode('video');
                   }}
-                  className={`flex-1 py-2 px-3 rounded-lg transition-colors flex items-center justify-center gap-2 ${
+                  className={`flex-1 py-2 px-2 sm:px-3 rounded-lg text-[11px] sm:text-xs transition-colors flex items-center justify-center gap-1.5 sm:gap-2 ${
                     mediaSubMode === 'video'
                       ? 'bg-white dark:bg-zinc-800 text-zinc-950 dark:text-zinc-50 shadow-2xs'
                       : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
                   }`}
                 >
-                  <Video className="w-4 h-4" strokeWidth={1.6} />
-                  <span>{language === 'kz' ? 'Бейне (MP4 / MOV)' : 'Видеофайл (MP4 / MOV)'}</span>
+                  <Video className="w-4 h-4 shrink-0" strokeWidth={1.6} />
+                  <span className="truncate">{language === 'kz' ? 'Бейне (MP4 / MOV)' : 'Видеофайл (MP4 / MOV)'}</span>
                 </button>
 
                 <button
@@ -1508,14 +1736,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                     setUploadError(null);
                     setMediaSubMode('audio');
                   }}
-                  className={`flex-1 py-2 px-3 rounded-lg transition-colors flex items-center justify-center gap-2 ${
+                  className={`flex-1 py-2 px-2 sm:px-3 rounded-lg text-[11px] sm:text-xs transition-colors flex items-center justify-center gap-1.5 sm:gap-2 ${
                     mediaSubMode === 'audio'
                       ? 'bg-white dark:bg-zinc-800 text-zinc-950 dark:text-zinc-50 shadow-2xs'
                       : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
                   }`}
                 >
-                  <Mic className="w-4 h-4" strokeWidth={1.6} />
-                  <span>{language === 'kz' ? 'Аудио / Микрофон' : 'Аудио / Микрофон'}</span>
+                  <Mic className="w-4 h-4 shrink-0" strokeWidth={1.6} />
+                  <span className="truncate">{language === 'kz' ? 'Аудио / Микрофон' : 'Аудио / Микрофон'}</span>
                 </button>
               </div>
 
@@ -1561,10 +1789,18 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                     </div>
                   )}
 
-                  {isExtractingFrames && (
-                    <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 flex items-center justify-center gap-3 text-xs text-zinc-700 dark:text-zinc-300 font-medium">
-                      <Loader2 className="w-4 h-4 animate-spin text-zinc-600" />
-                      <span>{t('videoExtracting')}</span>
+                  {(isExtractingFrames || videoPrepStage === 'ocr_frames') && (
+                    <div className="p-3.5 rounded-xl bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 flex items-center justify-center gap-2.5 text-xs text-zinc-700 dark:text-zinc-300 font-medium">
+                      <Loader2 className="w-4 h-4 animate-spin text-zinc-600 shrink-0" />
+                      <span>
+                        {videoPrepStage === 'ocr_frames'
+                          ? language === 'kz'
+                            ? '5 кадрдан мәтінді тану (OCR) орындалуда...'
+                            : 'Распознавание текста (OCR) по 5 кадрам видео...'
+                          : language === 'kz'
+                          ? '5 негізгі кадр мен аудионы шығару...'
+                          : 'Извлечение 5 ключевых кадров и аудиодорожки...'}
+                      </span>
                     </div>
                   )}
 
@@ -1967,7 +2203,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                   {[
-                    { name: 'Веб-сайты / СМИ', match: /^https?:\/\//i.test(urlInput) && !urlInput.includes('youtube') && !urlInput.includes('youtu.be') && !urlInput.includes('tiktok') && !urlInput.includes('t.me') },
+                    {
+                      name: language === 'kz' ? 'Веб-сайттар / БАҚ' : 'Веб-сайты / СМИ',
+                      match: /^https?:\/\//i.test(urlInput) && !urlInput.includes('youtube') && !urlInput.includes('youtu.be') && !urlInput.includes('tiktok') && !urlInput.includes('t.me') && !urlInput.includes('instagram.com'),
+                    },
                     { name: 'Telegram (t.me)', match: urlInput.includes('t.me') || urlInput.includes('telegram.me') },
                     { name: 'YouTube / Shorts', match: urlInput.includes('youtube.com') || urlInput.includes('youtu.be') },
                     { name: 'TikTok / Reels', match: urlInput.includes('tiktok.com') || urlInput.includes('instagram.com') },
@@ -2097,7 +2336,11 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                             }`}
                           >
                             <span className="font-['JetBrains_Mono'] text-[9px] uppercase opacity-75">
-                              {trg.category === 'legal' ? 'Закон РК' : 'Этика'}
+                              {trg.category === 'legal'
+                                ? language === 'kz'
+                                  ? 'ҚР Заңы'
+                                  : 'Закон РК'
+                                : 'Этика'}
                             </span>
                             <span>· {language === 'kz' ? trg.labelKz : trg.labelRu}</span>
                             <span className="font-['JetBrains_Mono'] text-[10px] opacity-75">({trg.article})</span>
@@ -2147,7 +2390,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200"
                     >
                       <span className="text-sm leading-none">{emoji}</span>
-                      <span className="text-[11px]">{info ? info.label : 'Символ'}</span>
+                      <span className="text-[11px]">{info ? info.label : language === 'kz' ? 'Таңба' : 'Символ'}</span>
                     </span>
                   );
                 })}
@@ -2305,23 +2548,35 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                 {[
                   {
                     step: 1,
-                    titleRu: 'Извлечение текста (KZ/RU OCR) и метаданных',
-                    titleKz: 'Мәтінді (KZ/RU OCR) және метадеректерді шығару',
+                    titleRu:
+                      processingModality === 'video'
+                        ? 'Извлечение 5 кадров и аудиодорожки'
+                        : 'Извлечение текста (KZ/RU OCR) и метаданных',
+                    titleKz:
+                      processingModality === 'video'
+                        ? '5 негізгі кадр мен аудионы шығару'
+                        : 'Мәтінді (KZ/RU OCR) және метадеректерді шығару',
                   },
                   {
                     step: 2,
-                    titleRu: 'Мультимодальный анализ (Vision AI)',
-                    titleKz: 'Мультимодальды талдау (Vision AI)',
+                    titleRu:
+                      processingModality === 'video'
+                        ? 'Распознавание текста (OCR) и речи'
+                        : 'Мультимодальный анализ (Vision AI)',
+                    titleKz:
+                      processingModality === 'video'
+                        ? 'Кадрдағы мәтін (OCR) мен сөзді тану'
+                        : 'Мультимодальды талдау (Vision AI)',
                   },
                   {
                     step: 3,
-                    titleRu: 'Сверка с КоАП РК, УК РК и № 230-VII',
-                    titleKz: 'ҚР ӘҚБтК, ҚК және № 230-VII салыстыру',
+                    titleRu: 'Юридический AI-аудит РК (КоАП / № 230-VII)',
+                    titleKz: 'ҚР ӘҚБтК, ҚК және № 230-VII AI-аудиті',
                   },
                   {
                     step: 4,
-                    titleRu: 'Контекст, этика и SHA-256 отчёт',
-                    titleKz: 'Контекст, этика және SHA-256 есеп',
+                    titleRu: 'Формирование SHA-256 отчёта',
+                    titleKz: 'SHA-256 есебін қалыптастыру',
                   },
                 ].map((item) => {
                   const isDone = processingStepIndex > item.step;
@@ -2351,6 +2606,16 @@ export const ScannerView: React.FC<ScannerViewProps> = ({ onRunAudit, presetData
                   );
                 })}
               </div>
+              {isSlowNetwork && (
+                <div className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/60 rounded-lg px-2.5 py-1.5 flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                  <span>
+                    {language === 'kz'
+                      ? 'Желі баяу немесе ауқымды медиафайл өңделуде — мультимодальды AI-аудит жалғасуда...'
+                      : 'Соединение медленное или обрабатывается объёмный медиафайл — мультимодальный AI-аудит продолжается...'}
+                  </span>
+                </div>
+              )}
             </div>
           )}
 

@@ -13,14 +13,26 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { isIPv4, isIPv6 } from 'node:net';
 import { analyzeEmojis } from './src/utils/emojiIntelligence.ts';
+import {
+  findKzLawByViolation,
+  formatKzLawsRagContext,
+  KZ_LAWS_DB,
+  retrieveRelevantKzLaws,
+} from './src/data/kzLawsDb.ts';
 import {
   analyzeKzFraudAndLanguage,
   type BusinessEntityType,
+  detectPeacefulAssemblyCall,
   detectPersonalDataDoxing,
   detectPoliticalDisinfo,
   findProfanityMatches,
   getCompliancePenaltyDisplay,
+  HITL_PROTEST_ARTICLE,
+  HITL_PROTEST_DESCRIPTION,
+  isHitlContextViolation,
   isJournalisticWarningContext,
   isLegalViolation,
   normalizeAuditCaseCompliance,
@@ -28,10 +40,35 @@ import {
   runLivePreCheck,
 } from './src/utils/kzComplianceIntelligence.ts';
 
-function computeRewriteResidualRisk(safeTextRu: string, safeTextKz: string): number {
-  const ruScore = runLivePreCheck(safeTextRu, undefined, 'small', 'ru').riskScore;
-  const kzScore = runLivePreCheck(safeTextKz, undefined, 'small', 'kz').riskScore;
-  return Math.max(ruScore, kzScore);
+function computeRewriteResidualRisk(
+  safeTextRu: string,
+  safeTextKz: string,
+  entityTier: BusinessEntityType = 'small'
+): number {
+  const ruCheck = runLivePreCheck(safeTextRu, undefined, entityTier, 'ru');
+  const kzCheck = runLivePreCheck(safeTextKz, undefined, entityTier, 'kz');
+  const hasBilingualPair =
+    safeTextRu.trim().length > 0 &&
+    safeTextKz.trim().length > 0 &&
+    analyzeKzFraudAndLanguage(`${safeTextRu}\n${safeTextKz}`).languageCoverage === 'bilingual';
+
+  if (!hasBilingualPair) {
+    return Math.max(ruCheck.riskScore, kzCheck.riskScore);
+  }
+
+  const effectiveScore = (res: ReturnType<typeof runLivePreCheck>): number => {
+    const remaining = res.triggers.filter((t) => t.id !== 'lang_parity');
+    if (remaining.length === 0) return 4;
+    if (remaining.length === res.triggers.length) return res.riskScore;
+    const legal = remaining.filter((t) => t.category === 'legal');
+    if (legal.some((t) => t.severity === 'critical')) {
+      return Math.min(98, 76 + (legal.length - 1) * 6);
+    }
+    if (legal.length > 0) return Math.min(69, 48 + (legal.length - 1) * 7);
+    return Math.min(55, 36 + (remaining.length - 1) * 8);
+  };
+
+  return Math.max(effectiveScore(ruCheck), effectiveScore(kzCheck));
 }
 
 function resolveEntityTier(rawTier: unknown): BusinessEntityType {
@@ -53,8 +90,15 @@ function computeViolationFineText(violation: any, entityTier: BusinessEntityType
 function applyViolationFinesForEntity(violations: any[], entityTier: BusinessEntityType = 'small'): any[] {
   return violations.map((v) => {
     const normalized = normalizeViolation(v);
+    const matchedLaw = isLegalViolation(normalized) ? findKzLawByViolation(normalized) : undefined;
     return {
       ...normalized,
+      ...(matchedLaw
+        ? {
+            code: isHitlContextViolation(normalized) ? normalized.code : matchedLaw.code,
+            jurisdiction: matchedLaw.regulator,
+          }
+        : {}),
       fineAmount: computeViolationFineText(normalized, entityTier),
     };
   });
@@ -147,43 +191,393 @@ const MOBILE_BROWSER_UA =
 const SOCIAL_BOT_UA =
   'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
 const TELEGRAM_BOT_UA = 'TelegramBot (like TwitterBot)';
+const WHATSAPP_BOT_UA = 'WhatsApp/2.23.20.0 A';
 
-function extractMetaContent(html: string, attrName: string, attrValue: string): string {
-  const escapedVal = attrValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const patternA = new RegExp(
-    `<meta[^>]*\\b${attrName}\\s*=\\s*["']${escapedVal}["'][^>]*\\bcontent\\s*=\\s*(["'])([\\s\\S]*?)\\1`,
-    'i'
-  );
-  const matchA = html.match(patternA);
-  if (matchA?.[2]) return decodeHtmlEntities(matchA[2]);
+function extractMetaTagValue(html: string, attrName: string, attrValue: string): string {
+  if (!html) return '';
+  const headEndMatch = /<\/head>/i.exec(html);
+  const searchArea = headEndMatch
+    ? html.slice(0, headEndMatch.index + 7)
+    : html.slice(0, 200000);
 
-  const patternB = new RegExp(
-    `<meta[^>]*\\bcontent\\s*=\\s*(["'])([\\s\\S]*?)\\1[^>]*\\b${attrName}\\s*=\\s*["']${escapedVal}["']`,
-    'i'
-  );
-  const matchB = html.match(patternB);
-  if (matchB?.[2]) return decodeHtmlEntities(matchB[2]);
+  const metaTagRegex = /<meta\b[^>]{1,4000}>/gi;
+  const attrRegex = /\b([a-zA-Z_:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
+  const targetAttrLower = attrName.toLowerCase();
+  const targetValLower = attrValue.toLowerCase();
 
+  let tagMatch: RegExpExecArray | null;
+  while ((tagMatch = metaTagRegex.exec(searchArea)) !== null) {
+    const tag = tagMatch[0];
+    attrRegex.lastIndex = 0;
+    let attrMatch: RegExpExecArray | null;
+    let matchedAttr = false;
+    let contentVal = '';
+    while ((attrMatch = attrRegex.exec(tag)) !== null) {
+      const k = attrMatch[1].toLowerCase();
+      const v = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? '';
+      if (k === targetAttrLower && v.toLowerCase() === targetValLower) {
+        matchedAttr = true;
+      } else if (k === 'content') {
+        contentVal = v;
+      }
+    }
+    if (matchedAttr && contentVal) {
+      return contentVal;
+    }
+  }
   return '';
 }
 
+function extractMetaContent(html: string, attrName: string, attrValue: string): string {
+  const raw = extractMetaTagValue(html, attrName, attrValue);
+  return raw ? decodeHtmlEntities(raw) : '';
+}
+
 function extractRawMetaUrl(html: string, attrName: string, attrValue: string): string {
-  const escapedVal = attrValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const patternA = new RegExp(
-    `<meta[^>]*\\b${attrName}\\s*=\\s*["']${escapedVal}["'][^>]*\\bcontent\\s*=\\s*(["'])([\\s\\S]*?)\\1`,
-    'i'
-  );
-  const matchA = html.match(patternA);
-  if (matchA?.[2]) return matchA[2].replace(/&amp;/g, '&').trim();
+  const raw = extractMetaTagValue(html, attrName, attrValue);
+  return raw ? raw.replace(/&amp;/g, '&').trim() : '';
+}
 
-  const patternB = new RegExp(
-    `<meta[^>]*\\bcontent\\s*=\\s*(["'])([\\s\\S]*?)\\1[^>]*\\b${attrName}\\s*=\\s*["']${escapedVal}["']`,
-    'i'
-  );
-  const matchB = html.match(patternB);
-  if (matchB?.[2]) return matchB[2].replace(/&amp;/g, '&').trim();
+async function readHtmlHeadOnly(res: globalThis.Response, maxBytes = 240000): Promise<string> {
+  if (!res.body) {
+    const buf = await res.arrayBuffer();
+    return decodeResponseBuffer(buf.slice(0, maxBytes), res.headers.get('content-type'));
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+  let headProbe = '';
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      chunks.push(value);
+      total += value.byteLength;
+      headProbe += decoder.decode(value, { stream: true });
+      if (/<\/head>/i.test(headProbe)) {
+        reader.cancel().catch(() => {});
+        break;
+      }
+    }
+  } catch {
+    // ignore abort/stream stop after reading head
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
+  return decodeResponseBuffer(merged.buffer, res.headers.get('content-type'));
+}
 
-  return '';
+export function isPrivateOrReservedIp(ipRaw: string): boolean {
+  const ip = (ipRaw || '').trim().toLowerCase().replace(/^\[|\]$/g, '').split('%')[0];
+  if (!ip) return true;
+
+  // Handle IPv4-mapped IPv6 addresses like ::ffff:127.0.0.1
+  if (ip.startsWith('::ffff:')) {
+    const mapped = ip.slice(7);
+    if (isIPv4(mapped)) {
+      return isPrivateOrReservedIp(mapped);
+    }
+    const hexParts = mapped.split(':');
+    if (hexParts.length === 2) {
+      const hi = parseInt(hexParts[0], 16);
+      const lo = parseInt(hexParts[1], 16);
+      if (Number.isFinite(hi) && Number.isFinite(lo)) {
+        const ipv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+        return isPrivateOrReservedIp(ipv4);
+      }
+    }
+  }
+
+  if (isIPv4(ip)) {
+    const parts = ip.split('.').map((n) => parseInt(n, 10));
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) {
+      return true;
+    }
+    const [a, b] = parts;
+    if (a === 0) return true; // 0.0.0.0/8
+    if (a === 10) return true; // 10.0.0.0/8
+    if (a === 127) return true; // 127.0.0.0/8 loopback
+    if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local / cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
+    if (a === 192 && b === 0 && (parts[2] === 0 || parts[2] === 2)) return true;
+    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 benchmark
+    if (a >= 224) return true; // multicast & reserved
+    return false;
+  }
+
+  if (isIPv6(ip)) {
+    if (ip === '::' || ip === '::1') return true;
+    if (/^f[cd]/i.test(ip)) return true; // fc00::/7 ULA private
+    if (/^fe[89ab]/i.test(ip)) return true; // fe80::/10 link-local
+    if (ip.startsWith('ff')) return true; // ff00::/8 multicast
+    return false;
+  }
+
+  return true;
+}
+
+export async function isSafeExternalHttpUrl(rawUrl: string): Promise<{
+  safe: boolean;
+  url?: URL;
+  reason?: string;
+}> {
+  try {
+    const trimmed = String(rawUrl || '').trim();
+    if (!trimmed || trimmed.length > 2048 || /[\s<>"'`]/.test(trimmed)) {
+      return { safe: false, reason: 'Некорректный формат URL' };
+    }
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { safe: false, reason: 'Разрешены только протоколы HTTP и HTTPS' };
+    }
+    if (parsed.username || parsed.password) {
+      return { safe: false, reason: 'URL с учетными данными запрещён' };
+    }
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (!hostname) {
+      return { safe: false, reason: 'Отсутствует хост в URL' };
+    }
+    if (
+      hostname === 'localhost' ||
+      hostname.endsWith('.localhost') ||
+      hostname.endsWith('.local') ||
+      hostname.endsWith('.internal') ||
+      hostname.endsWith('.localdomain') ||
+      hostname === 'metadata.google.internal'
+    ) {
+      return { safe: false, reason: 'Запросы к локальным и внутренним адресам запрещены' };
+    }
+    if (isIPv4(hostname) || isIPv6(hostname)) {
+      if (isPrivateOrReservedIp(hostname)) {
+        return { safe: false, reason: 'Запросы к приватным/служебным IP-адресам запрещены' };
+      }
+      return { safe: true, url: parsed };
+    }
+
+    try {
+      const records = await Promise.race([
+        dnsLookup(hostname, { all: true }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DNS timeout')), 1200)),
+      ]);
+      for (const rec of records) {
+        if (isPrivateOrReservedIp(rec.address)) {
+          return { safe: false, reason: 'Домен указывает на приватный/локальный IP-адрес' };
+        }
+      }
+    } catch {
+      // Offline / transient DNS resolution failure will cleanly fail in fetch later without exposing internal hosts
+    }
+
+    return { safe: true, url: parsed };
+  } catch {
+    return { safe: false, reason: 'Некорректный URL' };
+  }
+}
+
+async function safeFetchExternal(
+  rawUrl: string,
+  options: {
+    headers?: Record<string, string>;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    maxRedirects?: number;
+  } = {}
+): Promise<globalThis.Response> {
+  const maxRedirects = options.maxRedirects ?? 3;
+  let currentUrl = rawUrl;
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const check = await isSafeExternalHttpUrl(currentUrl);
+    if (!check.safe || !check.url) {
+      throw new Error(check.reason || 'Blocked unsafe external URL');
+    }
+
+    const hopController = new AbortController();
+    const timeoutId = options.timeoutMs
+      ? setTimeout(() => hopController.abort(), options.timeoutMs)
+      : null;
+
+    const onParentAbort = () => hopController.abort();
+    if (options.signal) {
+      if (options.signal.aborted) {
+        if (timeoutId) clearTimeout(timeoutId);
+        throw new Error('Request aborted');
+      }
+      options.signal.addEventListener('abort', onParentAbort, { once: true });
+    }
+
+    let res: globalThis.Response;
+    try {
+      res = await fetch(check.url.toString(), {
+        method: 'GET',
+        headers: options.headers,
+        signal: hopController.signal,
+        redirect: 'manual',
+      });
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (options.signal) {
+        options.signal.removeEventListener('abort', onParentAbort);
+      }
+    }
+
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      res.body?.cancel().catch(() => {});
+      if (!location || hop === maxRedirects) {
+        throw new Error('Too many redirects or missing Location');
+      }
+      currentUrl = new URL(location, check.url).toString();
+      continue;
+    }
+
+    return res;
+  }
+
+  throw new Error('Redirect limit exceeded');
+}
+
+async function readBytesWithLimit(res: globalThis.Response, maxBytes: number): Promise<Uint8Array | null> {
+  const contentLength = Number(res.headers.get('content-length') || '0');
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    res.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!res.body) {
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength > maxBytes) return null;
+    return new Uint8Array(buf);
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return null;
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
+  return merged;
+}
+
+async function readTextWithLimit(res: globalThis.Response, maxBytes = 1024 * 1024): Promise<string> {
+  if (!res.body) {
+    const buf = await res.arrayBuffer();
+    return decodeResponseBuffer(buf.slice(0, maxBytes), res.headers.get('content-type'));
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      const remaining = maxBytes - total;
+      const slice = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      chunks.push(slice);
+      total += slice.byteLength;
+      if (total >= maxBytes) {
+        reader.cancel().catch(() => {});
+        break;
+      }
+    }
+  } catch {
+    // return buffered prefix on premature stream end
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
+  return decodeResponseBuffer(merged.buffer, res.headers.get('content-type'));
+}
+
+export function safeParseLlmJson(raw: string): Record<string, any> | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const cleaned = raw
+    .replace(/^```(?:json|JSON)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  const tryParseObj = (candidate: string): Record<string, any> | null => {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, any>;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  };
+
+  const direct = tryParseObj(cleaned);
+  if (direct) return direct;
+
+  // Locate outermost balanced JSON object ignoring braces inside strings
+  const firstBrace = cleaned.indexOf('{');
+  if (firstBrace === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let endBrace = -1;
+
+  for (let i = firstBrace; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        endBrace = i;
+        break;
+      }
+    }
+  }
+
+  if (endBrace > firstBrace) {
+    const slice = cleaned.slice(firstBrace, endBrace + 1);
+    const parsedSlice = tryParseObj(slice);
+    if (parsedSlice) return parsedSlice;
+
+    // Repair minor trailing commas before } or ] outside strings
+    const noTrailingCommas = slice.replace(/,\s*([}\]])/g, '$1');
+    const parsedRepaired = tryParseObj(noTrailingCommas);
+    if (parsedRepaired) return parsedRepaired;
+  }
+
+  return null;
 }
 
 function extractJsonObjectAfterMarker(source: string, markerRegex: RegExp): any | null {
@@ -195,8 +589,9 @@ function extractJsonObjectAfterMarker(source: string, markerRegex: RegExp): any 
   let depth = 0;
   let inString = false;
   let escaped = false;
+  const maxEnd = Math.min(source.length, startIdx + 600000);
 
-  for (let i = startIdx; i < source.length; i++) {
+  for (let i = startIdx; i < maxEnd; i++) {
     const ch = source[i];
     if (inString) {
       if (escaped) {
@@ -253,7 +648,7 @@ function extractDivInnerHtml(html: string, classSubstring: string): string {
   return '';
 }
 
-async function fetchImageAsDataUrl(rawUrl: string, baseUrl?: string): Promise<string> {
+async function fetchImageAsDataUrl(rawUrl: string, baseUrl?: string, timeoutMs = 1200): Promise<string> {
   if (!rawUrl) return '';
   try {
     let imgUrl = rawUrl.replace(/&amp;/g, '&').trim();
@@ -265,20 +660,21 @@ async function fetchImageAsDataUrl(rawUrl: string, baseUrl?: string): Promise<st
     }
     if (!/^https?:\/\//i.test(imgUrl)) return '';
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const imgRes = await fetch(imgUrl, {
-      signal: controller.signal,
+    const imgRes = await safeFetchExternal(imgUrl, {
+      timeoutMs,
       headers: { 'User-Agent': DESKTOP_BROWSER_UA },
     });
-    clearTimeout(timeoutId);
     if (!imgRes.ok) return '';
 
     const ct = (imgRes.headers.get('content-type') || '').toLowerCase();
+    if (ct && !ct.startsWith('image/')) {
+      imgRes.body?.cancel().catch(() => {});
+      return '';
+    }
     const mime = ct.startsWith('image/') ? ct.split(';')[0] : 'image/jpeg';
-    const buf = await imgRes.arrayBuffer();
-    if (buf.byteLength === 0 || buf.byteLength > 3 * 1024 * 1024) return '';
-    return `data:${mime};base64,${Buffer.from(buf).toString('base64')}`;
+    const bytes = await readBytesWithLimit(imgRes, 3 * 1024 * 1024);
+    if (!bytes || bytes.byteLength === 0) return '';
+    return `data:${mime};base64,${Buffer.from(bytes).toString('base64')}`;
   } catch {
     return '';
   }
@@ -374,8 +770,7 @@ function findTikTokItemStruct(root: any): any | null {
   return null;
 }
 
-// Helper to scrape text content and media thumbnails from live URL with honest closed-account fallback
-async function scrapeUrl(targetUrl: string): Promise<{
+type ScrapeUrlResult = {
   title: string;
   text: string;
   rawSnippet: string;
@@ -384,15 +779,70 @@ async function scrapeUrl(targetUrl: string): Promise<{
   isVideo?: boolean;
   accessRestricted?: boolean;
   restrictionReason?: string;
-}> {
-  let normalizedUrl = targetUrl.trim();
-  if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+};
+
+const SCRAPE_URL_CACHE_TTL_MS = 10 * 60 * 1000;
+const SCRAPE_URL_CACHE_MAX_ENTRIES = 200;
+const scrapeUrlCache = new Map<string, { expiresAt: number; value: ScrapeUrlResult }>();
+
+// Helper to scrape text content and media thumbnails from live URL with 10-min cache & closed-account fallback
+async function scrapeUrl(targetUrl: string): Promise<ScrapeUrlResult> {
+  let normalizedUrl = String(targetUrl || '').trim();
+  if (!normalizedUrl) {
+    return {
+      title: '',
+      text: '',
+      rawSnippet: '',
+      accessRestricted: true,
+      restrictionReason: 'Некорректная или пустая ссылка',
+    };
+  }
+  if (!/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(normalizedUrl)) {
     normalizedUrl = 'https://' + normalizedUrl;
   }
 
+  const safety = await isSafeExternalHttpUrl(normalizedUrl);
+  if (!safety.safe || !safety.url) {
+    return {
+      title: normalizedUrl,
+      text: '',
+      rawSnippet: normalizedUrl,
+      accessRestricted: true,
+      restrictionReason: safety.reason || PRIVACY_FALLBACK_NOTICE,
+    };
+  }
+
+  const cacheKeyUrl = new URL(safety.url.toString());
+  cacheKeyUrl.hash = '';
+  const canonicalUrl = cacheKeyUrl.toString();
+
+  const now = Date.now();
+  const cachedEntry = scrapeUrlCache.get(canonicalUrl);
+  if (cachedEntry) {
+    if (now < cachedEntry.expiresAt) {
+      return { ...cachedEntry.value };
+    }
+    scrapeUrlCache.delete(canonicalUrl);
+  }
+
+  const result = await scrapeUrlUncached(canonicalUrl);
+  if (!result.accessRestricted && (result.text || result.thumbnailBase64)) {
+    if (scrapeUrlCache.size >= SCRAPE_URL_CACHE_MAX_ENTRIES) {
+      const oldestKey = scrapeUrlCache.keys().next().value;
+      if (oldestKey) scrapeUrlCache.delete(oldestKey);
+    }
+    scrapeUrlCache.set(canonicalUrl, {
+      expiresAt: now + SCRAPE_URL_CACHE_TTL_MS,
+      value: { ...result },
+    });
+  }
+  return result;
+}
+
+async function scrapeUrlUncached(normalizedUrl: string): Promise<ScrapeUrlResult> {
   const lower = normalizedUrl.toLowerCase();
 
-  // 0. Live Telegram Intelligence: direct single post (?embed=1) + public channel feed (/s/<username>)
+  // 0. Live Telegram Intelligence: direct single post (?embed=1), public channel feed (/s/<username>), and public profile fallback (t.me/<username>)
   if (lower.includes('t.me/') || lower.includes('telegram.me/')) {
     if (lower.includes('t.me/+') || lower.includes('joinchat')) {
       return {
@@ -448,7 +898,15 @@ async function scrapeUrl(targetUrl: string): Promise<{
       };
     }
 
-    // Closed or private Telegram profile/channel/post without public web preview
+    // Fallback when /s/<username> returns 0 posts: inspect https://t.me/<username> profile metadata
+    if (tg.channelUsername) {
+      const profileFallback = await scrapeTelegramChannelProfileFallback(tg.channelUsername, normalizedUrl);
+      if (profileFallback) {
+        return profileFallback;
+      }
+    }
+
+    // Closed or private Telegram profile/group without subscriber info or public bio
     return {
       title: normalizedUrl,
       text: '',
@@ -458,7 +916,7 @@ async function scrapeUrl(targetUrl: string): Promise<{
     };
   }
 
-  // 1. YouTube & Shorts Video Platform Intelligence (oEmbed + Watch HTML ytInitialPlayerResponse + Captions)
+  // 1. YouTube & Shorts Video Platform Intelligence (parallel oEmbed + Watch HTML, then parallel captions + thumbnail)
   if (lower.includes('youtube.com') || lower.includes('youtu.be')) {
     const ytMatch = normalizedUrl.match(
       /(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/i
@@ -467,135 +925,148 @@ async function scrapeUrl(targetUrl: string): Promise<{
     let title = '';
     let author = 'YouTube Автор';
     let thumbnailUrl = videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : '';
-    let thumbnailBase64 = '';
     let shortDescription = '';
     let keywords: string[] = [];
     let captionsText = '';
     let hasOembed = false;
     let isRestricted = false;
+    let preferredCaptionUrl = '';
 
-    try {
-      const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 5000);
-      const oembedRes = await fetch(
-        `https://www.youtube.com/oembed?url=${encodeURIComponent(normalizedUrl)}&format=json`,
-        { signal: ctrl.signal }
-      );
-      clearTimeout(tid);
-      if (oembedRes.ok) {
-        const oembed: any = await oembedRes.json();
-        hasOembed = true;
-        title = oembed.title || title;
-        author = oembed.author_name || author;
-        if (oembed.thumbnail_url) {
-          thumbnailUrl = oembed.thumbnail_url;
-        }
-      } else if (oembedRes.status === 401 || oembedRes.status === 403) {
-        isRestricted = true;
-      }
-    } catch {
-      // continue to watch page
-    }
-
-    if (videoId) {
+    const oembedPromise = (async () => {
       try {
-        const watchCtrl = new AbortController();
-        const watchTid = setTimeout(() => watchCtrl.abort(), 6500);
-        const watchRes = await fetch(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`, {
-          signal: watchCtrl.signal,
-          headers: {
-            'User-Agent': DESKTOP_BROWSER_UA,
-            'Accept-Language': 'ru-RU,kk-KZ,en-US;q=0.9',
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          },
-        });
-        clearTimeout(watchTid);
-
-        if (watchRes.ok) {
-          const watchHtml = await watchRes.text();
-          const playerResp = extractJsonObjectAfterMarker(
-            watchHtml,
-            /(?:var\s+)?ytInitialPlayerResponse\s*=\s*\{/
-          );
-
-          if (playerResp) {
-            const vd = playerResp.videoDetails || {};
-            if (!title && vd.title) title = String(vd.title);
-            if ((!author || author === 'YouTube Автор') && vd.author) author = String(vd.author);
-            if (typeof vd.shortDescription === 'string') {
-              shortDescription = vd.shortDescription.trim();
-            }
-            if (Array.isArray(vd.keywords)) {
-              keywords = vd.keywords.map((k: any) => String(k).trim()).filter(Boolean).slice(0, 25);
-            }
-
-            const playStatus = String(playerResp.playabilityStatus?.status || '').toUpperCase();
-            if (
-              (playStatus === 'LOGIN_REQUIRED' || playStatus === 'ERROR') &&
-              !hasOembed &&
-              !shortDescription &&
-              !title
-            ) {
-              isRestricted = true;
-            }
-
-            const captionTracks: any[] =
-              playerResp.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-            if (Array.isArray(captionTracks) && captionTracks.length > 0) {
-              const preferredTrack =
-                captionTracks.find(
-                  (t) => t?.baseUrl && /^(ru|kk)/i.test(String(t.languageCode || ''))
-                ) ||
-                captionTracks.find((t) => t?.baseUrl) ||
-                captionTracks[0];
-
-              if (preferredTrack?.baseUrl) {
-                const baseCaptionUrl = String(preferredTrack.baseUrl).replace(/\\u0026/g, '&');
-                const tryUrls = [baseCaptionUrl, `${baseCaptionUrl}&fmt=json3`];
-                for (const capUrl of tryUrls) {
-                  try {
-                    const capCtrl = new AbortController();
-                    const capTid = setTimeout(() => capCtrl.abort(), 5000);
-                    const capRes = await fetch(capUrl, {
-                      signal: capCtrl.signal,
-                      headers: {
-                        'User-Agent': DESKTOP_BROWSER_UA,
-                        'Accept-Language': 'ru-RU,kk-KZ,en-US;q=0.9',
-                      },
-                    });
-                    clearTimeout(capTid);
-                    if (capRes.ok) {
-                      const rawCap = await capRes.text();
-                      const parsedCap = parseYoutubeCaptionsPayload(rawCap);
-                      if (parsedCap) {
-                        captionsText = parsedCap;
-                        break;
-                      }
-                    }
-                  } catch {
-                    // try next format
-                  }
-                }
-              }
-            }
-          }
-
-          if (!title) {
-            title =
-              extractMetaContent(watchHtml, 'property', 'og:title') ||
-              extractMetaContent(watchHtml, 'name', 'title') ||
-              normalizedUrl;
-          }
-          if (!shortDescription) {
-            shortDescription =
-              extractMetaContent(watchHtml, 'property', 'og:description') ||
-              extractMetaContent(watchHtml, 'name', 'description');
-          }
+        const oembedRes = await safeFetchExternal(
+          `https://www.youtube.com/oembed?url=${encodeURIComponent(normalizedUrl)}&format=json`,
+          { timeoutMs: 2500 }
+        );
+        if (oembedRes.ok) {
+          const txt = await readTextWithLimit(oembedRes, 128 * 1024);
+          return JSON.parse(txt) as any;
         }
+        if (oembedRes.status === 401 || oembedRes.status === 403) {
+          isRestricted = true;
+        }
+        return null;
       } catch {
-        // continue with available oEmbed data
+        return null;
+      }
+    })();
+
+    const watchPromise = videoId
+      ? (async () => {
+          try {
+            const watchRes = await safeFetchExternal(
+              `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`,
+              {
+                timeoutMs: 3000,
+                headers: {
+                  'User-Agent': DESKTOP_BROWSER_UA,
+                  'Accept-Language': 'ru-RU,kk-KZ,en-US;q=0.9',
+                  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                },
+              }
+            );
+            return watchRes.ok ? await readTextWithLimit(watchRes, 1200 * 1024) : '';
+          } catch {
+            return '';
+          }
+        })()
+      : Promise.resolve('');
+
+    const [oembedSettled, watchSettled] = await Promise.allSettled([oembedPromise, watchPromise]);
+
+    if (oembedSettled.status === 'fulfilled' && oembedSettled.value) {
+      const oembed = oembedSettled.value;
+      hasOembed = true;
+      title = oembed.title || title;
+      author = oembed.author_name || author;
+      if (oembed.thumbnail_url) {
+        thumbnailUrl = oembed.thumbnail_url;
       }
     }
+
+    if (watchSettled.status === 'fulfilled' && watchSettled.value) {
+      const watchHtml = watchSettled.value;
+      const playerResp = extractJsonObjectAfterMarker(
+        watchHtml,
+        /(?:var\s+)?ytInitialPlayerResponse\s*=\s*\{/
+      );
+
+      if (playerResp) {
+        const vd = playerResp.videoDetails || {};
+        if (!title && vd.title) title = String(vd.title);
+        if ((!author || author === 'YouTube Автор') && vd.author) author = String(vd.author);
+        if (typeof vd.shortDescription === 'string') {
+          shortDescription = vd.shortDescription.trim();
+        }
+        if (Array.isArray(vd.keywords)) {
+          keywords = vd.keywords.map((k: any) => String(k).trim()).filter(Boolean).slice(0, 25);
+        }
+
+        const playStatus = String(playerResp.playabilityStatus?.status || '').toUpperCase();
+        if (
+          (playStatus === 'LOGIN_REQUIRED' || playStatus === 'ERROR') &&
+          !hasOembed &&
+          !shortDescription &&
+          !title
+        ) {
+          isRestricted = true;
+        }
+
+        const captionTracks: any[] =
+          playerResp.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+        if (Array.isArray(captionTracks) && captionTracks.length > 0) {
+          const preferredTrack =
+            captionTracks.find(
+              (t) => t?.baseUrl && /^(ru|kk)/i.test(String(t.languageCode || ''))
+            ) ||
+            captionTracks.find((t) => t?.baseUrl) ||
+            captionTracks[0];
+
+          if (preferredTrack?.baseUrl) {
+            preferredCaptionUrl = String(preferredTrack.baseUrl).replace(/\\u0026/g, '&');
+          }
+        }
+      }
+
+      if (!title) {
+        title =
+          extractMetaContent(watchHtml, 'property', 'og:title') ||
+          extractMetaContent(watchHtml, 'name', 'title') ||
+          normalizedUrl;
+      }
+      if (!shortDescription) {
+        shortDescription =
+          extractMetaContent(watchHtml, 'property', 'og:description') ||
+          extractMetaContent(watchHtml, 'name', 'description');
+      }
+    }
+
+    const captionsPromise = preferredCaptionUrl
+      ? (async () => {
+          try {
+            const capRes = await safeFetchExternal(preferredCaptionUrl, {
+              timeoutMs: 2500,
+              headers: {
+                'User-Agent': DESKTOP_BROWSER_UA,
+                'Accept-Language': 'ru-RU,kk-KZ,en-US;q=0.9',
+              },
+            });
+            if (capRes.ok) {
+              return parseYoutubeCaptionsPayload(await readTextWithLimit(capRes, 512 * 1024));
+            }
+            return '';
+          } catch {
+            return '';
+          }
+        })()
+      : Promise.resolve('');
+
+    const thumbPromise = thumbnailUrl
+      ? fetchImageAsDataUrl(thumbnailUrl, normalizedUrl, 1200)
+      : Promise.resolve('');
+
+    const [capResult, thumbnailBase64] = await Promise.all([captionsPromise, thumbPromise]);
+    captionsText = capResult || '';
 
     if (isRestricted && !hasOembed && !shortDescription && !captionsText) {
       return {
@@ -606,10 +1077,6 @@ async function scrapeUrl(targetUrl: string): Promise<{
         accessRestricted: true,
         restrictionReason: PRIVACY_FALLBACK_NOTICE,
       };
-    }
-
-    if (thumbnailUrl) {
-      thumbnailBase64 = await fetchImageAsDataUrl(thumbnailUrl, normalizedUrl);
     }
 
     const effectiveTitle = title || normalizedUrl;
@@ -637,112 +1104,187 @@ async function scrapeUrl(targetUrl: string): Promise<{
     };
   }
 
-  // 2. TikTok Platform Intelligence (oEmbed + HTML meta + __UNIVERSAL_DATA_FOR_REHYDRATION__ fallback)
+  // 2. TikTok Platform Intelligence (short links vm/vt with maxRedirects: 5, 3 parallel requests, subtitleInfos WebVTT/SRT)
   if (lower.includes('tiktok.com')) {
     let title = '';
     let description = '';
     let hashtags: string[] = [];
     let author = 'TikTok Автор';
     let thumbnailUrl = '';
-    let thumbnailBase64 = '';
+    let subtitleUrl = '';
+    let subtitlesText = '';
     let hasOembed = false;
 
-    try {
-      const oembedCtrl = new AbortController();
-      const oembedTid = setTimeout(() => oembedCtrl.abort(), 5000);
-      const oembedRes = await fetch(
-        `https://www.tiktok.com/oembed?url=${encodeURIComponent(normalizedUrl)}`,
-        { signal: oembedCtrl.signal }
-      );
-      clearTimeout(oembedTid);
-      if (oembedRes.ok) {
-        const oembed: any = await oembedRes.json();
-        if (oembed.title || oembed.author_name) {
-          hasOembed = Boolean(oembed.title);
-          title = oembed.title || '';
-          author = oembed.author_name || author;
-          thumbnailUrl = oembed.thumbnail_url || '';
-        }
+    const oembedTask = (async () => {
+      try {
+        const oembedRes = await safeFetchExternal(
+          `https://www.tiktok.com/oembed?url=${encodeURIComponent(normalizedUrl)}`,
+          { timeoutMs: 3600, maxRedirects: 5 }
+        );
+        if (!oembedRes.ok) return null;
+        const txt = await readTextWithLimit(oembedRes, 128 * 1024);
+        return JSON.parse(txt) as any;
+      } catch {
+        return null;
       }
-    } catch {
-      // continue to HTML fallback
+    })();
+
+    const fetchTikTokHtml = async (ua: string): Promise<string> => {
+      try {
+        const ttRes = await safeFetchExternal(normalizedUrl, {
+          timeoutMs: 3800,
+          maxRedirects: 5,
+          headers: {
+            'User-Agent': ua,
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,kk-KZ,en-US;q=0.9',
+          },
+        });
+        if (!ttRes.ok) return '';
+        return await readTextWithLimit(ttRes, 900 * 1024);
+      } catch {
+        return '';
+      }
+    };
+
+    const htmlBotTask = fetchTikTokHtml(SOCIAL_BOT_UA);
+    const htmlMobileTask = fetchTikTokHtml(MOBILE_BROWSER_UA);
+
+    const [oembedSettled, botHtmlSettled, mobileHtmlSettled] = await Promise.allSettled([
+      oembedTask,
+      htmlBotTask,
+      htmlMobileTask,
+    ]);
+
+    if (oembedSettled.status === 'fulfilled' && oembedSettled.value) {
+      const oembed = oembedSettled.value;
+      if (oembed.title || oembed.author_name) {
+        hasOembed = Boolean(oembed.title);
+        title = oembed.title || '';
+        author = oembed.author_name || author;
+        thumbnailUrl = oembed.thumbnail_url || '';
+      }
     }
 
-    if (!hasOembed || !title) {
-      for (const ua of [MOBILE_BROWSER_UA, TELEGRAM_BOT_UA, SOCIAL_BOT_UA]) {
-        try {
-          const ttCtrl = new AbortController();
-          const ttTid = setTimeout(() => ttCtrl.abort(), 6500);
-          const ttRes = await fetch(normalizedUrl, {
-            signal: ttCtrl.signal,
-            headers: {
-              'User-Agent': ua,
-              Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'ru-RU,kk-KZ,en-US;q=0.9',
-            },
-          });
-          clearTimeout(ttTid);
-          if (!ttRes.ok) continue;
+    const htmlCandidates: string[] = [];
+    if (botHtmlSettled.status === 'fulfilled' && botHtmlSettled.value) {
+      htmlCandidates.push(botHtmlSettled.value);
+    }
+    if (mobileHtmlSettled.status === 'fulfilled' && mobileHtmlSettled.value) {
+      htmlCandidates.push(mobileHtmlSettled.value);
+    }
 
-          const ttHtml = await ttRes.text();
-          const rehydrationMatch = ttHtml.match(
-            /<script[^>]*id=["']__UNIVERSAL_DATA_FOR_REHYDRATION__["'][^>]*>([\s\S]*?)<\/script>/i
-          );
-          if (rehydrationMatch?.[1]) {
-            try {
-              const rehydrationJson = JSON.parse(rehydrationMatch[1]);
-              const itemStruct = findTikTokItemStruct(rehydrationJson);
-              if (itemStruct) {
-                if (typeof itemStruct.desc === 'string' && itemStruct.desc.trim()) {
-                  description = itemStruct.desc.trim();
-                }
-                if (itemStruct.author?.nickname || itemStruct.author?.uniqueId) {
-                  author = itemStruct.author.nickname || `@${itemStruct.author.uniqueId}`;
-                }
-                if (Array.isArray(itemStruct.challenges)) {
-                  hashtags = itemStruct.challenges
-                    .map((c: any) => (c?.title ? `#${c.title}` : ''))
-                    .filter(Boolean);
-                }
-                if (!thumbnailUrl) {
-                  thumbnailUrl =
-                    itemStruct.video?.originCover ||
-                    itemStruct.video?.cover ||
-                    itemStruct.video?.dynamicCover ||
-                    '';
-                }
+    for (const ttHtml of htmlCandidates) {
+      const rehydrationMatch = ttHtml.match(
+        /<script[^>]*id=["']__UNIVERSAL_DATA_FOR_REHYDRATION__["'][^>]*>([\s\S]*?)<\/script>/i
+      );
+      if (rehydrationMatch?.[1]) {
+        try {
+          const rehydrationJson = JSON.parse(rehydrationMatch[1]);
+          const itemStruct = findTikTokItemStruct(rehydrationJson);
+          if (itemStruct) {
+            if (!description && typeof itemStruct.desc === 'string' && itemStruct.desc.trim()) {
+              description = itemStruct.desc.trim();
+            }
+            if ((author === 'TikTok Автор' || !author) && (itemStruct.author?.nickname || itemStruct.author?.uniqueId)) {
+              author = itemStruct.author.nickname || `@${itemStruct.author.uniqueId}`;
+            }
+            if (hashtags.length === 0 && Array.isArray(itemStruct.challenges)) {
+              hashtags = itemStruct.challenges
+                .map((c: any) => (c?.title ? `#${c.title}` : ''))
+                .filter(Boolean);
+            }
+            if (!thumbnailUrl) {
+              thumbnailUrl =
+                itemStruct.video?.originCover ||
+                itemStruct.video?.cover ||
+                itemStruct.video?.dynamicCover ||
+                '';
+            }
+            if (!subtitleUrl && Array.isArray(itemStruct.video?.subtitleInfos)) {
+              const subs: any[] = itemStruct.video.subtitleInfos.filter(
+                (s: any) => s && typeof (s.Url || s.url) === 'string' && (s.Url || s.url).trim()
+              );
+              const pickByLang = (langRegex: RegExp) =>
+                subs.find((s) =>
+                  langRegex.test(String(s.LanguageCodeName || s.languageCodeName || s.Language || s.lang || ''))
+                );
+              const chosenSub = pickByLang(/^ru/i) || pickByLang(/^(?:kk|kz)/i) || subs[0];
+              if (chosenSub) {
+                subtitleUrl = String(chosenSub.Url || chosenSub.url)
+                  .replace(/\\u0026/g, '&')
+                  .replace(/&amp;/g, '&')
+                  .trim();
               }
-            } catch {
-              // continue to meta extraction
             }
           }
-
-          const ogTitle = extractMetaContent(ttHtml, 'property', 'og:title');
-          const ogDesc = extractMetaContent(ttHtml, 'property', 'og:description');
-          const twDesc =
-            extractMetaContent(ttHtml, 'name', 'twitter:description') ||
-            extractMetaContent(ttHtml, 'property', 'twitter:description');
-          const metaDesc = extractMetaContent(ttHtml, 'name', 'description');
-          const ogImg =
-            extractRawMetaUrl(ttHtml, 'property', 'og:image') ||
-            extractRawMetaUrl(ttHtml, 'name', 'twitter:image');
-
-          if (!title && ogTitle) title = ogTitle;
-          if (!description) description = ogDesc || twDesc || metaDesc || '';
-          if (!thumbnailUrl && ogImg) thumbnailUrl = ogImg;
-
-          if (title || description) break;
         } catch {
-          // try next UA
+          // continue to meta extraction
         }
       }
+
+      const ogTitle = extractMetaContent(ttHtml, 'property', 'og:title');
+      const ogDesc = extractMetaContent(ttHtml, 'property', 'og:description');
+      const twDesc =
+        extractMetaContent(ttHtml, 'name', 'twitter:description') ||
+        extractMetaContent(ttHtml, 'property', 'twitter:description');
+      const metaDesc = extractMetaContent(ttHtml, 'name', 'description');
+      const ogImg =
+        extractRawMetaUrl(ttHtml, 'property', 'og:image') ||
+        extractRawMetaUrl(ttHtml, 'name', 'twitter:image');
+
+      if (!title && ogTitle) title = ogTitle;
+      if (!description) description = ogDesc || twDesc || metaDesc || '';
+      if (!thumbnailUrl && ogImg) thumbnailUrl = ogImg;
     }
 
-    if (thumbnailUrl) {
-      thumbnailBase64 = await fetchImageAsDataUrl(thumbnailUrl, normalizedUrl);
-    }
+    const subtitleTask = subtitleUrl
+      ? (async () => {
+          try {
+            const subRes = await safeFetchExternal(subtitleUrl, {
+              timeoutMs: 2500,
+              maxRedirects: 5,
+              headers: {
+                'User-Agent': MOBILE_BROWSER_UA,
+                Accept: 'text/vtt,text/plain,*/*',
+              },
+            });
+            if (!subRes.ok) return '';
+            const rawSub = await readTextWithLimit(subRes, 512 * 1024);
+            const cleanedLines: string[] = [];
+            let prevLine = '';
+            for (const rawLine of rawSub.replace(/\r\n?/g, '\n').split('\n')) {
+              const trimmed = rawLine.trim();
+              if (!trimmed) continue;
+              if (/^WEBVTT(?:\s|$)/i.test(trimmed)) continue;
+              if (/^(?:Kind|Language|Style|Region|NOTE)\s*:/i.test(trimmed)) continue;
+              if (/^\d+$/.test(trimmed)) continue;
+              if (/^(?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{3}\s*-->\s*(?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{3}/.test(trimmed)) {
+                continue;
+              }
+              const plain = decodeHtmlEntities(trimmed.replace(/<[^>]+>/g, ' '))
+                .replace(/\s+/g, ' ')
+                .trim();
+              if (plain && plain !== prevLine) {
+                cleanedLines.push(plain);
+                prevLine = plain;
+              }
+            }
+            return cleanedLines.join(' ').slice(0, 6000);
+          } catch {
+            return '';
+          }
+        })()
+      : Promise.resolve('');
 
-    const combinedCaption = [title, description].filter(Boolean).join('\n');
+    const thumbTask = thumbnailUrl
+      ? fetchImageAsDataUrl(thumbnailUrl, normalizedUrl, 1200)
+      : Promise.resolve('');
+
+    const [subResult, thumbnailBase64] = await Promise.all([subtitleTask, thumbTask]);
+    subtitlesText = subResult || '';
+
+    const combinedCaption = [title, description, subtitlesText].filter(Boolean).join('\n');
     const isGenericTikTokShell =
       !hasOembed &&
       (!combinedCaption ||
@@ -766,41 +1308,43 @@ async function scrapeUrl(targetUrl: string): Promise<{
       `Ссылка: ${normalizedUrl}`,
       description && description !== effectiveTitle ? `Описание и подпись:\n${description}` : '',
       hashtags.length > 0 ? `Хештеги: ${hashtags.join(' ')}` : '',
+      subtitlesText ? `Субтитры речи из видео:\n${subtitlesText}` : '',
     ].filter(Boolean);
 
     return {
       title: effectiveTitle,
       text: ttSections.join('\n'),
-      rawSnippet: (description || effectiveTitle).slice(0, 300),
+      rawSnippet: (subtitlesText || description || effectiveTitle).slice(0, 300),
       thumbnailBase64: thumbnailBase64 || undefined,
       isVideo: true,
     };
   }
 
-  // 3. Instagram (Public posts & Reels via social crawler OpenGraph meta tags) + General KZ/RU Web Pages
+  // 3. Instagram (Public posts & Reels via parallel crawler Promise.any + /embed/captioned/ fallback) + General KZ/RU Web Pages
   const isInstagram = lower.includes('instagram.com');
+  const isIgReelOrPost = /instagram\.com\/(?:reels?|p|tv)\//i.test(normalizedUrl);
+  const igShortcodeMatch = normalizedUrl.match(/instagram\.com\/(?:p|reels?|tv)\/([A-Za-z0-9_-]+)/i);
+  const igShortcode = igShortcodeMatch?.[1] || '';
   const isVideoLink = /youtube|tiktok|reel|video|watch|shorts|\.mp4|\.mov/i.test(normalizedUrl);
 
   if (isInstagram) {
-    for (const ua of [SOCIAL_BOT_UA, TELEGRAM_BOT_UA]) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 7000);
-        const res = await fetch(normalizedUrl, {
-          signal: controller.signal,
+    try {
+      const igTimeoutMs = 4200;
+
+      const crawlerTasks = [SOCIAL_BOT_UA, TELEGRAM_BOT_UA, WHATSAPP_BOT_UA].map(async (ua) => {
+        const res = await safeFetchExternal(normalizedUrl, {
+          timeoutMs: igTimeoutMs,
           headers: {
             'User-Agent': ua,
             Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'ru-RU,kk-KZ,en-US;q=0.9',
           },
         });
-        clearTimeout(timeoutId);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
         const finalUrlLower = (res.url || '').toLowerCase();
-        if (!res.ok) continue;
-
-        const html = decodeResponseBuffer(await res.arrayBuffer(), res.headers.get('content-type'));
-        const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        const html = await readHtmlHeadOnly(res, 240000);
+        const titleMatch = html.match(/<title\b[^>]{0,200}>([^<]{0,500})<\/title>/i);
         const pageTitle = titleMatch ? decodeHtmlEntities(titleMatch[1]) : '';
         const ogTitle = extractMetaContent(html, 'property', 'og:title');
         const ogDesc = extractMetaContent(html, 'property', 'og:description');
@@ -809,58 +1353,137 @@ async function scrapeUrl(targetUrl: string): Promise<{
         const ogImgUrl = extractRawMetaUrl(html, 'property', 'og:image');
 
         const bestDesc = ogDesc || metaDesc || twDesc;
+        const effectivePageTitle = (ogTitle || pageTitle || '').trim();
         const isLoginShellOnly =
           !bestDesc ||
-          (finalUrlLower.includes('/accounts/login') && !bestDesc) ||
+          finalUrlLower.includes('/accounts/login') ||
+          /^(?:вход|login|sign in|кіру)\s*[•·|-]\s*instagram$/i.test(effectivePageTitle) ||
+          /создайте аккаунт или войдите|create an account or log in to instagram/i.test(bestDesc) ||
           (/see instagram photos and videos from/i.test(bestDesc) && !ogTitle.includes(':'));
 
         if (isLoginShellOnly) {
-          continue;
+          throw new Error('Instagram login shell');
         }
 
-        const thumbnailBase64 = ogImgUrl ? await fetchImageAsDataUrl(ogImgUrl, normalizedUrl) : '';
-        const effectiveTitle = ogTitle || pageTitle || normalizedUrl;
-        const igSections = [
-          `[Instagram ${isVideoLink ? 'Reels / Видео' : 'Публикация'}]: ${effectiveTitle}`,
-          `Ссылка: ${normalizedUrl}`,
-          `Подпись и метаданные публикации:\n${bestDesc}`,
-        ];
-
         return {
-          title: effectiveTitle,
-          text: igSections.join('\n'),
-          rawSnippet: bestDesc.slice(0, 300),
-          thumbnailBase64: thumbnailBase64 || undefined,
-          isVideo: isVideoLink,
+          effectiveTitle: ogTitle || pageTitle || normalizedUrl,
+          bestDesc,
+          ogImgUrl,
+          authorUsername: '',
         };
-      } catch {
-        // try next crawler UA
-      }
-    }
+      });
 
-    return {
-      title: normalizedUrl,
-      text: '',
-      rawSnippet: normalizedUrl,
-      isVideo: isVideoLink,
-      accessRestricted: true,
-      restrictionReason: PRIVACY_FALLBACK_NOTICE,
-    };
+      const embedTasks = igShortcode
+        ? [
+            (async () => {
+              const embedUrl = `https://www.instagram.com/p/${encodeURIComponent(igShortcode)}/embed/captioned/`;
+              const res = await safeFetchExternal(embedUrl, {
+                timeoutMs: igTimeoutMs,
+                headers: {
+                  'User-Agent': DESKTOP_BROWSER_UA,
+                  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                  'Accept-Language': 'ru-RU,kk-KZ,en-US;q=0.9',
+                },
+              });
+              if (!res.ok) throw new Error(`Embed HTTP ${res.status}`);
+              const finalUrlLower = (res.url || '').toLowerCase();
+              if (finalUrlLower.includes('/accounts/login')) {
+                res.body?.cancel().catch(() => {});
+                throw new Error('Instagram embed login redirect');
+              }
+
+              const embedHtml = await readTextWithLimit(res, 512 * 1024);
+
+              const usernameMatch =
+                embedHtml.match(/<[^>]*class=["'][^"']*UsernameText[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i) ||
+                embedHtml.match(/<a[^>]*class=["'][^"']*CaptionUsername[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
+              const authorUsername = usernameMatch
+                ? decodeHtmlEntities(usernameMatch[1]).replace(/^@/, '').trim()
+                : '';
+
+              let captionRaw = extractDivInnerHtml(embedHtml, 'Caption');
+              if (captionRaw) {
+                // Remove comments block and leading author username inside Caption
+                const commentsIdx = captionRaw.search(/<div\b[^>]*class=["'][^"']*CaptionComments[^"']*["'][^>]*>/i);
+                if (commentsIdx !== -1) {
+                  captionRaw = captionRaw.slice(0, commentsIdx);
+                }
+                captionRaw = captionRaw
+                  .replace(/<a\b[^>]*class=["'][^"']*CaptionUsername[^"']*["'][^>]*>[\s\S]*?<\/a>/gi, ' ')
+                  .replace(/<a\b[^>]*class=["'][^"']*CaptionCommentsExpand[^"']*["'][^>]*>[\s\S]*?<\/a>/gi, ' ');
+              }
+              const captionText = captionRaw ? decodeHtmlEntities(captionRaw).trim() : '';
+
+              const embedImgMatch =
+                embedHtml.match(/<img\b[^>]*class=["'][^"']*EmbeddedMediaImage[^"']*["'][^>]*\bsrc=["']([^"']+)["']/i) ||
+                embedHtml.match(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*class=["'][^"']*EmbeddedMediaImage[^"']*["']/i) ||
+                embedHtml.match(/<img\b[^>]*\bsrc=["'](https?:\/\/(?!static\.cdninstagram\.com)[^"']*cdninstagram\.com[^"']+)["']/i);
+              const embedImgUrl =
+                (embedImgMatch?.[1] ? embedImgMatch[1].replace(/&amp;/g, '&').trim() : '') ||
+                extractRawMetaUrl(embedHtml, 'property', 'og:image');
+
+              const isBlockedEmbed =
+                (!captionText && !embedImgUrl) ||
+                /watch on instagram|view this post on instagram|log in to continue|войдите,\s*чтобы/i.test(
+                  captionText
+                );
+
+              if (isBlockedEmbed) {
+                throw new Error('Instagram embed unavailable');
+              }
+
+              return {
+                effectiveTitle: authorUsername
+                  ? `@${authorUsername} (${isIgReelOrPost ? 'Instagram' : 'Публикация'})`
+                  : `Instagram (${igShortcode})`,
+                bestDesc: captionText || '[Публикация Instagram без текстовой подписи]',
+                ogImgUrl: embedImgUrl,
+                authorUsername,
+              };
+            })(),
+          ]
+        : [];
+
+      const winner = await Promise.any([...crawlerTasks, ...embedTasks]);
+
+      const thumbnailBase64 = winner.ogImgUrl
+        ? await fetchImageAsDataUrl(winner.ogImgUrl, normalizedUrl, 1200)
+        : '';
+      const igSections = [
+        `[Instagram ${isVideoLink ? 'Reels / Видео' : 'Публикация'}]: ${winner.effectiveTitle}`,
+        winner.authorUsername ? `Автор: @${winner.authorUsername}` : '',
+        `Ссылка: ${normalizedUrl}`,
+        `Подпись и метаданные публикации:\n${winner.bestDesc}`,
+      ].filter(Boolean);
+
+      return {
+        title: winner.effectiveTitle,
+        text: igSections.join('\n'),
+        rawSnippet: winner.bestDesc.slice(0, 300),
+        thumbnailBase64: thumbnailBase64 || undefined,
+        isVideo: isVideoLink,
+      };
+    } catch {
+      return {
+        title: normalizedUrl,
+        text: '',
+        rawSnippet: normalizedUrl,
+        isVideo: isVideoLink,
+        accessRestricted: true,
+        restrictionReason: PRIVACY_FALLBACK_NOTICE,
+      };
+    }
   }
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 7000);
-
-    const res = await fetch(normalizedUrl, {
-      signal: controller.signal,
+    const res = await safeFetchExternal(normalizedUrl, {
+      timeoutMs: 2800,
       headers: {
         'User-Agent': `${DESKTOP_BROWSER_UA} CheckActivityBot/1.0`,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'ru-RU,kk-KZ,en;q=0.9',
       },
     });
-    clearTimeout(timeoutId);
 
     const finalUrlLower = (res.url || '').toLowerCase();
     if (
@@ -869,6 +1492,7 @@ async function scrapeUrl(targetUrl: string): Promise<{
       res.status === 429 ||
       finalUrlLower.includes('/accounts/login')
     ) {
+      res.body?.cancel().catch(() => {});
       return {
         title: normalizedUrl,
         text: '',
@@ -880,9 +1504,8 @@ async function scrapeUrl(targetUrl: string): Promise<{
     }
 
     if (res.ok) {
-      const buf = await res.arrayBuffer();
-      const html = decodeResponseBuffer(buf, res.headers.get('content-type'));
-      const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      const html = await readTextWithLimit(res, 1024 * 1024);
+      const titleMatch = html.match(/<title\b[^>]{0,200}>([^<]{0,500})<\/title>/i);
       const title = titleMatch ? decodeHtmlEntities(titleMatch[1]) : normalizedUrl;
       const ogTitle = extractMetaContent(html, 'property', 'og:title');
       const metaDesc = extractMetaContent(html, 'name', 'description');
@@ -894,14 +1517,15 @@ async function scrapeUrl(targetUrl: string): Promise<{
         extractMetaContent(html, 'itemprop', 'datePublished');
       const ogImgUrl = extractRawMetaUrl(html, 'property', 'og:image');
 
-      const thumbnailBase64 = ogImgUrl ? await fetchImageAsDataUrl(ogImgUrl, normalizedUrl) : '';
+      const thumbnailBase64 = ogImgUrl ? await fetchImageAsDataUrl(ogImgUrl, normalizedUrl, 1200) : '';
 
       const cleaned = decodeHtmlEntities(
         html
-          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
-          .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
-          .replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, ' ')
-          .replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, ' ')
+          .slice(0, 300000)
+          .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, ' ')
+          .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, ' ')
       );
 
       if (cleaned.length < 40 && !ogDesc && !metaDesc) {
@@ -989,22 +1613,19 @@ async function scrapeTelegramSinglePost(
   hasVideo: boolean;
 } | null> {
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 7000);
-    const res = await fetch(
+    const res = await safeFetchExternal(
       `https://t.me/${encodeURIComponent(channelUsername)}/${encodeURIComponent(postId)}?embed=1`,
       {
-        signal: controller.signal,
+        timeoutMs: 2500,
         headers: {
           'User-Agent': DESKTOP_BROWSER_UA,
           'Accept-Language': 'ru-RU,kk-KZ,en;q=0.9',
         },
       }
     );
-    clearTimeout(timeoutId);
     if (!res.ok) return null;
 
-    const html = await res.text();
+    const html = await readTextWithLimit(res, 512 * 1024);
     if (!html.includes('tgme_widget_message')) return null;
 
     const textInner = extractDivInnerHtml(html, 'tgme_widget_message_text');
@@ -1041,7 +1662,7 @@ async function scrapeTelegramSinglePost(
     );
     const imageUrl =
       photoStyleMatch?.[1] || extractRawMetaUrl(html, 'property', 'og:image');
-    const thumbnailBase64 = imageUrl ? await fetchImageAsDataUrl(imageUrl) : '';
+    const thumbnailBase64 = imageUrl ? await fetchImageAsDataUrl(imageUrl, undefined, 1200) : '';
 
     if (!content && !thumbnailBase64) return null;
 
@@ -1054,6 +1675,78 @@ async function scrapeTelegramSinglePost(
       content: content.slice(0, 6000),
       thumbnailBase64: thumbnailBase64 || undefined,
       hasVideo,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function scrapeTelegramChannelProfileFallback(
+  channelUsername: string,
+  originalUrl: string
+): Promise<{
+  title: string;
+  text: string;
+  rawSnippet: string;
+  thumbnailBase64?: string;
+} | null> {
+  const cleaned = channelUsername.trim().replace(/^@/, '');
+  if (!cleaned || !/^[a-zA-Z0-9_]{3,}$/.test(cleaned)) return null;
+
+  try {
+    const res = await safeFetchExternal(`https://t.me/${encodeURIComponent(cleaned)}`, {
+      timeoutMs: 2500,
+      headers: {
+        'User-Agent': DESKTOP_BROWSER_UA,
+        'Accept-Language': 'ru-RU,kk-KZ,en;q=0.9',
+      },
+    });
+    if (!res.ok) return null;
+
+    const html = await readTextWithLimit(res, 512 * 1024);
+    const pageTitleInner = extractDivInnerHtml(html, 'tgme_page_title');
+    const ogTitle = extractMetaContent(html, 'property', 'og:title');
+    const channelTitle = (pageTitleInner ? decodeHtmlEntities(pageTitleInner) : '') || ogTitle;
+
+    const extraInner = extractDivInnerHtml(html, 'tgme_page_extra');
+    const extraText = extraInner ? decodeHtmlEntities(extraInner).trim() : '';
+
+    const pageDescInner = extractDivInnerHtml(html, 'tgme_page_description');
+    const pageDesc = pageDescInner ? decodeHtmlEntities(pageDescInner).trim() : '';
+    const ogDescRaw = extractMetaContent(html, 'property', 'og:description').trim();
+
+    const isGenericStubDesc = (txt: string) =>
+      !txt ||
+      /^(?:if you have telegram,\s*)?you can (?:contact|view and join)\b/i.test(txt);
+
+    const realDescription =
+      (!isGenericStubDesc(pageDesc) ? pageDesc : '') ||
+      (!isGenericStubDesc(ogDescRaw) ? ogDescRaw : '');
+
+    const hasSubscribersCount = /subscribers?|подписчик|members?|участник/i.test(extraText);
+
+    if (!hasSubscribersCount && !realDescription) {
+      return null;
+    }
+
+    const avatarUrl = extractRawMetaUrl(html, 'property', 'og:image');
+    const avatarBase64 = avatarUrl ? await fetchImageAsDataUrl(avatarUrl, originalUrl, 1200) : '';
+
+    const titleDisplay = channelTitle ? `${channelTitle} (@${cleaned})` : `@${cleaned}`;
+    const profileSections = [
+      `Публичный Telegram-канал (описание и метаданные профиля): ${titleDisplay}`,
+      `Ссылка: ${originalUrl}`,
+      extraText ? `Аудитория: ${extraText}` : '',
+      realDescription
+        ? `Описание канала:\n${realDescription}`
+        : 'Описание канала: [Описание не указано в профиле канала]',
+    ].filter(Boolean);
+
+    return {
+      title: titleDisplay,
+      text: profileSections.join('\n'),
+      rawSnippet: (realDescription || extraText || titleDisplay).slice(0, 300),
+      thumbnailBase64: avatarBase64 || undefined,
     };
   } catch {
     return null;
@@ -1076,22 +1769,19 @@ async function scrapeTelegramPublicChannel(handleOrUrl: string): Promise<{
   }
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 7000);
-    const res = await fetch(`https://t.me/s/${encodeURIComponent(cleaned)}`, {
-      signal: controller.signal,
+    const res = await safeFetchExternal(`https://t.me/s/${encodeURIComponent(cleaned)}`, {
+      timeoutMs: 2500,
       headers: {
         'User-Agent': DESKTOP_BROWSER_UA,
         'Accept-Language': 'ru,kk,en;q=0.9',
       },
     });
-    clearTimeout(timeoutId);
 
     if (!res.ok) {
       return { channelUsername: cleaned, posts: [] };
     }
 
-    const html = await res.text();
+    const html = await readTextWithLimit(res, 1024 * 1024);
     const titleMatch = html.match(/<div class="tgme_channel_info_header_title"[^>]*>([\s\S]*?)<\/div>/i);
     const channelTitle = titleMatch ? decodeHtmlEntities(titleMatch[1]) : undefined;
 
@@ -1160,6 +1850,8 @@ async function callGeminiApi(params: {
   responseJson?: boolean;
   timeoutMs?: number;
   disableThinking?: boolean;
+  signal?: AbortSignal;
+  onModelSelected?: (modelName: string) => void;
 }): Promise<string> {
   const ai = getAiClient();
   if (!ai) {
@@ -1167,14 +1859,28 @@ async function callGeminiApi(params: {
   }
 
   const totalTimeoutMs = params.timeoutMs || 30000;
+  const deadline = Date.now() + totalTimeoutMs;
   const modelsToTry = params.disableThinking
     ? ['gemini-3.1-flash-lite', 'gemini-4-hydrogen']
     : ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
 
   let lastErr: any;
   for (let i = 0; i < modelsToTry.length; i++) {
+    if (params.signal?.aborted) {
+      throw new Error('Client aborted request');
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 500) {
+      break;
+    }
     const modelName = modelsToTry[i];
-    const perModelTimeout = i === 0 ? Math.min(14000, Math.floor(totalTimeoutMs * 0.6)) : Math.max(8000, Math.floor(totalTimeoutMs * 0.5));
+    const hasNext = i < modelsToTry.length - 1;
+    const perModelTimeout = hasNext
+      ? Math.max(2500, Math.min(remainingMs - 2500, Math.floor(totalTimeoutMs * 0.6)))
+      : remainingMs;
+    if (perModelTimeout <= 500) continue;
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
     try {
       const callPromise = ai.models.generateContent({
         model: modelName,
@@ -1195,21 +1901,22 @@ async function callGeminiApi(params: {
         },
       });
 
-      const res = await Promise.race([
-        callPromise,
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Gemini timeout (${modelName})`)), perModelTimeout)
-        ),
-      ]);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Gemini timeout (${modelName})`)), perModelTimeout);
+      });
 
+      const res = await Promise.race([callPromise, timeoutPromise]);
       const txt = res.text?.trim() || '';
       if (txt && !isLlmRefusalText(txt)) {
+        params.onModelSelected?.(modelName);
         return txt;
       }
       throw new Error(txt ? `Model refusal on ${modelName}` : `Empty response from ${modelName}`);
     } catch (err: any) {
       lastErr = err;
       continue;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
   throw lastErr || new Error('All Gemini models unavailable');
@@ -1230,58 +1937,61 @@ async function callOpenAiApi(params: {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), params.timeoutMs || 45000);
 
-  const userContent: Array<any> = [{ type: 'text', text: params.userPrompt }];
-  if (params.imageDataUrl && params.imageDataUrl.startsWith('data:image/')) {
-    userContent.push({
-      type: 'image_url',
-      image_url: {
-        url: params.imageDataUrl,
-      },
-    });
-  }
-  if (Array.isArray(params.imageUrls)) {
-    for (const imgUrl of params.imageUrls.slice(0, 6)) {
-      if (typeof imgUrl === 'string' && imgUrl.startsWith('data:image/')) {
-        userContent.push({
-          type: 'image_url',
-          image_url: {
-            url: imgUrl,
-          },
-        });
+  try {
+    const userContent: Array<any> = [{ type: 'text', text: params.userPrompt }];
+    if (params.imageDataUrl && params.imageDataUrl.startsWith('data:image/')) {
+      userContent.push({
+        type: 'image_url',
+        image_url: {
+          url: params.imageDataUrl,
+        },
+      });
+    }
+    if (Array.isArray(params.imageUrls)) {
+      for (const imgUrl of params.imageUrls.slice(0, 6)) {
+        if (typeof imgUrl === 'string' && imgUrl.startsWith('data:image/')) {
+          userContent.push({
+            type: 'image_url',
+            image_url: {
+              url: imgUrl,
+            },
+          });
+        }
       }
     }
+
+    const messages: Array<any> = [];
+    if (params.systemInstruction) {
+      messages.push({ role: 'system', content: params.systemInstruction });
+    }
+    messages.push({ role: 'user', content: userContent });
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages,
+        response_format: params.responseJson ? { type: 'json_object' } : undefined,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`OpenAI API error (${res.status}): ${errText}`);
+    }
+
+    const data: any = await res.json();
+    const text = data.choices?.[0]?.message?.content?.trim();
+    if (!text) throw new Error('Empty response from OpenAI');
+    return text;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  const messages: Array<any> = [];
-  if (params.systemInstruction) {
-    messages.push({ role: 'system', content: params.systemInstruction });
-  }
-  messages.push({ role: 'user', content: userContent });
-
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    signal: controller.signal,
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages,
-      response_format: params.responseJson ? { type: 'json_object' } : undefined,
-    }),
-  });
-  clearTimeout(timeoutId);
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`OpenAI API error (${res.status}): ${errText}`);
-  }
-
-  const data: any = await res.json();
-  const text = data.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new Error('Empty response from OpenAI');
-  return text;
 }
 
 // Health check endpoint for verifying deployment status and API key availability
@@ -1348,6 +2058,14 @@ app.post(['/api/ocr', '/ocr'], async (req: Request, res: Response) => {
       }
     }
 
+    const ocrAbort = new AbortController();
+    const onOcrClose = () => {
+      if (!res.writableEnded) ocrAbort.abort();
+    };
+    res.on('close', onOcrClose);
+    const ocrDeadline = Date.now() + 26000;
+    try {
+
     if (process.env.GEMINI_API_KEY && base64Data && !ocrExtractedText) {
       try {
         const isPdf = mimeType.includes('pdf') || lowerName.endsWith('.pdf');
@@ -1382,8 +2100,9 @@ app.post(['/api/ocr', '/ocr'], async (req: Request, res: Response) => {
               ],
             },
           ],
-          timeoutMs: 22000,
+          timeoutMs: 18000,
           disableThinking: true,
+          signal: ocrAbort.signal,
         });
 
         if (candidate && !isLlmRefusalText(candidate)) {
@@ -1399,8 +2118,9 @@ app.post(['/api/ocr', '/ocr'], async (req: Request, res: Response) => {
       }
     }
 
-    // Secondary OCR attempt via OpenAI GPT-4o-mini if OpenAI API key is provided
-    if ((process.env.OPENAI_API_KEY || process.env.GPT_API_KEY) && !ocrExtractedText && imageDataUrl && imageDataUrl.startsWith('data:image/')) {
+    // Secondary OCR attempt via OpenAI GPT-4o-mini if OpenAI API key is provided and deadline budget remains
+    const remainingOcrMs = ocrDeadline - Date.now();
+    if (!ocrAbort.signal.aborted && remainingOcrMs > 4000 && (process.env.OPENAI_API_KEY || process.env.GPT_API_KEY) && !ocrExtractedText && imageDataUrl && imageDataUrl.startsWith('data:image/')) {
       try {
         const ocrPrompt = `Act as an expert OCR and document proofreading specialist for Russian, Kazakh (Ә, Ғ, Қ, Ң, Ө, Ұ, Ү, Һ, І), and English materials.
 Strictly follow these rules:
@@ -1415,7 +2135,7 @@ Output ONLY the recognized text with no intro phrases and no code fences.`;
         const candidate = await callOpenAiApi({
           userPrompt: ocrPrompt,
           imageDataUrl,
-          timeoutMs: 18000,
+          timeoutMs: Math.min(12000, remainingOcrMs),
         });
 
         if (candidate && !isLlmRefusalText(candidate)) {
@@ -1473,6 +2193,9 @@ Output ONLY the recognized text with no intro phrases and no code fences.`;
       hasAdvertising,
       warningNotice,
     });
+    } finally {
+      res.off('close', onOcrClose);
+    }
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error('Error in /api/ocr:', err);
@@ -1490,7 +2213,15 @@ Output ONLY the recognized text with no intro phrases and no code fences.`;
 app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
   let tempFilePath: string | null = null;
   let tempMp3Path: string | null = null;
+  const analyzeAbort = new AbortController();
+  const onAnalyzeClose = () => {
+    if (!res.writableEnded) analyzeAbort.abort();
+  };
+  res.on('close', onAnalyzeClose);
   try {
+    const routePerfStart = performance.now();
+    const analyzeStartMs = Date.now();
+    let extractMs = 0;
     const {
       modality,
       text,
@@ -1543,7 +2274,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
       effectiveText,
       fileName,
     });
-    const caseId = 'audit-' + Date.now();
+    const caseId = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const refNum = `#CHK-KZ-${Math.floor(100000 + Math.random() * 900000)}`;
 
     let liveUrlExtracted = '';
@@ -1554,7 +2285,9 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
     // If it's a URL or text contains a link, scrape the live content
     if (effectiveUrl || (effectiveText && (effectiveText.startsWith('http://') || effectiveText.startsWith('https://')))) {
       const targetUrl = effectiveUrl || effectiveText;
+      const scrapePerfStart = performance.now();
       const scraped = await scrapeUrl(targetUrl);
+      extractMs += Math.round(performance.now() - scrapePerfStart);
       const isOnlyUrlInput =
         !effectiveText ||
         effectiveText.trim() === targetUrl.trim() ||
@@ -1582,6 +2315,17 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           violations: [],
           accessRestricted: true,
           accessNotice: scraped.restrictionReason || PRIVACY_FALLBACK_NOTICE,
+          telemetry: {
+            extractMs,
+            retrievalMs: 0,
+            aiAuditMs: 0,
+            totalMs: Math.max(1, Math.round(performance.now() - routePerfStart)),
+            checkedLawsCount: KZ_LAWS_DB.length,
+            retrievedLawsCount: 0,
+            matchedLawCodes: [],
+            engineMode: 'deterministic-db-fallback',
+            fallbackReason: 'Доступ к публикации ограничен платформой',
+          },
           metadata: {
             engineConfidence: 100,
             platform: 'CheckActivity URL Guard',
@@ -1631,10 +2375,18 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
 5. ст. 79 КоАП РК, ст. 147 УК РК: Незаконное распространение персональных данных (телефоны, ИИН, домашние адреса, документы).
 6. ст. 133-1 КоАП РК: Возрастное ограничение 18+ (откровенный контент без маркировки).
 7. Нормы интернет-этики: Dark Patterns и манипулятивный маркетинг (ложные таймеры дефицита FOMO, гарантии «100% дохода без риска»).
+8. Human-in-the-loop / ст. 174, 274 УК РК (проверка контекста): Общественно-политический протест, политические плакаты, требования отставки, митинги/пикеты/шествия или резонансные обвинения в адрес госорганов (без прямого мата, доксинга и призывов к насилию).
 
-ВАЖНЫЕ ПРАВИЛА (включая КОНТЕКСТНЫЙ ФИЛЬТР):
+ВАЖНЫЕ ПРАВИЛА (включая КОНТЕКСТНЫЙ ФИЛЬТР И HUMAN-IN-THE-LOOP):
 - Если материал не содержит признаков нарушения, так и напиши ('overall_risk': 'нет', 'findings': []). Не ищи нарушение любой ценой!
 - КРИТИЧЕСКИ ВАЖНО (Контекстный фильтр): Если материал является официальным предупреждением полиции/МВД/АФМ РК, новостным постом СМИ или профилактическим сообщением о мошенниках, фейковых выплатах или нелегальных казино (например, «Осторожно, мошенники! МВД РК предупреждает о фейках Kaspi / 1Win / 42 500»), это НЕ реклама и НЕ нарушение — обязательно верни 'overall_risk': 'нет' и 'findings': []!
+- ПРАВИЛО HUMAN-IN-THE-LOOP (общественно-политический / протестный контекст): Если текст или изображение содержат общественно-политический протест, политические плакаты, требования отставки или резонансные обвинения в адрес госорганов (без прямого мата по ст. 434, доксинга по ст. 79/147 и прямых призывов к насилию), НЕ блокируй материал и НЕ ставь критический риск. Верни ровно ОДНО предупреждение в массиве "findings" со статусом «ПРЕДУПРЕЖДЕНИЕ», "overall_risk": "средний", "riskScore" в диапазоне 46–55 и штрафом 0 МРП:
+  * "article": "${HITL_PROTEST_ARTICLE}"
+  * "category": "${HITL_PROTEST_ARTICLE}"
+  * "description": "${HITL_PROTEST_DESCRIPTION}"
+  * "confidence": "средняя"
+  * "reasoning": "${HITL_PROTEST_DESCRIPTION}"
+- Не квалифицируй обычный текст как мошенничество (ст. 190 УК РК) или нелегальный гемблинг (ст. 445-1 КоАП РК) только из-за наличия одного-двух эмодзи денег или карт (💰, 💵, 💸, 🤑 и т.п.), если в самом тексте или на изображении нет призывов к переводу средств, обещаний лёгкого заработка или рекламы азартных игр.
 - Не делай выводов о личности людей на видео и не называй их по внешности.
 
 ОБЯЗАТЕЛЬНЫЙ ФОРМАТ ОТВЕТА (СТРОГО JSON):
@@ -1642,14 +2394,17 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
   "summary": "краткое описание материала",
   "language": "русский | казахский | смешанный",
   "overall_risk": "нет | низкий | средний | высокий",
+  "riskScore": 0,
   "findings": [
     {
       "timestamp": "ММ:СС",
       "source": "аудио | изображение | текст на экране",
+      "article": "при необходимости точная статья из БАЗЫ НПА РК (CODE) или Human-in-the-loop",
       "category": "категория нарушения",
+      "description": "описание предупреждения",
       "quote_or_description": "точная цитата или описание того, что видно",
       "confidence": "низкая | средняя | высокая",
-      "reasoning": "почему это может быть нарушением, 1–2 предложения"
+      "reasoning": "почему это может быть нарушением или требует проверки, 1–2 предложения"
     }
   ],
   "needs_human_review": true,
@@ -1661,11 +2416,39 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
   ]
 }`;
 
+    // Step 1 (Retrieval): Query unified KZ NPA database against extracted content before Stage 2 AI audit
+    const retrievalStartPerf = performance.now();
+    const retrievalInputText = [effectiveText, liveUrlExtracted, effectiveUrl, fileName]
+      .filter((s) => typeof s === 'string' && s.trim().length > 0)
+      .join('\n');
+    const retrievalResult = retrieveRelevantKzLaws(retrievalInputText, {
+      modality: isVideo ? 'video' : isAudio ? 'audio' : modality,
+      hasMedia: Boolean(
+        effectiveImageUrl ||
+          effectiveAudioUrl ||
+          effectiveVideoUrl ||
+          activeVideoFrames.length > 0 ||
+          mediaBase64
+      ),
+    });
+    const ragContext = formatKzLawsRagContext(retrievalResult.candidateLaws, entityTier);
+    const retrievalMs = Math.max(1, Math.round(performance.now() - retrievalStartPerf));
+
+    const ragSystemInstruction = ragContext
+      ? `${systemInstruction}\n\n[БАЗА НПА РК — РЕЛЕВАНТНЫЕ НОРМЫ (RAG CONTEXT, субъект: ${entityTier})]:\nИспользуй ТОЛЬКО реальные нормы из этой структурированной базы (цитируй точное значение CODE), не придумывай несуществующие номера статей:\n${ragContext}`
+      : systemInstruction;
+
     let geminiResponseText = '';
+    let usedAiModel: string | undefined;
+    let fallbackReason: string | undefined = process.env.GEMINI_API_KEY
+      ? undefined
+      : 'GEMINI_API_KEY не настроен на сервере';
+    let aiAuditMs = 0;
 
     if (process.env.GEMINI_API_KEY) {
       const parts: Array<any> = [];
       let audioAddedToParts = false;
+      const mediaExtractPerfStart = performance.now();
 
       // 1. Process media payload (video/audio upload)
       const mediaPayload =
@@ -1860,8 +2643,28 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
         }
       }
 
+      extractMs += Math.round(performance.now() - mediaExtractPerfStart);
+
+      const hasUploadedVideoMedia =
+        Boolean(mediaBase64 && isVideo) ||
+        Boolean(effectiveVideoUrl?.startsWith('data:video')) ||
+        (Array.isArray(videoFrames) && videoFrames.length > 1);
+      const isScrapedUrlOnlyAudit = Boolean(
+        (effectiveUrl || (effectiveText && /^https?:\/\//i.test(effectiveText))) &&
+          liveUrlExtracted &&
+          !hasUploadedVideoMedia &&
+          !audioAddedToParts
+      );
+
       let userTextPrompt = `Проведи полный аудит материала по законам РК и нормам этики.\n`;
-      if (isVideo) {
+      if (isScrapedUrlOnlyAudit) {
+        userTextPrompt += `\n[ОБЪЕКТ: ССЫЛКА НА ПУБЛИКАЦИЮ / ПРОФИЛЬ — ТЕКСТ УЖЕ ИЗВЛЕЧЁН]:
+Текст публикации, описание, субтитры или метаданные профиля уже извлечены сервером и приведены ниже.
+НЕ выполняй повторный OCR по уже извлечённому тексту и не выдумывай несуществующую речь, если аудиодорожка не приложена.
+1. Проанализируй извлечённый текст по ссылке на нарушения законодательства РК и норм цифровой этики.
+2. Если приложена обложка/превью (og:image), оцени только её визуальный креатив и наложенные на неё баннерные надписи (дополняя текст).
+3. В поле "extractedText" сохрани суть извлечённого по ссылке текста (плюс важные надписи с обложки, если они есть), без дублирования и выдумывания.\n`;
+      } else if (isVideo) {
         userTextPrompt += `\n[ОБЪЕКТ: РЕАЛЬНЫЙ ВИДЕОМАТЕРИАЛ (REELS / TIKTOK / MP4) + АУДИОДОРОЖКА MP3/WAV]:
 Проанализируй каждый кадр видео, все надписи на экране по ходу ролика и дословно расшифруй речь из аудиодорожки с таймкодами.
 
@@ -1909,7 +2712,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
         userTextPrompt += `\n[ТЕКСТ / ПРИМЕЧАНИЕ / СУБТИТРЫ / OCR КАДРОВ]:\n${effectiveText}\n`;
       }
       if (liveUrlExtracted) {
-        userTextPrompt += `\n[ИЗВЛЕЧЁННЫЙ КОНТЕНТ ПО ССЫЛКЕ (субтитры YouTube, подпись Reels/TikTok, пост Telegram/СМИ) — ОБЯЗАТЕЛЬНО ПРОАНАЛИЗИРУЙ ЭТОТ ТЕКСТ ВМЕСТЕ С ПРИЛОЖЕННЫМ ИЗОБРАЖЕНИЕМ (og:image / превью)]:\n${liveUrlExtracted}\n`;
+        userTextPrompt += `\n[ИЗВЛЕЧЁННЫЙ КОНТЕНТ ПО ССЫЛКЕ (субтитры YouTube, подпись Reels/TikTok, пост/профиль Telegram/СМИ) — ОБЯЗАЛЬНО ПРОАНАЛИЗИРУЙ ЭТОТ ТЕКСТ ВМЕСТЕ С ПРИЛОЖЕННЫМ ПРЕВЬЮ (og:image), ЕСЛИ ОНО ЕСТЬ]:\n${liveUrlExtracted}\n`;
       } else if (effectiveText) {
         userTextPrompt += `\n[ССЫЛКА / ТЕКСТ]:\n${effectiveText}\n`;
       }
@@ -1919,35 +2722,63 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
 
       parts.unshift({ text: userTextPrompt });
 
+      const isRichMediaRequest = hasUploadedVideoMedia || audioAddedToParts;
+      const maxRouteBudgetMs = isRichMediaRequest ? 64000 : isScrapedUrlOnlyAudit ? 26000 : 30000;
+      const routeDeadline = analyzeStartMs + maxRouteBudgetMs;
+      const remainingForGemini = Math.max(4000, routeDeadline - Date.now());
+      const aiPerfStart = performance.now();
+
       try {
         geminiResponseText = await callGeminiApi({
-          systemInstruction,
+          systemInstruction: ragSystemInstruction,
           contents: [{ role: 'user', parts }],
           responseJson: true,
-          timeoutMs: isVideo ? 36000 : 28000,
-          disableThinking: false,
+          timeoutMs: Math.min(
+            remainingForGemini,
+            hasUploadedVideoMedia ? 36000 : isScrapedUrlOnlyAudit ? 12000 : 24000
+          ),
+          disableThinking: isScrapedUrlOnlyAudit,
+          signal: analyzeAbort.signal,
+          onModelSelected: (modelName) => {
+            usedAiModel = modelName;
+          },
         });
       } catch (geminiError: any) {
-        console.info('Gemini generateContent notice (using fallback):', geminiError?.message || 'timeout');
+        fallbackReason = geminiError?.message || 'Gemini API недоступен или превысил лимит времени';
+        console.info('Gemini generateContent notice (using fallback):', fallbackReason);
+      } finally {
+        aiAuditMs += Math.round(performance.now() - aiPerfStart);
       }
     }
 
-    // Secondary analyze attempt with OpenAI GPT-4o-mini if geminiResponseText is empty and OpenAI key is provided
-    if (!geminiResponseText && (process.env.OPENAI_API_KEY || process.env.GPT_API_KEY)) {
+    // Secondary analyze attempt with OpenAI GPT-4o-mini if geminiResponseText is empty and route budget permits
+    const hasRichFallbackMedia =
+      Boolean(mediaBase64 && isVideo) ||
+      Boolean(effectiveVideoUrl?.startsWith('data:video')) ||
+      Boolean(effectiveAudioUrl?.startsWith('data:audio')) ||
+      (Array.isArray(videoFrames) && videoFrames.length > 1);
+    const analyzeOpenAiDeadline = analyzeStartMs + (hasRichFallbackMedia ? 64000 : 28000);
+    const remainingForOpenAi = analyzeOpenAiDeadline - Date.now();
+    if (!analyzeAbort.signal.aborted && !geminiResponseText && remainingForOpenAi > 5000 && (process.env.OPENAI_API_KEY || process.env.GPT_API_KEY)) {
+      const openAiPerfStart = performance.now();
       try {
+        const hasUploadedVideoForOpenAi =
+          Boolean(mediaBase64 && isVideo) ||
+          Boolean(effectiveVideoUrl?.startsWith('data:video')) ||
+          (Array.isArray(videoFrames) && videoFrames.length > 1);
         let combinedUserPrompt = `Проведи полный комплаенс-аудит материала по законам РК (ст. 434, 445-1, 455, 73-4 КоАП РК, Закон № 230-VII) и нормам интернет-этики. Ответ строго в формате JSON, описанном в системной инструкции.`;
-        if (isVideo) {
+        if (isVideo && !(effectiveUrl && liveUrlExtracted && !hasUploadedVideoForOpenAi)) {
           combinedUserPrompt += `\n[ОБЪЕКТ: РЕАЛЬНЫЙ ВИДЕОМАТЕРИАЛ (REELS / TIKTOK / MP4)]:
 1. Внимательно прочитай ВСЕ надписи, титры, субтитры, рекламные слоганы и баннеры на ВСЕХ приложенных кадрах видео и выпиши их в 'extractedText'.
 2. Опиши визуальные действия, обстановку и людей на кадрах в 'detectedActions'.
 3. Дай точное краткое описание содержания видео в 'summary'.
 4. Зафиксируй любые нарушения законов РК (маты, казино/слоты, немаркированная реклама, буллинг/оскорбления) в 'findings'.`;
         }
-        if (effectiveText) {
+        if (effectiveText && effectiveText !== effectiveUrl) {
           combinedUserPrompt += `\n[Текст материала]:\n${effectiveText}`;
         }
         if (liveUrlExtracted) {
-          combinedUserPrompt += `\n[Данные по ссылке]:\n${liveUrlExtracted}`;
+          combinedUserPrompt += `\n[Данные по ссылке (повторный OCR не требуется)]:\n${liveUrlExtracted}`;
         }
 
         const keyframeUrls = activeVideoFrames
@@ -1956,33 +2787,42 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           .slice(0, 6);
 
         geminiResponseText = await callOpenAiApi({
-          systemInstruction,
+          systemInstruction: ragSystemInstruction,
           userPrompt: combinedUserPrompt,
           imageDataUrl: effectiveImageUrl || keyframeUrls[0],
           imageUrls: keyframeUrls.length > 1 ? keyframeUrls.slice(1) : undefined,
           responseJson: true,
-          timeoutMs: 45000,
+          timeoutMs: Math.min(remainingForOpenAi, 22000),
         });
+        if (geminiResponseText) {
+          usedAiModel = 'gpt-4o-mini';
+          fallbackReason = undefined;
+        }
       } catch (openAiErr: any) {
+        fallbackReason = openAiErr?.message || fallbackReason || 'AI-шлюз недоступен';
         console.info('OpenAI analyze notice:', openAiErr?.message || 'fallback');
+      } finally {
+        aiAuditMs += Math.round(performance.now() - openAiPerfStart);
       }
     }
 
     if (geminiResponseText && !isLlmRefusalText(geminiResponseText)) {
       try {
-        const cleanJson = geminiResponseText
-          .replace(/^```(?:json)?\s*/i, '')
-          .replace(/\s*```$/i, '')
-          .trim();
-        const parsed = JSON.parse(cleanJson);
+        const parsed = safeParseLlmJson(geminiResponseText);
+        if (!parsed) {
+          throw new Error('Malformed LLM JSON');
+        }
         const safeParsedExtracted =
-          parsed.extractedText && !isLlmRefusalText(parsed.extractedText) ? String(parsed.extractedText) : '';
+          typeof parsed.extractedText === 'string' && !isLlmRefusalText(parsed.extractedText)
+            ? parsed.extractedText
+            : '';
 
-        const findings: any[] = Array.isArray(parsed.findings)
+        const rawFindings: any[] = Array.isArray(parsed.findings)
           ? parsed.findings
           : Array.isArray(parsed.violations)
           ? parsed.violations
           : [];
+        const findings = rawFindings.filter((f) => Boolean(f && typeof f === 'object'));
         let violations: any[] = [];
         const combinedFullText = `${safeParsedExtracted} ${effectiveText || ''} ${liveUrlExtracted || ''} ${effectiveUrl || ''}`;
         const isContextWarning = isJournalisticWarningContext(combinedFullText);
@@ -1990,13 +2830,21 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
         // Build violations from findings or parsed.violations
         if (findings.length > 0) {
           findings.forEach((f: any, idx: number) => {
-            const cat = f.category || f.title || f.code || '';
-            const quoteText = `${f.quote_or_description || f.quote || ''} ${f.reasoning || ''}`;
+            const cat = String(f.article || f.category || f.title || f.code || '');
+            const quoteText = `${String(f.quote_or_description || f.quote || '')} ${String(f.description || '')} ${String(f.reasoning || '')}`;
             // Context-aware filter: ignore false positives on gambling/ads/scam/warning mentions when material is official/journalistic warning
             if (isContextWarning && (/445-1|казино|455|230|реклам|жарнама|190|274|скам|фишинг|мошен/i.test(cat) || /мошенник|полиц|мвд|афм|предупрежд/i.test(quoteText))) {
               return;
             }
-            const mappedCode = /445-1/i.test(cat)
+            const hasHardStatutoryCode = /445-1|434|455|230|73-4|131|115|79|147|133-1|301-1|фишинг|скам|казино/i.test(cat);
+            const isAssemblyCategoryOrReason =
+              !hasHardStatutoryCode &&
+              /human-in-the-loop|проверк[аи]\s+контекста|174\s*ук|общественно-политическ|протест|политическ[а-яё]+\s+плакат|требован[а-яё]+\s+отставк|отставк|обвинен[а-яё]+\s+в\s+адрес\s+госорган|мирн[а-яё]*\s+собран|поряд[а-яё]*\s+проведен[а-яё]*\s+(?:мирн|публичн)|публичн[а-яё]*\s+мероприяти|несанкционированн[а-яё]*\s+(?:собран|митинг|акц|шеств)|488\s*коап|митинг|шеств|пикет|перекрыт[а-яё]*\s+дорог|уличн[а-яё]*\s+акц|наразылық|шеру|бейбіт\s+жиналыс/i.test(
+                `${cat} ${quoteText}`
+              );
+            const mappedCode = isAssemblyCategoryOrReason
+              ? HITL_PROTEST_ARTICLE
+              : /445-1/i.test(cat)
               ? 'ст. 445-1 КоАП РК'
               : /434/i.test(cat)
               ? 'ст. 434 КоАП РК'
@@ -2019,9 +2867,14 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
               : 'Закон РК';
             const legalFlag = isLegalViolation({ category: 'legal', code: mappedCode, title: cat, fineAmount: '' });
             const isLanguageOnlyWarning = /21\s*Закона/i.test(mappedCode);
+            const isAssemblyWarning = isHitlContextViolation({ code: mappedCode, title: cat });
+            if (isAssemblyWarning && violations.some((v) => isHitlContextViolation(v))) {
+              return;
+            }
             const isCritical =
               legalFlag &&
               !isLanguageOnlyWarning &&
+              !isAssemblyWarning &&
               (f.confidence === 'высокая' ||
                 f.severity === 'critical' ||
                 /казино|1win|слот|хулиган|мат|буллинг|скам|фишинг|445-1|434|455|190|274|147|79/i.test(cat));
@@ -2029,13 +2882,23 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
               id: `v-finding-${idx + 1}`,
               category: legalFlag ? 'legal' : 'ethics',
               code: mappedCode,
-              title: f.category || f.title || 'Зафиксированное замечание',
+              title: isAssemblyWarning
+                ? 'Общественно-политический / протестный контекст (Human-in-the-loop)'
+                : f.category || f.title || 'Зафиксированное замечание',
               severity: isCritical ? 'critical' : 'warning',
               quote: f.quote_or_description || f.quote || '',
-              basis: f.reasoning || f.basis || f.quote_or_description || '',
+              basis: isAssemblyWarning
+                ? HITL_PROTEST_DESCRIPTION
+                : f.description || f.reasoning || f.basis || f.quote_or_description || '',
               fineAmount: '',
-              jurisdiction: !legalFlag ? 'Кодекс цифровой этики' : 'МКИ РК / МВД РК',
-              recommendation: 'Устранить выявленные несоответствия.',
+              jurisdiction: isAssemblyWarning
+                ? 'Правовой комплаенс РК · Human-in-the-loop (проверка контекста)'
+                : !legalFlag
+                ? 'Кодекс цифровой этики'
+                : 'МКИ РК / МВД РК',
+              recommendation: isAssemblyWarning
+                ? HITL_PROTEST_DESCRIPTION
+                : 'Устранить выявленные несоответствия.',
             });
           });
         }
@@ -2136,7 +2999,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
         }
 
         // 4. Check for Unmarked Commercial Offer (suppressed when gambling is primary offense)
-        const isCommercial = /скидк|распродаж|акция|промокод|купить|заказать|цена|тариф|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй|услуг/i.test(auditText);
+        const isCommercial = /скидк|распродаж|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|купить|заказать|цена|тариф|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй|услуг/i.test(auditText);
         const hasAdLabel = /жарнама|реклама/i.test(auditText);
         if (!isContextWarning && !isGamblingContent && isCommercial && !hasAdLabel && !violations.some((v) => v.code?.includes('455'))) {
           const adSnippet = auditText.match(/открывайте\s+счет[а-я\s,]*|скидк[а-я]*|распродаж[а-я]*|акция|промокод|купить|заказать|кредит|депозит|рассрочк[а-я]*/i)?.[0];
@@ -2171,16 +3034,44 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           });
         }
 
+        const assemblyCheck = detectPeacefulAssemblyCall(auditRaw);
+        if (
+          assemblyCheck.detected &&
+          !violations.some((v) => isHitlContextViolation(v))
+        ) {
+          violations.push({
+            id: `v-auto-hitl-${Date.now()}`,
+            category: 'legal',
+            code: HITL_PROTEST_ARTICLE,
+            title: 'Общественно-политический / протестный контекст (Human-in-the-loop)',
+            severity: 'warning',
+            quote: assemblyCheck.quote || 'Общественно-политический / протестный контекст',
+            basis: HITL_PROTEST_DESCRIPTION,
+            fineAmount: '',
+            jurisdiction: 'Правовой комплаенс РК · Human-in-the-loop (проверка контекста)',
+            recommendation: HITL_PROTEST_DESCRIPTION,
+          });
+        }
+
         violations = applyViolationFinesForEntity(violations, entityTier);
 
+        const hasHitlViolation = violations.some((v) => isHitlContextViolation(v));
         const overallRisk = violations.some((v) => v.severity === 'critical') || fraudSignals.isPhishingOrDeepfake
           ? 'высокий'
           : violations.length > 0
-          ? (parsed.overall_risk === 'высокий' ? 'высокий' : 'средний')
+          ? (hasHitlViolation
+            ? 'средний'
+            : parsed.overall_risk === 'высокий'
+            ? 'высокий'
+            : 'средний')
           : isContextWarning
           ? 'нет'
           : (parsed.overall_risk || 'нет');
 
+        const parsedHitlScore =
+          typeof parsed.riskScore === 'number' && parsed.riskScore >= 46 && parsed.riskScore <= 55
+            ? Math.round(parsed.riskScore)
+            : 50;
         const isScenario1Combo = disinfoCheck.detected && doxingCheck.detected;
         const overallRiskScore =
           overallRisk === 'нет'
@@ -2190,7 +3081,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
             : overallRisk === 'высокий'
             ? (fraudSignals.isPhishingOrDeepfake ? 94 : 85)
             : overallRisk === 'средний'
-            ? 55
+            ? (hasHitlViolation ? parsedHitlScore : 55)
             : 25;
 
         const cleanFindings = isContextWarning && violations.length === 0 ? [] : findings;
@@ -2207,25 +3098,38 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           });
         }
 
+        const safeSummaryStr = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+        const safeTranscriptArr = Array.isArray(parsed.transcript)
+          ? parsed.transcript.filter((t: any) => Boolean(t && typeof t === 'object'))
+          : undefined;
+
         const mediaAnalysis = {
           summary:
             isContextWarning && violations.length === 0
               ? 'Контекстный фильтр подтвердил: материал является официальным предупреждением / журналистским освещением проблемы мошенничества (0 МРП). Нарушений законодательства РК не выявлено.'
-              : parsed.summary && overallRisk !== 'нет' && !parsed.summary.includes('не выявлено')
-              ? parsed.summary
+              : safeSummaryStr && overallRisk !== 'нет' && !safeSummaryStr.toLowerCase().includes('не выявлено')
+              ? safeSummaryStr
               : overallRisk === 'высокий'
               ? 'В материале зафиксированы критические нарушения законодательства РК и интернет-этики.'
               : overallRisk === 'средний'
               ? 'В материале обнаружены признаки нарушений и замечания, требующие устранения.'
               : 'В материале признаков нарушений законодательства РК не выявлено.',
-          language: parsed.language || (bilingualCheck.hasKazakh && bilingualCheck.hasRussian ? 'смешанный' : bilingualCheck.hasKazakh ? 'казахский' : 'русский'),
+          language: typeof parsed.language === 'string' && parsed.language ? parsed.language : (bilingualCheck.hasKazakh && bilingualCheck.hasRussian ? 'смешанный' : bilingualCheck.hasKazakh ? 'казахский' : 'русский'),
           overall_risk: overallRisk,
           findings: cleanFindings,
           needs_human_review: overallRisk !== 'нет',
-          limitations: parsed.limitations || (isVideo ? 'Анализ ограничен качеством видео и раскадровкой.' : isAudio ? 'Шумы могут повлиять на точность распознавания.' : 'Анализ статического материала.'),
+          limitations: typeof parsed.limitations === 'string' && parsed.limitations ? parsed.limitations : (isVideo ? 'Анализ ограничен качеством видео и раскадровкой.' : isAudio ? 'Шумы могут повлиять на точность распознавания.' : 'Анализ статического материала.'),
         };
 
-        const emojiAnalysis = analyzeEmojis(`${parsed.extractedText || ''} ${effectiveText} ${liveUrlExtracted}`);
+        const emojiAnalysis = analyzeEmojis(`${safeParsedExtracted} ${effectiveText} ${liveUrlExtracted}`);
+
+        const totalMs = Math.max(1, Math.round(performance.now() - routePerfStart));
+        const matchedLawCodes = Array.from(
+          new Set([
+            ...retrievalResult.matchedLaws.map((l) => l.code),
+            ...violations.map((v) => v.code).filter(Boolean),
+          ])
+        ).slice(0, 8);
 
         const normalizedResponse = normalizeAuditCaseCompliance({
           id: caseId,
@@ -2243,9 +3147,9 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           summary: mediaAnalysis.summary,
           ethicsSummary: 'Оценка тональности, речевого этикета и добросовестности коммуникации.',
           extractedText: (() => {
-            let resText = (parsed.extractedText || '').trim();
-            const transcriptText = Array.isArray(parsed.transcript)
-              ? parsed.transcript.map((t: any) => t.text).filter(Boolean).join('\n')
+            let resText = safeParsedExtracted.trim();
+            const transcriptText = safeTranscriptArr
+              ? safeTranscriptArr.map((t: any) => String(t.text || '')).filter(Boolean).join('\n')
               : '';
             const isBareUrl = Boolean(resText && /^https?:\/\/\S+$/i.test(resText));
 
@@ -2264,7 +3168,7 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
             }
             return resText;
           })(),
-          detectedActions: (parsed.detectedActions || '').trim() || (liveUrlExtracted ? 'Контент, метаданные, субтитры и превью по ссылке извлечены и проанализированы.' : isVideo ? 'Видеоанализ Reels/TikTok: раскадровка и аудиодорожка успешно распознаны.' : isAudio ? 'Аудиоанализ речевого потока выполнен.' : 'Визуальный аудит выполнен.'),
+          detectedActions: (typeof parsed.detectedActions === 'string' ? parsed.detectedActions.trim() : '') || (liveUrlExtracted ? 'Контент, метаданные, субтитры и превью по ссылке извлечены и проанализированы.' : isVideo ? 'Видеоанализ Reels/TikTok: раскадровка и аудиодорожка успешно распознаны.' : isAudio ? 'Аудиоанализ речевого потока выполнен.' : 'Визуальный аудит выполнен.'),
           previewUrl:
             effectiveImageUrl ||
             (Array.isArray(activeVideoFrames) && activeVideoFrames.length > 0
@@ -2279,12 +3183,23 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
           videoDataUrl: effectiveVideoUrl,
           videoFrames: activeVideoFrames.length > 0 ? activeVideoFrames : undefined,
           videoDuration: audioDuration || (isVideo ? '00:20' : undefined),
-          transcript: Array.isArray(parsed.transcript) ? parsed.transcript : undefined,
+          transcript: safeTranscriptArr,
           emojiAnalysis,
           mediaAnalysis,
           fraudSignals,
           bilingualCheck,
           violations,
+          telemetry: {
+            extractMs,
+            retrievalMs,
+            aiAuditMs,
+            totalMs,
+            checkedLawsCount: retrievalResult.checkedLawsCount,
+            retrievedLawsCount: retrievalResult.candidateLaws.length,
+            matchedLawCodes,
+            engineMode: 'rag-live-ai',
+            ...(usedAiModel ? { aiModel: usedAiModel } : {}),
+          },
           metadata: {
             fileSize: fileSize || '1.8 MB',
             duration: audioDuration || (isAudio ? '00:28' : isVideo ? '00:20' : undefined),
@@ -2298,7 +3213,8 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
         } as any);
 
         return res.json(normalizedResponse);
-      } catch (e) {
+      } catch (e: any) {
+        fallbackReason = e?.message || 'Ошибка разбора ответа AI-модели';
         console.warn('Could not parse Gemini JSON response:', e);
       }
     }
@@ -2323,12 +3239,35 @@ app.post(['/api/analyze', '/analyze'], async (req: Request, res: Response) => {
       entityTier
     );
 
-    return res.json(normalizeAuditCaseCompliance(fallbackResult as any));
+    const fallbackMatchedCodes = Array.from(
+      new Set([
+        ...retrievalResult.matchedLaws.map((l) => l.code),
+        ...(fallbackResult.violations || []).map((v: any) => v.code).filter(Boolean),
+      ])
+    ).slice(0, 8);
+
+    return res.json(
+      normalizeAuditCaseCompliance({
+        ...(fallbackResult as any),
+        telemetry: {
+          extractMs,
+          retrievalMs,
+          aiAuditMs,
+          totalMs: Math.max(1, Math.round(performance.now() - routePerfStart)),
+          checkedLawsCount: retrievalResult.checkedLawsCount,
+          retrievedLawsCount: retrievalResult.matchedLaws.length,
+          matchedLawCodes: fallbackMatchedCodes,
+          engineMode: 'deterministic-db-fallback',
+          fallbackReason: fallbackReason || 'Выполнен детерминированный аудит по базе НПА РК',
+        },
+      })
+    );
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error('Error in /api/analyze:', err);
     return res.status(500).json({ error: 'Server analysis error: ' + errorMsg });
   } finally {
+    res.off('close', onAnalyzeClose);
     if (tempFilePath) {
       fs.promises.unlink(tempFilePath).catch(() => {});
     }
@@ -2396,7 +3335,7 @@ function evaluatePostCompliance(
       severity: 'critical',
     };
   }
-  const isCommercial = /скидк|распродаж|акция|промокод|купить|заказать|цена|артикул|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк/i.test(lower);
+  const isCommercial = /скидк|распродаж|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|купить|заказать|цена|артикул|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк/i.test(lower);
   const hasAdMark = /жарнама|реклама|спонсор|серіктестік/i.test(lower);
   if (!isContextWarning && isCommercial && !hasAdMark) {
     const title = 'Коммерческий пост без маркировки «Жарнама» (Закон № 230-VII)';
@@ -2415,9 +3354,30 @@ function evaluatePostCompliance(
 // POST /api/rewrite: AI Safe-Rewrite Compliance Fixer (RU + KZ)
 app.post(['/api/rewrite', '/rewrite'], async (req: Request, res: Response) => {
   try {
-    const { text, violations = [], language = 'ru', binOrIin = '' } = req.body || {};
+    const { text, violations = [], language = 'ru', binOrIin = '', entityTier: rawEntityTier, entityType: rawEntityType } = req.body || {};
     const sourceText = String(text || '').trim();
     const binDisplay = String(binOrIin || '').trim() || '000000000000';
+    const entityTier = resolveEntityTier(rawEntityTier || rawEntityType);
+    const tierTaxLabelRu =
+      entityTier === 'individual'
+        ? 'ИИН'
+        : entityTier === 'small'
+        ? 'ИИН/БИН'
+        : 'БИН организации';
+    const tierTaxLabelKz =
+      entityTier === 'individual'
+        ? 'ЖСН'
+        : entityTier === 'small'
+        ? 'ЖСН/БСН'
+        : 'Ұйым БСН';
+    const tierDescRu =
+      entityTier === 'individual'
+        ? 'физическое лицо / блогер (реквизит ИИН)'
+        : entityTier === 'small'
+        ? 'субъект малого бизнеса / ИП (реквизит ИИН/БИН)'
+        : entityTier === 'medium'
+        ? 'субъект среднего бизнеса (реквизит БИН организации)'
+        : 'субъект крупного бизнеса (реквизит БИН организации)';
 
     if (!sourceText) {
       return res.status(400).json({ error: 'Текст для исправления отсутствует' });
@@ -2427,11 +3387,15 @@ app.post(['/api/rewrite', '/rewrite'], async (req: Request, res: Response) => {
       ? violations.map((v: any) => `${v.code || ''}: ${v.title || ''}`).join('; ')
       : '';
 
+    const explicitBinProvided = Boolean(String(binOrIin || '').trim());
+    const binInstruction = explicitBinProvided ? binDisplay : `[указать 12 цифр, например ${binDisplay}]`;
     const systemPrompt = `Ты — ведущий юрист-редактор и специалист по цифровому маркетингу Казахстана (система Check Activity KZ).
 Твоя задача — переписать проблемный текст/пост/объявление так, чтобы он стал на 100% законным по законодательству РК (Закон № 230-VII «Об онлайн-платформах и онлайн-рекламе», Закон «О языках в РК», КоАП РК ст. 434, 445-1, 455, 73-4, 79, УК РК ст. 190, 274) и этичным, но сохранил деловую или информационную суть (если это не нелегальное казино/скам — в этом случае преобразуй в безопасное информационное/образовательное сообщение или предупреждение).
 
+Категория субъекта рекламодателя: ${tierDescRu}.
+
 ПРАВИЛА:
-1. Если текст коммерческий/рекламный: обязательно добавь маркировку «Жарнама / Реклама» и строку «Реклама беруші / Рекламодатель: ИИН/БИН [указать 12 цифр]».
+1. Если текст коммерческий/рекламный: обязательно добавь маркировку «Жарнама / Реклама» и реквизиты рекламодателя: в русской версии «Рекламодатель: ${tierTaxLabelRu} ${binInstruction}», в казахской версии «Жарнама беруші: ${tierTaxLabelKz} ${binInstruction}».
 2. Удали всю ненормативную лексику, оскорбления, угрозы, скрытые манипуляции FOMO («только сегодня», «100% без риска»), фишинговые ссылки и упоминания нелегальных казино/ставок.
 3. Верни сразу ДВЕ версии: на русском (safeTextRu) и на казахском (safeTextKz) языках для соблюдения Закона РК о языках.
 4. Перечисли конкретные внесенные правки в массиве appliedFixes (на языке: ${language === 'kz' ? 'казахский' : 'русский'}).
@@ -2447,53 +3411,66 @@ app.post(['/api/rewrite', '/rewrite'], async (req: Request, res: Response) => {
 
     let rawAi = '';
     let engineUsed = 'CheckActivity Safe-Rewrite Rules';
+    const rewriteAbort = new AbortController();
+    const onRewriteClose = () => {
+      if (!res.writableEnded) rewriteAbort.abort();
+    };
+    res.on('close', onRewriteClose);
+    const rewriteDeadline = Date.now() + 28000;
 
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        rawAi = await callGeminiApi({
-          systemInstruction: systemPrompt,
-          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-          responseJson: true,
-          timeoutMs: 25000,
-        });
-        engineUsed = 'Gemini 4 Hydrogen Safe-Rewrite';
-      } catch (err) {
-        console.info('Rewrite Gemini fallback notice:', err instanceof Error ? err.message : err);
+    try {
+      if (process.env.GEMINI_API_KEY) {
+        try {
+          rawAi = await callGeminiApi({
+            systemInstruction: systemPrompt,
+            contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+            responseJson: true,
+            timeoutMs: 18000,
+            signal: rewriteAbort.signal,
+          });
+          engineUsed = 'Gemini 4 Hydrogen Safe-Rewrite';
+        } catch (err) {
+          console.info('Rewrite Gemini fallback notice:', err instanceof Error ? err.message : err);
+        }
       }
-    }
 
-    if (!rawAi && (process.env.OPENAI_API_KEY || process.env.GPT_API_KEY)) {
-      try {
-        rawAi = await callOpenAiApi({
-          systemInstruction: systemPrompt,
-          userPrompt,
-          responseJson: true,
-          timeoutMs: 25000,
-        });
-        engineUsed = 'OpenAI GPT Safe-Rewrite';
-      } catch (err) {
-        console.info('Rewrite OpenAI fallback notice:', err instanceof Error ? err.message : err);
+      const remainingRewriteMs = rewriteDeadline - Date.now();
+      if (!rewriteAbort.signal.aborted && !rawAi && remainingRewriteMs > 4000 && (process.env.OPENAI_API_KEY || process.env.GPT_API_KEY)) {
+        try {
+          rawAi = await callOpenAiApi({
+            systemInstruction: systemPrompt,
+            userPrompt,
+            responseJson: true,
+            timeoutMs: Math.min(18000, remainingRewriteMs),
+          });
+          engineUsed = 'OpenAI GPT Safe-Rewrite';
+        } catch (err) {
+          console.info('Rewrite OpenAI fallback notice:', err instanceof Error ? err.message : err);
+        }
       }
+    } finally {
+      res.off('close', onRewriteClose);
     }
 
     if (rawAi) {
-      try {
-        const cleanJson = rawAi.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-        const parsed = JSON.parse(cleanJson);
-        if (parsed.safeTextRu && parsed.safeTextKz) {
-          const safeTextRu = String(parsed.safeTextRu);
-          const safeTextKz = String(parsed.safeTextKz);
-          return res.json({
-            originalText: sourceText,
-            safeTextRu,
-            safeTextKz,
-            appliedFixes: Array.isArray(parsed.appliedFixes) ? parsed.appliedFixes : ['Приведено в соответствие с нормами РК'],
-            newRiskScore: computeRewriteResidualRisk(safeTextRu, safeTextKz),
-            engineUsed,
-          });
+      const parsed = safeParseLlmJson(rawAi);
+      if (parsed && typeof parsed.safeTextRu === 'string' && typeof parsed.safeTextKz === 'string' && parsed.safeTextRu.trim() && parsed.safeTextKz.trim()) {
+        let safeTextRu = parsed.safeTextRu.trim();
+        let safeTextKz = parsed.safeTextKz.trim();
+        if (explicitBinProvided) {
+          safeTextRu = safeTextRu.replace(/\[?\b0{12}\b\]?|\[указать\s+12\s+цифр\]/gi, binDisplay);
+          safeTextKz = safeTextKz.replace(/\[?\b0{12}\b\]?|\[указать\s+12\s+цифр\]/gi, binDisplay);
         }
-      } catch {
-        // continue to deterministic rewrite fallback
+        return res.json({
+          originalText: sourceText,
+          safeTextRu,
+          safeTextKz,
+          appliedFixes: Array.isArray(parsed.appliedFixes)
+            ? parsed.appliedFixes.map((x: any) => String(x)).filter(Boolean)
+            : ['Приведено в соответствие с нормами РК'],
+          newRiskScore: computeRewriteResidualRisk(safeTextRu, safeTextKz, entityTier),
+          engineUsed,
+        });
       }
     }
 
@@ -2530,11 +3507,11 @@ app.post(['/api/rewrite', '/rewrite'], async (req: Request, res: Response) => {
       );
     }
     if (isAd && !/жарнама|реклама/i.test(cleanRu)) {
-      cleanRu = `Реклама / Жарнама\n${cleanRu}\n\nРекламодатель: ИИН/БИН [${binDisplay}] (Закон РК № 230-VII)`;
+      cleanRu = `Реклама / Жарнама\n${cleanRu}\n\nРекламодатель: ${tierTaxLabelRu} [${binDisplay}] (Закон РК № 230-VII)`;
       appliedFixes.push(
         language === 'kz'
-          ? '«Жарнама / Реклама» таңбасы және ЖСН/БСН өрісі қосылды (№ 230-VII Заңы)'
-          : 'Добавлена обязательная маркировка «Реклама / Жарнама» и реквизиты БИН/ИИН (Закон № 230-VII)'
+          ? `«Жарнама / Реклама» таңбасы және ${tierTaxLabelKz} өрісі қосылды (№ 230-VII Заңы)`
+          : `Добавлена обязательная маркировка «Реклама / Жарнама» и реквизиты ${tierTaxLabelRu} (Закон № 230-VII)`
       );
     }
     if (appliedFixes.length === 0) {
@@ -2548,7 +3525,7 @@ app.post(['/api/rewrite', '/rewrite'], async (req: Request, res: Response) => {
     let safeTextKz = cleanRu;
     if (isAd) {
       const bodyOnly = cleanRu.replace(/^Реклама \/ Жарнама\n?/i, '').replace(/\n\nРекламодатель:[\s\S]*$/i, '');
-      safeTextKz = `Жарнама / Реклама\nҚР заңнамасына сәйкестендірілген қауіпсіз хабарландыру:\n${bodyOnly}\n\nЖарнама беруші: ЖСН/БСН [${binDisplay}] (ҚР № 230-VII Заңы)`;
+      safeTextKz = `Жарнама / Реклама\nҚР заңнамасына сәйкестендірілген қауіпсіз хабарландыру:\n${bodyOnly}\n\nЖарнама беруші: ${tierTaxLabelKz} [${binDisplay}] (ҚР № 230-VII Заңы)`;
     } else if (/выборы\s+15\s+марта/i.test(cleanRu)) {
       safeTextKz = `Ресми дереккөздер арқылы растауды қажет ететін ақпарат. Дербес деректер жасырылды.\n15 наурыздағы сайлауға келіп, ар-ожданыңызбен дауыс беріңіз!`;
     } else if (isGamblingText) {
@@ -2562,7 +3539,7 @@ app.post(['/api/rewrite', '/rewrite'], async (req: Request, res: Response) => {
       safeTextRu: cleanRu,
       safeTextKz,
       appliedFixes,
-      newRiskScore: computeRewriteResidualRisk(cleanRu, safeTextKz),
+      newRiskScore: computeRewriteResidualRisk(cleanRu, safeTextKz, entityTier),
       engineUsed: 'CheckActivity Deterministic Compliance Fixer',
     });
   } catch (err: unknown) {
@@ -2909,7 +3886,7 @@ function buildFallbackAudit(
   }
 
   // Commercial offer without "Жарнама" marking (suppressed if illegal gambling banner is detected)
-  const isCommercial = /скидк|купить|акция|промокод|цена|инвестиц|заказать|распродаж|тариф|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй/i.test(content);
+  const isCommercial = /скидк|купить|(?<!наразылық\s)(?<!уличн[а-яё]*\s)акци(?:я|ю|и)(?!\s+протеста)(?=$|[\s.,!?:;»"')\]])|промокод|цена|инвестиц|заказать|распродаж|тариф|доставк|открывайте\s+счет|счета\s+в\s+тенге|оформляй|кредит|депозит|кэшбэк|кешбэк|рассрочк|подключай|бронируй/i.test(content);
   const contentForAdMark = content.replace(/маркировка\s*[«"]?(?:жарнама|реклама)[»"]?\s*(?:и\s+[^\n)]*\s*)?отсутств\S*/gi, '').replace(/рекламодател[яюе]?\S*/gi, '');
   const hasAdLabel = /(?:^|[\s#«"(])(?:жарнама|жарнамалық|реклама|на\s+правах\s+рекламы|спонсорский\s+материал)(?=$|[\s»"),.:!])/i.test(contentForAdMark);
 
@@ -3032,7 +4009,7 @@ function buildFallbackAudit(
           jurisdiction: 'АФМ РК / Контроль онлайн-казино',
           recommendation: 'Исключить символы азартных игр и призывы к ставкам.',
         });
-        legalScore = Math.max(legalScore, 85);
+        legalScore = Math.max(legalScore, item.emoji === '🎰' ? 85 : 55);
       } else if (item.category === 'profanity_insult' && !violations.some((v) => v.code?.includes('434') || v.code?.includes('73-4'))) {
         violations.unshift({
           id: `v-emoji-${item.emoji}`,
@@ -3048,8 +4025,41 @@ function buildFallbackAudit(
         });
         legalScore = Math.max(legalScore, 76);
         ethicsScore = Math.max(ethicsScore, 80);
+      } else if (item.category === 'spam' && !violations.some((v) => v.id?.startsWith('v-emoji-'))) {
+        violations.push({
+          id: `v-emoji-${item.emoji}`,
+          category: 'ethics',
+          code: 'Этика: Спам / визуальные триггеры (эмодзи)',
+          title: `${item.label} (${item.emoji})`,
+          severity: 'warning',
+          quote: item.emoji,
+          basis: item.description,
+          fineAmount: '',
+          jurisdiction: 'Цифровая этика / Стандарты платформ',
+          recommendation: 'Сократить избыточные повторы денежных и рекламных эмодзи.',
+        });
+        ethicsScore = Math.max(ethicsScore, 28);
       }
     }
+  }
+
+  // Deterministic Human-in-the-loop fallback: general protest/resignation/rally/picket/march marker categories only
+  const assemblyCheck = detectPeacefulAssemblyCall(`${rawMaterial} ${content}`);
+  if (assemblyCheck.detected) {
+    violations.push({
+      id: 'v-peaceful-assembly-hitl',
+      category: 'legal',
+      code: HITL_PROTEST_ARTICLE,
+      title: 'Общественно-политический / протестный контекст (Human-in-the-loop)',
+      severity: 'warning',
+      quote: assemblyCheck.quote || 'Общественно-политический / протестный контекст',
+      basis: HITL_PROTEST_DESCRIPTION,
+      fineAmount: '',
+      jurisdiction: 'Правовой комплаенс РК · Human-in-the-loop (проверка контекста)',
+      recommendation: HITL_PROTEST_DESCRIPTION,
+    });
+    legalScore = Math.max(legalScore, 50);
+    detectedActions += 'Обнаружен общественно-политический / протестный контекст — требуется проверка человеком (Human-in-the-loop). ';
   }
 
   violations = applyViolationFinesForEntity(violations, entityTier);
@@ -3066,7 +4076,7 @@ function buildFallbackAudit(
       ? 0
       : isScenario1Combo
       ? 84
-      : Math.min(100, Math.max(legalScore, ethicsScore, emojiAnalysis.totalRiskPoints > 30 ? 75 : 0));
+      : Math.min(100, Math.max(legalScore, ethicsScore));
   const riskLevel: 'Низкий' | 'Средний' | 'Высокий' | 'Критический' =
     overallRiskScore >= 75 ? 'Критический' : overallRiskScore >= 50 ? 'Высокий' : overallRiskScore >= 25 ? 'Средний' : 'Низкий';
   const status: 'БЕЗОПАСНО' | 'ПРЕДУПРЕЖДЕНИЕ' | 'ТРЕБУЕТ МЕР' =
@@ -3257,6 +4267,8 @@ async function startServer() {
   process.on('SIGINT', handleShutdown);
 }
 
-startServer();
+if (!process.env.CHECKACTIVITY_NO_LISTEN) {
+  startServer();
+}
 
 export default app;

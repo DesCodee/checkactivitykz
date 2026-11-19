@@ -4,25 +4,32 @@
  */
 
 import React, { useState } from 'react';
-import { Search, ArrowRight, Check } from 'lucide-react';
+import { Search, ArrowRight, Check, FileText } from 'lucide-react';
 import { AuditCase } from '../types';
 import { MOCK_AUDIT_HISTORY } from '../data/mockData';
 import { useApp } from '../utils/i18n';
 import {
   getCompliancePenaltyDisplay,
+  getLocalizedRiskLevel,
   isLegalViolation,
   normalizeAuditCaseCompliance,
+  type BusinessEntityType,
 } from '../utils/kzComplianceIntelligence';
 
 interface ArchiveMonitoringViewProps {
   onSelectCase: (auditCase: AuditCase) => void;
-  onOpenPdfModal: () => void;
+  onOpenPdfModal: (auditCase: AuditCase, entityTier?: BusinessEntityType) => void;
   userHistory?: AuditCase[];
+  entityTier?: BusinessEntityType;
+  onEntityTierChange?: (tier: BusinessEntityType) => void;
 }
 
 export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
   onSelectCase,
+  onOpenPdfModal,
   userHistory = [],
+  entityTier = 'small',
+  onEntityTierChange,
 }) => {
   const { t, language } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
@@ -36,14 +43,15 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
   ];
 
   const filteredHistory = allHistory.filter((item) => {
+    const q = searchQuery.toLowerCase();
     const matchesSearch =
-      item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.referenceNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.sourceName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (item.title || '').toLowerCase().includes(q) ||
+      (item.referenceNumber || '').toLowerCase().includes(q) ||
+      (item.sourceName || '').toLowerCase().includes(q) ||
       item.violations.some(
         (v) =>
-          v.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          v.title.toLowerCase().includes(searchQuery.toLowerCase())
+          (v.code || '').toLowerCase().includes(q) ||
+          (v.title || '').toLowerCase().includes(q)
       );
 
     const matchesStatus =
@@ -95,11 +103,24 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
           />
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+        <div className="flex flex-wrap items-center gap-2 shrink-0 w-full sm:w-auto">
+          {onEntityTierChange && (
+            <select
+              aria-label={language === 'kz' ? 'Субъект санаты' : 'Категория субъекта'}
+              value={entityTier}
+              onChange={(e) => onEntityTierChange(e.target.value as BusinessEntityType)}
+              className="flex-1 sm:flex-none bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-xs sm:text-sm text-zinc-700 dark:text-zinc-300 rounded-xl px-3 py-2 focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600"
+            >
+              <option value="individual">{language === 'kz' ? 'Жеке тұлға' : 'Физлицо'}</option>
+              <option value="small">{language === 'kz' ? 'ШОБ / ЖК' : 'МБ / ИП'}</option>
+              <option value="medium">{language === 'kz' ? 'Орта бизнес' : 'Средний'}</option>
+              <option value="large">{language === 'kz' ? 'Ірі бизнес' : 'Крупный'}</option>
+            </select>
+          )}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="w-full sm:w-auto bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-xs sm:text-sm text-zinc-700 dark:text-zinc-300 rounded-xl px-3.5 py-2 focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600"
+            className="flex-1 sm:flex-none sm:w-auto bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/80 dark:border-zinc-800 text-xs sm:text-sm text-zinc-700 dark:text-zinc-300 rounded-xl px-3.5 py-2 focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600"
           >
             <option value="all">
               {language === 'kz' ? 'Барлық мәртебелер' : 'Все статусы'} ({allHistory.length})
@@ -146,7 +167,7 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
 
                   <span className="inline-flex items-center gap-1.5 text-[11px] font-['JetBrains_Mono'] font-medium text-zinc-700 dark:text-zinc-300 tabular-nums">
                     <span className={`w-2 h-2 rounded-full ${dotColor}`} />
-                    {item.riskScore}/100 · {item.riskLevel}
+                    {item.riskScore}/100 · {getLocalizedRiskLevel(item.riskLevel, language)}
                   </span>
                 </div>
 
@@ -165,25 +186,45 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
                       <span>
                         {item.violations
                           .map((v) =>
-                            !isLegalViolation(v) ? 'Этика' : v.code.split('/')[0]
+                            !isLegalViolation(v) ? 'Этика' : String(v.code || 'Закон РК').split('/')[0]
                           )
                           .join(' · ')}
                       </span>
                       <span className="text-[10.5px] font-semibold text-zinc-700 dark:text-zinc-300">
-                        {getCompliancePenaltyDisplay(item.violations, 'small', language).headline}
+                        {getCompliancePenaltyDisplay(item.violations, entityTier, language).headline}
                       </span>
                     </>
                   )}
                 </div>
 
-                <div className="pt-2.5 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+                <div className="pt-2.5 border-t border-zinc-100 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-2">
                   <span className="text-[11px] text-zinc-400 font-['JetBrains_Mono'] tabular-nums">
                     {item.violations.length} {language === 'kz' ? 'ескерту' : 'замеч.'}
                   </span>
-                  <span className="text-xs font-medium text-zinc-900 dark:text-zinc-100 flex items-center gap-1">
-                    {language === 'kz' ? 'Есепті ашу' : 'Открыть отчет'}
-                    <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.6} />
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenPdfModal(item, entityTier);
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 text-[11px] font-medium transition-colors"
+                    >
+                      <FileText className="w-3.5 h-3.5" strokeWidth={1.6} />
+                      <span>PDF</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectCase(item);
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-[11px] font-medium transition-opacity hover:opacity-90"
+                    >
+                      <span>{language === 'kz' ? 'Толық есепті ашу' : 'Открыть полный отчёт'}</span>
+                      <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.6} />
+                    </button>
+                  </div>
                 </div>
               </div>
             );
@@ -240,7 +281,7 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
                           <span className={`w-2 h-2 rounded-full ${dotColor}`} />
                           <span>{item.riskScore}/100</span>
                           <span className="text-zinc-400">·</span>
-                          <span className="text-zinc-500 dark:text-zinc-400">{item.riskLevel}</span>
+                          <span className="text-zinc-500 dark:text-zinc-400">{getLocalizedRiskLevel(item.riskLevel, language)}</span>
                         </span>
                       </td>
                       <td className="px-5 py-4">
@@ -254,7 +295,7 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
                             item.violations.map((v, idx) => {
                               const ethicsOnly = !isLegalViolation(v);
                               return (
-                                <span key={v.id} className="inline-flex items-center gap-1.5">
+                                <span key={v.id || idx} className="inline-flex items-center gap-1.5">
                                   {idx > 0 && <span className="text-zinc-300 dark:text-zinc-700">·</span>}
                                   <span
                                     className={
@@ -263,7 +304,7 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
                                         : 'text-zinc-700 dark:text-zinc-300 font-medium'
                                     }
                                   >
-                                    {ethicsOnly ? 'Этика' : v.code.split('/')[0]}
+                                    {ethicsOnly ? 'Этика' : String(v.code || 'Закон РК').split('/')[0]}
                                   </span>
                                 </span>
                               );
@@ -272,17 +313,31 @@ export const ArchiveMonitoringView: React.FC<ArchiveMonitoringViewProps> = ({
                         </div>
                       </td>
                       <td className="px-5 py-4 text-right whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onSelectCase(item);
-                          }}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-900 hover:text-white dark:hover:bg-zinc-100 dark:hover:text-zinc-900 text-zinc-700 dark:text-zinc-200 text-xs font-medium transition-colors"
-                        >
-                          <span>{language === 'kz' ? 'Ашу' : 'Открыть'}</span>
-                          <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.6} />
-                        </button>
+                        <div className="inline-flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenPdfModal(item, entityTier);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-200 text-xs font-medium transition-colors"
+                            title={language === 'kz' ? 'PDF хаттамасы' : 'PDF-протокол'}
+                          >
+                            <FileText className="w-3.5 h-3.5" strokeWidth={1.6} />
+                            <span>PDF</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectCase(item);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-900 hover:text-white dark:hover:bg-zinc-100 dark:hover:text-zinc-900 text-zinc-700 dark:text-zinc-200 text-xs font-medium transition-colors"
+                          >
+                            <span>{language === 'kz' ? 'Толық есепті ашу' : 'Открыть полный отчёт'}</span>
+                            <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.6} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );

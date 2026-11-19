@@ -198,19 +198,19 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
 
       {/* Top Workspace Header (Inside main column on desktop, full width on mobile) */}
       <header className="sticky top-0 z-30 bg-zinc-50/90 dark:bg-zinc-950/90 backdrop-blur-md border-b border-zinc-200/70 dark:border-zinc-800/80 transition-colors">
-        <div className="max-w-[1200px] mx-auto px-4 sm:px-8 h-16 md:h-[72px] flex items-center justify-between gap-4">
+        <div className="max-w-[1200px] mx-auto px-3 sm:px-8 h-14 sm:h-16 md:h-[72px] flex items-center justify-between gap-2 sm:gap-4">
           {/* Left: Page Title + Live Subtitle (matches screenshot) */}
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <button
               type="button"
               onClick={() => onNavigate('home')}
-              className="md:hidden flex items-center gap-2 text-zinc-900 dark:text-zinc-100 shrink-0"
+              className="md:hidden flex items-center gap-1.5 text-zinc-900 dark:text-zinc-100 shrink-0"
               aria-label="На главную"
             >
               <Layers className="w-5 h-5" strokeWidth={1.6} />
             </button>
             <div className="flex flex-col min-w-0">
-              <h1 className="font-['Inter'] font-semibold text-base sm:text-xl tracking-tight text-zinc-950 dark:text-zinc-50 truncate">
+              <h1 className="font-['Inter'] font-semibold text-sm sm:text-xl tracking-tight text-zinc-950 dark:text-zinc-50 truncate">
                 {getPageTitle()}
               </h1>
               <div className="hidden sm:flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
@@ -222,7 +222,7 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
           </div>
 
           {/* Right: Clean Search trigger + Mobile quick switches + Profile Avatar */}
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
             <button
               type="button"
               onClick={() => setShowSearchModal(true)}
@@ -282,14 +282,14 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
               key={item.id}
               type="button"
               onClick={() => onNavigate(item.id)}
-              className={`flex flex-col items-center justify-center flex-1 py-1 rounded-lg transition-colors ${
+              className={`flex flex-col items-center justify-center flex-1 min-w-0 py-1 rounded-lg transition-colors ${
                 item.isActive
                   ? 'text-zinc-950 dark:text-white font-semibold'
                   : 'text-zinc-400 dark:text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'
               }`}
             >
               <Icon className="w-[18px] h-[18px]" strokeWidth={1.6} />
-              <span className="text-[10px] mt-0.5 whitespace-nowrap">{item.mobileLabel}</span>
+              <span className="text-[10px] mt-0.5 truncate max-w-full px-1">{item.mobileLabel}</span>
             </button>
           );
         })}
@@ -326,7 +326,7 @@ export const Header: React.FC<HeaderProps> = ({ currentView, onNavigate, onSearc
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Статья КоАП, кибербуллинг, Dark Pattern, ссылка..."
-                className="w-full bg-zinc-50 dark:bg-zinc-950 pl-10 pr-24 py-2.5 rounded-xl text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 border border-zinc-200 dark:border-zinc-800 focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none"
+                className="w-full bg-zinc-50 dark:bg-zinc-950 pl-10 pr-20 sm:pr-24 py-2.5 rounded-xl text-xs sm:text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 border border-zinc-200 dark:border-zinc-800 focus:border-zinc-400 dark:focus:border-zinc-600 focus:outline-none"
               />
               <button
                 type="submit"

@@ -87,6 +87,10 @@ export function optimizeImageForOcr(file: File, maxDim = 1920): Promise<{ dataUr
           return;
         }
 
+        if (width <= 0 || height <= 0) {
+          resolve({ dataUrl: '', sizeStr: '0 KB' });
+          return;
+        }
         resolve({
           dataUrl: originalDataUrl,
           sizeStr: file.size > 0 ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : '300 KB',
@@ -94,8 +98,8 @@ export function optimizeImageForOcr(file: File, maxDim = 1920): Promise<{ dataUr
       };
       img.onerror = () => {
         resolve({
-          dataUrl: originalDataUrl,
-          sizeStr: file.size > 0 ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` : '300 KB',
+          dataUrl: '',
+          sizeStr: file.size > 0 ? `${Math.round(file.size / 1024)} KB` : '0 KB',
         });
       };
       img.src = originalDataUrl;
@@ -313,10 +317,11 @@ export async function extractTextFromDocx(file: File): Promise<string> {
     if (eocdOffset !== -1) {
       const cdOffset = view.getUint32(eocdOffset + 16, true);
       const totalEntries = view.getUint16(eocdOffset + 10, true);
-      let ptr = cdOffset;
+      let ptr = cdOffset < bytes.length ? cdOffset : bytes.length;
       const utf8 = new TextDecoder('utf-8');
+      const MAX_DOCX_XML_COMP_BYTES = 10 * 1024 * 1024;
 
-      for (let e = 0; e < totalEntries && ptr + 46 <= eocdOffset; e++) {
+      for (let e = 0; e < totalEntries && ptr >= 0 && ptr + 46 <= eocdOffset; e++) {
         if (bytes[ptr] !== 0x50 || bytes[ptr + 1] !== 0x4b || bytes[ptr + 2] !== 0x01 || bytes[ptr + 3] !== 0x02) break;
         const method = view.getUint16(ptr + 10, true);
         const compSize = view.getUint32(ptr + 20, true);
@@ -324,16 +329,29 @@ export async function extractTextFromDocx(file: File): Promise<string> {
         const extraLen = view.getUint16(ptr + 30, true);
         const commentLen = view.getUint16(ptr + 32, true);
         const localHeaderOffset = view.getUint32(ptr + 42, true);
+        if (ptr + 46 + nameLen > eocdOffset) break;
         const entryName = utf8.decode(bytes.subarray(ptr + 46, ptr + 46 + nameLen));
-        ptr += 46 + nameLen + extraLen + commentLen;
+        const nextPtr = ptr + 46 + nameLen + extraLen + commentLen;
+        if (nextPtr <= ptr) break;
+        ptr = nextPtr;
 
-        if (/^word\/(?:document|header\d+|footer\d+)\.xml$/i.test(entryName) && localHeaderOffset + 30 < bytes.length) {
-          const lhNameLen = view.getUint16(localHeaderOffset + 26, true);
-          const lhExtraLen = view.getUint16(localHeaderOffset + 28, true);
-          const dataStart = localHeaderOffset + 30 + lhNameLen + lhExtraLen;
-          const compSlice = bytes.subarray(dataStart, dataStart + compSize);
-          const xml = await inflateZipEntry(compSlice, method);
-          if (xml) xmlParts.push(xml);
+        if (
+          /^word\/(?:document|header\d+|footer\d+)\.xml$/i.test(entryName) &&
+          localHeaderOffset + 30 <= bytes.length &&
+          compSize <= MAX_DOCX_XML_COMP_BYTES
+        ) {
+          try {
+            const lhNameLen = view.getUint16(localHeaderOffset + 26, true);
+            const lhExtraLen = view.getUint16(localHeaderOffset + 28, true);
+            const dataStart = localHeaderOffset + 30 + lhNameLen + lhExtraLen;
+            if (dataStart >= 0 && dataStart + compSize <= bytes.length) {
+              const compSlice = bytes.subarray(dataStart, dataStart + compSize);
+              const xml = await inflateZipEntry(compSlice, method);
+              if (xml) xmlParts.push(xml);
+            }
+          } catch {
+            // Skip malformed ZIP entry safely
+          }
         }
       }
     }
@@ -415,7 +433,7 @@ export async function extractVideoAudioAsWavDataUrl(file: File, maxSeconds = 90)
   try {
     const arrayBuffer = await file.arrayBuffer();
     audioCtx = new AudioCtx();
-    const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+    const decoded = await audioCtx.decodeAudioData(arrayBuffer);
     if (!decoded || decoded.numberOfChannels === 0 || decoded.length === 0) {
       return '';
     }
@@ -499,6 +517,9 @@ export function extractVideoPreview(
         isResolved = true;
         clearTimeout(timeout);
         if (!options?.keepPlayableUrl) {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
           URL.revokeObjectURL(objectUrl);
         }
         const finalFrames = frames.length > 0 ? frames : fallbackFirstFrame ? [fallbackFirstFrame] : [];
@@ -723,18 +744,22 @@ export async function parseUploadedFileUniversal(
   if (mime === 'application/pdf' || lowerName.endsWith('.pdf')) {
     let extractedPdfText = await extractTextFromPdf(file);
     let warningNotice: string | undefined;
-    const dataUrl = await new Promise<string>((res) => {
-      const r = new FileReader();
-      r.onload = () => res((r.result as string) || '');
-      r.onerror = () => res('');
-      r.readAsDataURL(file);
-    });
 
     const isStubOrGarbled =
       extractedPdfText.startsWith('[Документ PDF:') ||
       extractedPdfText.trim().length < 25;
 
-    if (isStubOrGarbled && ocrTriggerFn && dataUrl && file.size < 15 * 1024 * 1024) {
+    const shouldReadPdfBase64 = isStubOrGarbled && Boolean(ocrTriggerFn) && file.size > 0 && file.size < 15 * 1024 * 1024;
+    const dataUrl = shouldReadPdfBase64
+      ? await new Promise<string>((res) => {
+          const r = new FileReader();
+          r.onload = () => res((r.result as string) || '');
+          r.onerror = () => res('');
+          r.readAsDataURL(file);
+        })
+      : '';
+
+    if (shouldReadPdfBase64 && ocrTriggerFn && dataUrl) {
       try {
         const ocrRes = await ocrTriggerFn(dataUrl, fileName);
         if (ocrRes?.text && ocrRes.text.trim().length > 0 && !ocrRes.text.startsWith('[Документ PDF:')) {
@@ -750,7 +775,7 @@ export async function parseUploadedFileUniversal(
       fileType: 'pdf',
       text: extractedPdfText,
       charCount: extractedPdfText.length,
-      dataUrl,
+      dataUrl: dataUrl || undefined,
       previewUrl: undefined,
       mimeType: 'application/pdf',
       fileName,
@@ -850,6 +875,19 @@ export async function parseUploadedFileUniversal(
   const { dataUrl, sizeStr } = await optimizeImageForOcr(file, 1920);
   let ocrRecognizedText = '';
   let warningNotice: string | undefined;
+
+  if (!dataUrl) {
+    return {
+      fileType: 'image',
+      text: '',
+      charCount: 0,
+      previewUrl: undefined,
+      dataUrl: undefined,
+      mimeType: mime || 'image/jpeg',
+      fileName,
+      fileSizeStr: sizeStr || fileSizeStr,
+    };
+  }
 
   // Check known demo presets only for explicit sample test buttons
   if (lowerName.includes('political_doxing') || lowerName.includes('doxing_slide')) {

@@ -48,6 +48,7 @@ export default function App() {
   );
   const [selectedPdfCase, setSelectedPdfCase] = useState<AuditCase | null>(null);
   const [selectedPdfEntityTier, setSelectedPdfEntityTier] = useState<BusinessEntityType>('small');
+  const [entityTier, setEntityTier] = useState<BusinessEntityType>('small');
   const [userHistory, setUserHistory] = useState<AuditCase[]>([]);
   const [scannerPreset, setScannerPreset] = useState<{ modality: ModalityType; urlOrText: string } | undefined>(undefined);
 
@@ -70,6 +71,7 @@ export default function App() {
                   (item.videoDataUrl.startsWith('data:') || item.videoDataUrl.startsWith('blob:'))))
           );
           const sanitized = parsed
+            .filter((item): item is AuditCase => Boolean(item && typeof item === 'object'))
             .slice(0, 25)
             .map((item) => stripHeavyMediaForStorage(normalizeAuditCaseCompliance(item)));
           setUserHistory(sanitized);
@@ -179,8 +181,11 @@ export default function App() {
           {currentView === 'report' && (
             <ExpertReportView
               auditCase={currentAuditCase}
+              entityTier={entityTier}
+              onEntityTierChange={setEntityTier}
               onOpenPdfModal={(tier) => {
-                setSelectedPdfEntityTier(tier || 'small');
+                const resolvedTier = tier || entityTier;
+                setSelectedPdfEntityTier(resolvedTier);
                 setSelectedPdfCase(currentAuditCase);
               }}
               onRetest={() => {
@@ -192,15 +197,21 @@ export default function App() {
           )}
 
           {currentView === 'sandbox' && (
-            <SandboxAndLawsView onOpenReportForCase={handleRunAudit} />
+            <SandboxAndLawsView
+              onOpenReportForCase={handleRunAudit}
+              entityTier={entityTier}
+              onEntityTierChange={setEntityTier}
+            />
           )}
 
           {currentView === 'archive' && (
             <ArchiveMonitoringView
               onSelectCase={handleSelectCase}
-              onOpenPdfModal={() => {
-                setSelectedPdfEntityTier('small');
-                setSelectedPdfCase(currentAuditCase);
+              entityTier={entityTier}
+              onEntityTierChange={setEntityTier}
+              onOpenPdfModal={(auditCase, tier) => {
+                setSelectedPdfEntityTier(tier || entityTier);
+                setSelectedPdfCase(normalizeAuditCaseCompliance(auditCase));
               }}
               userHistory={userHistory}
             />
